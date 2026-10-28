@@ -2,7 +2,7 @@
   "packageName": "com.sssoft.hk",
   "appDescription": "An EV trip assistant that estimates the probability of reaching the destination and recommends charging stops using real-time charger availability.",
   "version": "0.1.0",
-  "invokeWord": "도착확률",
+  "invokeWord": "갈수있어",
   "actionCalls": [
     {
       "type": "function",
