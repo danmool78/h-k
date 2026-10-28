@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 설정·수집 상태는 Cloud Functions(Admin SDK)만 접근
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

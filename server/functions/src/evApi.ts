@@ -48,6 +48,15 @@ export interface ChargerStatusItem {
   nowTsdt: string;
 }
 
+let calls = 0;
+
+/** 마지막 호출 이후 누적된 API 호출 수를 반환하고 0으로 초기화. */
+export function takeCallCount(): number {
+  const n = calls;
+  calls = 0;
+  return n;
+}
+
 interface Page<T> {
   totalCount: number;
   items: T[];
@@ -60,6 +69,7 @@ async function fetchPage<T>(op: string, params: Record<string, string>, key: str
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      calls++;
       const res = await fetch(url, { signal: AbortSignal.timeout(90_000) });
       const text = await res.text();
       if (!res.ok) throw new Error(`${op} HTTP ${res.status}: ${text.slice(0, 200)}`);
@@ -92,6 +102,11 @@ export function isFastCharger(item: Pick<ChargerInfoItem, "chgerType">): boolean
 
 export function fetchChargerInfo(zcode: string, key: string): Promise<ChargerInfoItem[]> {
   return fetchAll<ChargerInfoItem>("getChargerInfo", { zcode }, key);
+}
+
+/** 키 유효성 확인용 최소 호출. */
+export async function verifyKey(key: string): Promise<void> {
+  await fetchPage<ChargerStatusItem>("getChargerStatus", { pageNo: "1", numOfRows: "10", period: "5" }, key);
 }
 
 /** 최근 [periodMin]분 사이 상태가 바뀐 충전기 (전국). */

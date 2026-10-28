@@ -3,108 +3,66 @@
  *
  *  - syncStations : 매일 04:00 KST, 전국 급속 충전소 목록 갱신 (getChargerInfo)
  *  - syncStatus   : 5분마다, 최근 10분 상태 변경분 반영 (getChargerStatus)
- *  - api          : GET  /chargers/nearby?lat=&lng=&radiusKm=&limit=
- *                   POST /chargers/match   { points: [{lat, lng}], radiusKm? }  (내비 경로상 충전소 매칭)
+ *                   + 충전소별 요일×시간대 평균 사용률 갱신 (occupancy.json)
+ *  - api          : GET  /chargers/nearby?lat=&lng=&radiusKm=&limit=&etaMin=
+ *                   POST /chargers/match   { points: [{lat, lng, etaMin?}], radiusKm? }  (내비 경로상 충전소 매칭)
+ *                   etaMin: 도착까지 남은 분 → 그 시각의 과거 평균 사용률(forecast)을 함께 반환
  *                   GET  /health
+ *  - admin*       : 관리자 페이지(public/admin)용. API 키 관리, 수집 상태, 수동 실행
+ *
+ * 공공데이터 API 키는 Firestore config/dataGoKr 에 있고 관리자 페이지에서 갱신한다.
  */
 import { initializeApp } from "firebase-admin/app";
-import { getStorage } from "firebase-admin/storage";
 import { logger } from "firebase-functions";
-import { defineSecret } from "firebase-functions/params";
+import { setGlobalOptions } from "firebase-functions/v2";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { setGlobalOptions } from "firebase-functions/v2";
-import {
-  StationMap, StatusMap, applyStatus, buildStations, nearby,
-} from "./chargers";
-import { ZCODES, fetchChargerInfo, fetchChargerStatus } from "./evApi";
+import { StationMap, StationView, StatusMap, nearby } from "./chargers";
+import { daysUntil, getApiKeyConfig } from "./config";
+import { OccupancyMap, forecast } from "./occupancy";
+import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, readJson } from "./storage";
+import { syncStationsNow, syncStatusNow } from "./sync";
 
 initializeApp();
 setGlobalOptions({ region: "asia-northeast3" });
 
-const DATA_GO_KR_KEY = defineSecret("DATA_GO_KR_KEY");
-const BUCKET = "h-y-server-ev";
-const STATIONS_FILE = "stations.json";
-const STATUS_FILE = "status.json";
-
-async function bucket() {
-  const b = getStorage().bucket(BUCKET);
-  const [exists] = await b.exists();
-  if (!exists) await b.create({ location: "ASIA-NORTHEAST3" });
-  return b;
-}
-
-async function readJson<T>(name: string): Promise<T | null> {
-  const f = (await bucket()).file(name);
-  const [exists] = await f.exists();
-  if (!exists) return null;
-  const [buf] = await f.download();
-  return JSON.parse(buf.toString("utf8")) as T;
-}
-
-async function writeJson(name: string, data: unknown) {
-  await (await bucket()).file(name).save(JSON.stringify(data), { contentType: "application/json", resumable: false });
-}
+export { adminGetStatus, adminRunSync, adminSetKey } from "./admin";
 
 export const syncStations = onSchedule(
-  { schedule: "0 4 * * *", timeZone: "Asia/Seoul", secrets: [DATA_GO_KR_KEY], timeoutSeconds: 1800, memory: "2GiB" },
+  { schedule: "0 4 * * *", timeZone: "Asia/Seoul", timeoutSeconds: 1800, memory: "2GiB" },
   async () => {
-    const key = DATA_GO_KR_KEY.value();
-    const prevStations = (await readJson<StationMap>(STATIONS_FILE)) ?? {};
-    const prevStatus = (await readJson<StatusMap>(STATUS_FILE)) ?? {};
-    const stations: StationMap = {};
-    const statuses: StatusMap = {};
-
-    for (const z of ZCODES) {
-      try {
-        const built = buildStations(await fetchChargerInfo(z, key));
-        Object.assign(stations, built.stations);
-        Object.assign(statuses, built.statuses);
-      } catch (e) {
-        // 한 지역이 실패하면 그 지역은 이전 데이터를 유지
-        logger.error(`zcode ${z} 실패, 이전 데이터 유지`, e);
-        for (const s of Object.values(prevStations)) {
-          if (s.zcode === z) stations[s.id] = s;
-        }
-      }
+    await syncStationsNow();
+    const key = await getApiKeyConfig();
+    if (key) {
+      const days = daysUntil(key.expiresAt);
+      if (days <= 30) logger.warn(`공공데이터 API 키 만료 ${days}일 전 (${key.expiresAt}) — 관리자 페이지에서 갱신 필요`);
     }
-    // 더 최신 상태가 있으면 유지
-    for (const [k, v] of Object.entries(prevStatus)) {
-      if (!statuses[k] || statuses[k].updDt < v.updDt) statuses[k] = v;
-    }
-    await writeJson(STATIONS_FILE, stations);
-    await writeJson(STATUS_FILE, statuses);
-    logger.info(`stations ${Object.keys(stations).length}, chargers ${Object.keys(statuses).length}`);
   },
 );
 
 export const syncStatus = onSchedule(
-  { schedule: "every 5 minutes", timeZone: "Asia/Seoul", secrets: [DATA_GO_KR_KEY], timeoutSeconds: 300, memory: "1GiB" },
+  { schedule: "every 5 minutes", timeZone: "Asia/Seoul", timeoutSeconds: 300, memory: "1GiB" },
   async () => {
-    const stations = await readJson<StationMap>(STATIONS_FILE);
-    if (!stations) {
-      logger.warn("stations.json 없음 — syncStations 를 먼저 실행해야 합니다");
-      return;
-    }
-    const statuses = (await readJson<StatusMap>(STATUS_FILE)) ?? {};
-    const items = await fetchChargerStatus(10, DATA_GO_KR_KEY.value());
-    const n = applyStatus(statuses, stations, items);
-    await writeJson(STATUS_FILE, statuses);
-    logger.info(`status 변경 ${items.length}건 중 급속 ${n}건 반영`);
+    await syncStatusNow();
   },
 );
 
 // 인스턴스 메모리 캐시 (60초)
-let cache: { at: number; stations: StationMap; statuses: StatusMap } | null = null;
+let cache: { at: number; stations: StationMap; statuses: StatusMap; occ: OccupancyMap } | null = null;
 
 async function snapshot() {
   if (cache && Date.now() - cache.at < 60_000) return cache;
-  const [stations, statuses] = await Promise.all([
+  const [stations, statuses, occ] = await Promise.all([
     readJson<StationMap>(STATIONS_FILE),
     readJson<StatusMap>(STATUS_FILE),
+    readJson<OccupancyMap>(OCCUPANCY_FILE),
   ]);
-  cache = { at: Date.now(), stations: stations ?? {}, statuses: statuses ?? {} };
+  cache = { at: Date.now(), stations: stations ?? {}, statuses: statuses ?? {}, occ: occ ?? {} };
   return cache;
+}
+
+function withForecast(v: StationView, occ: OccupancyMap, now: number, etaMin: number | undefined) {
+  return etaMin === undefined ? v : { ...v, forecast: forecast(occ, v.id, now + etaMin * 60_000) };
 }
 
 function num(v: unknown, def?: number): number | undefined {
@@ -132,20 +90,25 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
       }
       const radiusKm = Math.min(num(req.query.radiusKm, 5)!, 50);
       const limit = Math.min(num(req.query.limit, 20)!, 100);
+      const etaMin = num(req.query.etaMin);
       const s = await snapshot();
-      res.json({ stations: nearby(s.stations, s.statuses, lat, lng, radiusKm, limit, now) });
+      const views = nearby(s.stations, s.statuses, lat, lng, radiusKm, limit, now);
+      res.json({ stations: views.map((v) => withForecast(v, s.occ, now, etaMin)) });
       return;
     }
 
     if (req.method === "POST" && path === "/chargers/match") {
-      const points: { lat: number; lng: number }[] = req.body?.points ?? [];
+      const points: { lat: number; lng: number; etaMin?: number }[] = req.body?.points ?? [];
       if (!Array.isArray(points) || points.length === 0 || points.length > 50) {
         res.status(400).json({ error: "points 1~50개 필요" });
         return;
       }
       const radiusKm = Math.min(num(req.body?.radiusKm, 0.3)!, 5);
       const s = await snapshot();
-      const matches = points.map((p) => nearby(s.stations, s.statuses, p.lat, p.lng, radiusKm, 1, now)[0] ?? null);
+      const matches = points.map((p) => {
+        const v = nearby(s.stations, s.statuses, p.lat, p.lng, radiusKm, 1, now)[0];
+        return v ? withForecast(v, s.occ, now, num(p.etaMin)) : null;
+      });
       res.json({ matches });
       return;
     }

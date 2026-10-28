@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H-Y 관리자</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1d2129; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI","Noto Sans KR",sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:720px; margin:0 auto; padding:24px 16px 48px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+  h1 { font-size:20px; margin:0; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  .row:last-child { border-bottom:0; }
+  .row span:first-child { color:var(--muted); }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px; }
+  button { padding:10px 16px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:14px; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:8px; }
+  .bar > div { height:100%; background:var(--accent); }
+  .msg { font-size:13px; margin-top:12px; min-height:1em; }
+  .hint { font-size:12px; color:var(--muted); margin-top:8px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>H-Y 관리자</h1>
+    <div><span id="who" class="hint"></span> <button id="logout" class="secondary hidden">로그아웃</button></div>
+  </header>
+
+  <section id="login" class="card">
+    <h2>로그인</h2>
+    <p class="hint">허용된 관리자 Google 계정으로 로그인하세요.</p>
+    <button id="loginBtn">Google로 로그인</button>
+    <div id="loginMsg" class="msg bad"></div>
+  </section>
+
+  <div id="app" class="hidden">
+    <section class="card">
+      <h2>공공데이터 API 키</h2>
+      <div class="row"><span>현재 키</span><span id="keyMasked">—</span></div>
+      <div class="row"><span>만료일</span><span id="keyExpires">—</span></div>
+      <div class="row"><span>남은 기간</span><span id="keyDays">—</span></div>
+      <div class="row"><span>최근 변경</span><span id="keyUpdated">—</span></div>
+
+      <label for="newKey">새 인증키 (Decoding/Encoding 아무거나)</label>
+      <input id="newKey" type="password" autocomplete="off" placeholder="공공데이터포털 마이페이지 → 인증키">
+      <label for="newExpires">활용기간 만료일</label>
+      <input id="newExpires" type="date">
+      <div class="actions"><button id="saveKey">키 확인 후 저장</button></div>
+      <div id="keyMsg" class="msg"></div>
+      <p class="hint">저장 전에 실제 API를 1회 호출해 키가 동작하는지 확인합니다.
+        만료 30일 전부터 경고가 표시됩니다. 재발급: <a href="https://www.data.go.kr/iim/api/selectAPIAcountView.do" target="_blank" rel="noopener">공공데이터포털 마이페이지</a></p>
+    </section>
+
+    <section class="card">
+      <h2>수집 상태</h2>
+      <div class="row"><span>충전소 목록 (매일 04:00)</span><span id="syncStations">—</span></div>
+      <div class="row"><span>실시간 상태 (5분마다)</span><span id="syncStatus">—</span></div>
+      <div class="row"><span>오늘 API 호출</span><span id="usage">—</span></div>
+      <div class="bar"><div id="usageBar" style="width:0"></div></div>
+      <div class="actions">
+        <button id="runStations" class="secondary">충전소 목록 지금 갱신</button>
+        <button id="runStatus" class="secondary">상태 지금 갱신</button>
+        <button id="refresh" class="secondary">새로고침</button>
+      </div>
+      <div id="syncMsg" class="msg"></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+  import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js";
+
+  const app = initializeApp({
+    apiKey: "AIzaSyAC-If99_ZU2DoU4VTxzBtwRchGVg2JRqQ",
+    authDomain: "h-y-server.firebaseapp.com",
+    projectId: "h-y-server",
+    storageBucket: "h-y-server.firebasestorage.app",
+    messagingSenderId: "103262040494",
+    appId: "1:103262040494:web:a147ea52af9e34efcd983f",
+  });
+  const auth = getAuth(app);
+  const fns = getFunctions(app, "asia-northeast3");
+  const call = (name, data) => httpsCallable(fns, name, { timeout: 600_000 })(data).then((r) => r.data);
+  const $ = (id) => document.getElementById(id);
+
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }) : "—";
+  const setMsg = (el, text, cls = "") => { el.textContent = text; el.className = `msg ${cls}`; };
+  const errText = (e) => e?.message ?? String(e);
+
+  function syncText(r) {
+    if (!r) return "<span class='muted'>아직 실행 안 됨</span>";
+    const cls = r.ok ? "ok" : "bad";
+    return `<span class="${cls}">${r.ok ? "정상" : "실패"}</span> · ${fmt(r.at)}<br><span class="hint">${r.message ?? ""}</span>`;
+  }
+
+  async function load() {
+    const s = await call("adminGetStatus");
+    if (s.key) {
+      $("keyMasked").textContent = s.key.masked;
+      $("keyExpires").textContent = s.key.expiresAt;
+      const d = s.key.daysLeft;
+      $("keyDays").innerHTML = d < 0 ? `<span class="bad">만료됨 (${-d}일 지남)</span>`
+        : d <= 30 ? `<span class="warn">D-${d} · 갱신 필요</span>` : `<span class="ok">D-${d}</span>`;
+      $("keyUpdated").textContent = `${fmt(s.key.updatedAt)} · ${s.key.updatedBy}`;
+    } else {
+      $("keyMasked").innerHTML = "<span class='bad'>등록된 키 없음</span>";
+    }
+    $("syncStations").innerHTML = syncText(s.sync.stations);
+    $("syncStatus").innerHTML = syncText(s.sync.status);
+    $("usage").textContent = `${s.usageToday} / ${s.dailyLimit}`;
+    $("usageBar").style.width = `${Math.min(100, (s.usageToday / s.dailyLimit) * 100)}%`;
+  }
+
+  async function guarded(btn, msgEl, fn) {
+    btn.disabled = true;
+    try { await fn(); } catch (e) { setMsg(msgEl, errText(e), "bad"); } finally { btn.disabled = false; }
+  }
+
+  // 기본 만료일: 오늘 + 2년
+  const d = new Date(); d.setFullYear(d.getFullYear() + 2);
+  $("newExpires").value = d.toISOString().slice(0, 10);
+
+  $("loginBtn").onclick = () => signInWithPopup(auth, new GoogleAuthProvider()).catch((e) => setMsg($("loginMsg"), errText(e), "bad"));
+  $("logout").onclick = () => signOut(auth);
+  $("refresh").onclick = () => guarded($("refresh"), $("syncMsg"), load);
+
+  $("saveKey").onclick = () => guarded($("saveKey"), $("keyMsg"), async () => {
+    setMsg($("keyMsg"), "키 확인 중…");
+    const r = await call("adminSetKey", { key: $("newKey").value, expiresAt: $("newExpires").value });
+    $("newKey").value = "";
+    setMsg($("keyMsg"), `저장됨: ${r.masked} (D-${r.daysLeft})`, "ok");
+    await load();
+  });
+
+  for (const [id, which, label] of [["runStations", "stations", "충전소 목록"], ["runStatus", "status", "상태"]]) {
+    $(id).onclick = () => guarded($(id), $("syncMsg"), async () => {
+      setMsg($("syncMsg"), `${label} 갱신 중… (충전소 목록은 1~2분 걸립니다)`);
+      const r = await call("adminRunSync", { which });
+      setMsg($("syncMsg"), `${label}: ${r.message}`, r.ok ? "ok" : "bad");
+      await load();
+    });
+  }
+
+  onAuthStateChanged(auth, async (user) => {
+    $("who").textContent = user?.email ?? "";
+    $("logout").classList.toggle("hidden", !user);
+    $("login").classList.toggle("hidden", !!user);
+    $("app").classList.toggle("hidden", !user);
+    if (!user) return;
+    try { await load(); } catch (e) {
+      await signOut(auth);
+      setMsg($("loginMsg"), errText(e), "bad");
+    }
+  });
+</script>
+</body>
+</html>
