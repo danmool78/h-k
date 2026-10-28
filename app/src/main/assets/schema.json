@@ -1,8 +1,8 @@
 {
   "packageName": "com.sssoft.hk",
-  "appDescription": "An EV trip assistant that estimates the probability of reaching the destination and recommends charging stops using real-time charger availability.",
+  "appDescription": "An EV charging assistant that finds the charging stop with the shortest total trip time by predicting charger availability and waiting time at arrival.",
   "version": "0.1.0",
-  "invokeWord": "갈수있어",
+  "invokeWord": "안기다려",
   "actionCalls": [
     {
       "type": "function",
