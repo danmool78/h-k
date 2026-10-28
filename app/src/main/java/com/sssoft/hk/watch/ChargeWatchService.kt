@@ -143,7 +143,7 @@ class ChargeWatchService : Service() {
         }
         navi.removeWaypointNear(old.location)
         navi.addChargingWaypoint(to.name, to.location)
-        ChargeTargetStore.set(this, ChargeTarget(to.id, to.name, to.location, System.currentTimeMillis()))
+        ChargeTargetStore.set(this, ChargeTarget(to.id, to.name, to.location, System.currentTimeMillis(), to.maxKw))
         speak("경유지를 ${to.name}로 변경했습니다.")
         update("${to.name}로 경유지를 변경했어요")
     }
@@ -209,8 +209,8 @@ class ChargeWatchService : Service() {
         private const val AVG_SPEED_KMH = 80.0
 
         /** 충전소를 경유지로 정했을 때 호출. 감시 대상 저장 후 서비스 시작. */
-        fun start(context: Context, stationId: String, name: String, location: LatLng) {
-            ChargeTargetStore.set(context, ChargeTarget(stationId, name, location, System.currentTimeMillis()))
+        fun start(context: Context, stationId: String, name: String, location: LatLng, maxKw: Double? = null) {
+            ChargeTargetStore.set(context, ChargeTarget(stationId, name, location, System.currentTimeMillis(), maxKw))
             try {
                 context.startForegroundService(Intent(context, ChargeWatchService::class.java))
             } catch (e: Exception) {

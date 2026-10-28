@@ -46,6 +46,10 @@ object BatteryReader {
         }
     }
 
+    /** 이미 초기화된 [Vehicle] 로 읽기 (학습 서비스처럼 계속 읽는 곳에서 매번 연결하지 않으려고). */
+    suspend fun read(vehicle: Vehicle, timeoutMs: Long = 1_500): VehicleReading? =
+        runCatching { withTimeoutOrNull(timeoutMs) { readAll(vehicle) } }.getOrNull()
+
     private suspend fun readAll(v: Vehicle): VehicleReading? = coroutineScope {
         val battery = v.getEvBattery()
         val soc = get<Int> { ok, err -> battery.getEvBatteryStateOfCharge(ok, err) }.await() ?: return@coroutineScope null

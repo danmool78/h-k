@@ -4,7 +4,7 @@ import android.content.Context
 import com.sssoft.hk.navi.LatLng
 
 /** 지금 경유지로 가고 있는 충전소. 감시 서비스가 이 값을 기준으로 상태를 확인한다. */
-data class ChargeTarget(val stationId: String, val name: String, val location: LatLng, val setAt: Long)
+data class ChargeTarget(val stationId: String, val name: String, val location: LatLng, val setAt: Long, val maxKw: Double? = null)
 
 object ChargeTargetStore {
     private const val NAME = "charge_target"
@@ -16,6 +16,7 @@ object ChargeTargetStore {
             id, p.getString("name", "")!!,
             LatLng(p.getFloat("lat", 0f).toDouble(), p.getFloat("lng", 0f).toDouble()),
             p.getLong("setAt", 0),
+            p.getFloat("maxKw", -1f).takeIf { it > 0 }?.toDouble(),
         )
     }
 
@@ -24,6 +25,7 @@ object ChargeTargetStore {
             .putString("id", t.stationId).putString("name", t.name)
             .putFloat("lat", t.location.lat.toFloat()).putFloat("lng", t.location.lng.toFloat())
             .putLong("setAt", t.setAt)
+            .putFloat("maxKw", (t.maxKw ?: -1.0).toFloat())
             .apply()
     }
 

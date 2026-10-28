@@ -10,6 +10,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.lifecycle.lifecycleScope
 import com.sssoft.hk.ui.RangeScreen
+import com.sssoft.hk.learn.DriveLearningService
 import com.sssoft.hk.trip.TripPrefs
 import com.sssoft.hk.ui.RangeViewModel
 import com.sssoft.hk.vehicle.BatterySource
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
         }
         // 백그라운드(Gleo)에서 시작이 막혔던 경유지 감시를 이어서 시작
         ChargeWatchService.resumeIfNeeded(this)
+        DriveLearningService.start(this)
     }
 
     override fun onDestroy() {

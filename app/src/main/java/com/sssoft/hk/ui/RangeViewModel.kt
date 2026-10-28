@@ -122,7 +122,7 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
         val best = s.recommendation?.best ?: return
         if (s.source != RouteSource.NAVI) return
         navi.addChargingWaypoint(best.station.name, best.station.location)
-        ChargeWatchService.start(getApplication(), best.station.id, best.station.name, best.station.location)
+        ChargeWatchService.start(getApplication(), best.station.id, best.station.name, best.station.location, best.station.maxKw)
         _ui.update { it.copy(waypointAdded = true) }
     }
 

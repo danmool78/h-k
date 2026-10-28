@@ -108,7 +108,7 @@ class GleoReceiver : BroadcastReceiver() {
                 val s = best.station
                 if (addAsWaypoint) {
                     navi.addChargingWaypoint(s.name, s.location)
-                    ChargeWatchService.start(context, s.id, s.name, s.location)
+                    ChargeWatchService.start(context, s.id, s.name, s.location, s.maxKw)
                 }
                 val wait = best.waitMin.roundToInt()
                 val saved = r.savedMin?.roundToInt()?.takeIf { it > 0 }

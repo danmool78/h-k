@@ -27,6 +27,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 차가 켜지면 주행 학습 시작 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="false"
@@ -49,6 +51,19 @@
             android:name=".watch.ChargeWatchService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- 차량·운전자 주행 학습 -->
+        <service
+            android:name=".learn.DriveLearningService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name=".learn.DriveLearningService$BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Gleo AI 음성 호출 (assets/schema.json, component = service). action = 함수 이름 -->
         <receiver
