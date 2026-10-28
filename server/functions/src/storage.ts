@@ -5,6 +5,8 @@ const PREFIX = "ev/";
 export const STATIONS_FILE = "stations.json";
 export const STATUS_FILE = "status.json";
 export const OCCUPANCY_FILE = "occupancy.json";
+export const VALIDATION_FILE = "validation.json";
+export const LAG_FILE = "lag.json";
 
 /** 프로젝트 기본 Storage 버킷의 ev/ 아래에 저장. */
 const file = (name: string) => getStorage().bucket().file(PREFIX + name);

@@ -8,7 +8,9 @@ import {
   addUsage, daysUntil, getApiKeyConfig, getSyncState, getUsage, maskKey, saveApiKeyConfig,
 } from "./config";
 import { takeCallCount, verifyKey } from "./evApi";
+import { VALIDATION_FILE, readJson } from "./storage";
 import { syncStationsNow, syncStatusNow } from "./sync";
+import { ValidationMap, summarize } from "./validation";
 
 /** 쉼표로 구분한 관리자 이메일. functions/.env (git 제외) 에 설정. */
 const ADMIN_EMAILS = defineString("ADMIN_EMAILS");
@@ -38,8 +40,11 @@ function adminCall<T>(opts: CallableOptions, handler: (req: CallableRequest) => 
 
 export const adminGetStatus = adminCall({}, async (req) => {
   requireAdmin(req);
-  const [key, sync, usageToday] = await Promise.all([getApiKeyConfig(), getSyncState(), getUsage()]);
+  const [key, sync, usageToday, val] = await Promise.all([
+    getApiKeyConfig(), getSyncState(), getUsage(), readJson<ValidationMap>(VALIDATION_FILE),
+  ]);
   return {
+    validation: summarize(val ?? {}),
     key: key && {
       masked: maskKey(key.key),
       expiresAt: key.expiresAt,

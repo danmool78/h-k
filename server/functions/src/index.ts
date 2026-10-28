@@ -8,6 +8,7 @@
  *                   POST /chargers/match   { points: [{lat, lng, etaMin?}], radiusKm? }  (내비 경로상 충전소 매칭)
  *                   etaMin: 도착까지 남은 분 → 그 시각의 과거 평균 사용률(forecast)을 함께 반환
  *                   GET  /health
+ *                   GET  /validation  혼잡 예측 검증 (이력 예측 vs 1시간 전 상태 유지 예측, 만차 예측 정밀도·재현율)
  *  - admin*       : 관리자 페이지(public/admin)용. API 키 관리, 수집 상태, 수동 실행
  *
  * 공공데이터 API 키는 Firestore config/dataGoKr 에 있고 관리자 페이지에서 갱신한다.
@@ -20,7 +21,8 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { StationMap, StationView, StatusMap, nearby } from "./chargers";
 import { daysUntil, getApiKeyConfig } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
-import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, readJson } from "./storage";
+import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson } from "./storage";
+import { ValidationMap, summarize } from "./validation";
 import { syncStationsNow, syncStatusNow } from "./sync";
 
 initializeApp();
@@ -118,6 +120,12 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
         return v ? withForecast(v, s.occ, now, num(p.etaMin)) : null;
       });
       res.json({ matches });
+      return;
+    }
+
+    if (req.method === "GET" && path === "/validation") {
+      const v = (await readJson<ValidationMap>(VALIDATION_FILE)) ?? {};
+      res.json({ summary: summarize(v), days: v });
       return;
     }
 

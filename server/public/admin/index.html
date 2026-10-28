@@ -68,6 +68,8 @@
       <div class="row"><span>실시간 상태 (5분마다)</span><span id="syncStatus">—</span></div>
       <div class="row"><span>오늘 API 호출</span><span id="usage">—</span></div>
       <div class="bar"><div id="usageBar" style="width:0"></div></div>
+      <div class="row"><span>혼잡 예측 오차 (이력 / 1시간 전 유지)</span><span id="valMae">—</span></div>
+      <div class="row"><span>만차 예측 정밀도 / 재현율</span><span id="valFull">—</span></div>
       <div class="actions">
         <button id="runStations" class="secondary">충전소 목록 지금 갱신</button>
         <button id="runStatus" class="secondary">상태 지금 갱신</button>
@@ -122,6 +124,13 @@
     $("syncStatus").innerHTML = syncText(s.sync.status);
     $("usage").textContent = `${s.usageToday} / ${s.dailyLimit}`;
     $("usageBar").style.width = `${Math.min(100, (s.usageToday / s.dailyLimit) * 100)}%`;
+    const v = s.validation;
+    const p = (x) => x == null ? "—" : `${(x * 100).toFixed(1)}%`;
+    $("valMae").innerHTML = v && v.samples ? `${p(v.histMae)} / ${p(v.persistMae)}` +
+      (v.improvementPct != null ? ` <span class="${v.improvementPct > 0 ? "ok" : "bad"}">(${v.improvementPct.toFixed(0)}% 개선)</span>` : "") +
+      `<br><span class="hint">${v.days}일 · 비교 ${v.samples.toLocaleString()}건</span>`
+      : "<span class='hint'>기록이 쌓이는 중 (같은 시간대 이력 6회 이상 필요)</span>";
+    $("valFull").textContent = v && v.samples ? `${p(v.fullPrecision)} / ${p(v.fullRecall)}` : "—";
   }
 
   async function guarded(btn, msgEl, fn) {

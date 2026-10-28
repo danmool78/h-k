@@ -4,10 +4,11 @@
  */
 import { logger } from "firebase-functions";
 import { StationMap, StatusMap, applyStatus, buildStations } from "./chargers";
-import { SyncResult, addUsage, recordSync, requireApiKey } from "./config";
+import { SyncResult, addUsage, kstDate, recordSync, requireApiKey } from "./config";
 import { ZCODES, fetchChargerInfo, fetchChargerStatus, takeCallCount } from "./evApi";
 import { OccupancyMap, recordOccupancy } from "./occupancy";
-import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, readJson, writeJson } from "./storage";
+import { LAG_FILE, OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson, writeJson } from "./storage";
+import { LagMap, ValidationMap, validateAndShift } from "./validation";
 
 async function run(kind: "stations" | "status", job: () => Promise<{ message: string; count: number }>): Promise<SyncResult> {
   takeCallCount();
@@ -74,9 +75,17 @@ export function syncStatusNow(): Promise<SyncResult> {
     const n = applyStatus(statuses, stations, items);
     await writeJson(STATUS_FILE, statuses);
 
+    const now = Date.now();
     const occ = (await readJson<OccupancyMap>(OCCUPANCY_FILE)) ?? {};
-    const m = recordOccupancy(occ, stations, statuses, Date.now());
+    // 이번 관측을 통계에 넣기 전에 예측과 비교 (미래 정보 누설 방지)
+    const val = (await readJson<ValidationMap>(VALIDATION_FILE)) ?? {};
+    const lag = (await readJson<LagMap>(LAG_FILE)) ?? {};
+    const v = validateAndShift(val, lag, occ, stations, statuses, now, kstDate(now));
+    await writeJson(VALIDATION_FILE, val);
+    await writeJson(LAG_FILE, lag);
+
+    const m = recordOccupancy(occ, stations, statuses, now);
     await writeJson(OCCUPANCY_FILE, occ);
-    return { count: n, message: `변경 ${items.length}건 중 급속 ${n}건 반영, 혼잡도 ${m}곳 갱신` };
+    return { count: n, message: `변경 ${items.length}건 중 급속 ${n}건 반영, 혼잡도 ${m}곳 갱신, 예측 검증 ${v}곳` };
   });
 }
