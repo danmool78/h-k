@@ -4,7 +4,7 @@
  * 결과는 config/syncState, 호출 수는 usage/{날짜}에 기록.
  */
 import { logger } from "firebase-functions";
-import { applyStatus, migrateStationKeys } from "./chargers";
+import { applyStatus, migrateStationKeys, upgradeLegacy } from "./chargers";
 import { SyncResult, addUsage, kstDate, recordSync } from "./config";
 import { takeCallCount } from "./evApi";
 import { OccupancyMap, recordOccupancy } from "./occupancy";
@@ -29,8 +29,24 @@ async function run(kind: "stations" | "status", job: () => Promise<{ message: st
   return result;
 }
 
-/** 출처 구분 전 형식으로 저장된 목록인지 (provider 필드 없음) */
-const isLegacy = (stations: StationMap | null) => !!stations && Object.values(stations).some((s) => !s.provider);
+/**
+ * 저장된 목록·상태를 읽고, 출처 구분 전 형식이면 그 자리에서 현재 형식으로 바꿔 다시 저장한다
+ * (혼잡도 통계·1시간 전 기록의 ID도 함께 이전). 네트워크를 쓰지 않는다.
+ */
+export async function loadSnapshot(): Promise<{ stations: StationMap | null; statuses: StatusMap }> {
+  const stations = await readJson<StationMap>(STATIONS_FILE);
+  const statuses = (await readJson<StatusMap>(STATUS_FILE)) ?? {};
+  if (stations && upgradeLegacy(stations, statuses)) {
+    await writeJson(STATIONS_FILE, stations);
+    await writeJson(STATUS_FILE, statuses);
+    const occ = await readJson<OccupancyMap>(OCCUPANCY_FILE);
+    if (occ && migrateStationKeys(occ)) await writeJson(OCCUPANCY_FILE, occ);
+    const lag = await readJson<LagMap>(LAG_FILE);
+    if (lag && migrateStationKeys(lag)) await writeJson(LAG_FILE, lag);
+    logger.info("저장 데이터를 출처 구분 형식으로 이전");
+  }
+  return { stations, statuses };
+}
 
 /** 모든 출처의 급속 충전소 목록 갱신. 한 출처가 실패하면 그 출처는 이전 목록을 유지. */
 export function syncStationsNow(): Promise<SyncResult> {
@@ -38,9 +54,9 @@ export function syncStationsNow(): Promise<SyncResult> {
 }
 
 async function syncStationsJob(): Promise<{ message: string; count: number }> {
-  const loaded = await readJson<StationMap>(STATIONS_FILE);
-  const prev = isLegacy(loaded) ? {} : (loaded ?? {});
-  const prevStatus = isLegacy(loaded) ? {} : ((await readJson<StatusMap>(STATUS_FILE)) ?? {});
+  const loaded = await loadSnapshot();
+  const prev = loaded.stations ?? {};
+  const prevStatus = loaded.statuses;
   const stations: StationMap = {};
   const statuses: StatusMap = {};
   const parts: string[] = [];
@@ -67,27 +83,14 @@ async function syncStationsJob(): Promise<{ message: string; count: number }> {
   }
   await writeJson(STATIONS_FILE, stations);
   await writeJson(STATUS_FILE, statuses);
-
-  // 이전 형식(접두사 없는 ID)으로 쌓인 혼잡도 통계·1시간 전 기록을 새 ID로 이전
-  const occ = await readJson<OccupancyMap>(OCCUPANCY_FILE);
-  if (occ && migrateStationKeys(occ)) await writeJson(OCCUPANCY_FILE, occ);
-  const lag = await readJson<LagMap>(LAG_FILE);
-  if (lag && migrateStationKeys(lag)) await writeJson(LAG_FILE, lag);
-
   return { count: Object.keys(stations).length, message: `급속 충전소 ${Object.keys(stations).length}곳 / ${Object.keys(statuses).length}대 · ${parts.join(" · ")}` };
 }
 
 /** 모든 출처의 상태 변경분 반영 + 혼잡도 통계 갱신 + 예측 검증. */
 export function syncStatusNow(): Promise<SyncResult> {
   return run("status", async () => {
-    let stations = await readJson<StationMap>(STATIONS_FILE);
-    if (!stations || isLegacy(stations)) {
-      // 목록이 없거나 이전 형식이면 먼저 목록부터 (배포 직후 자동 이전)
-      await syncStationsJob();
-      stations = await readJson<StationMap>(STATIONS_FILE);
-      if (!stations) throw new Error("충전소 목록을 만들지 못했습니다");
-    }
-    const statuses = (await readJson<StatusMap>(STATUS_FILE)) ?? {};
+    const { stations, statuses } = await loadSnapshot();
+    if (!stations) throw new Error("충전소 목록이 없습니다. 충전소 목록 갱신을 먼저 실행하세요.");
     let total = 0;
     let applied = 0;
     for (const p of PROVIDERS) {

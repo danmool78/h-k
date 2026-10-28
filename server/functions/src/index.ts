@@ -19,7 +19,7 @@ import { logger } from "firebase-functions";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { StationMap, StationView, StatusMap, nearby } from "./chargers";
+import { StationMap, StationView, StatusMap, migrateStationKeys, nearby, upgradeLegacy } from "./chargers";
 import { daysUntil, getApiKeyConfig } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
 import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson } from "./storage";
@@ -69,6 +69,9 @@ async function snapshot() {
     readJson<StatusMap>(STATUS_FILE),
     readJson<OccupancyMap>(OCCUPANCY_FILE),
   ]);
+  // 아직 이전 전 형식이면 메모리에서만 변환 (저장 파일 이전은 다음 상태 갱신이 함)
+  if (stations && statuses) upgradeLegacy(stations, statuses);
+  if (occ) migrateStationKeys(occ);
   cache = { at: Date.now(), stations: stations ?? {}, statuses: statuses ?? {}, occ: occ ?? {} };
   return cache;
 }

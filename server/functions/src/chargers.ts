@@ -2,6 +2,7 @@
  * 충전소 스냅샷 조회 로직 (출처 무관, Firebase 의존 없음 → 단위 테스트 가능).
  * 형식은 providers/types.ts.
  */
+import { mapStatus, parseKst } from "./providers/krKeco";
 import { Station, StationMap, StatusMap, StatusUpdate, statusKey } from "./providers/types";
 
 export type { Station, StationMap, StatusMap } from "./providers/types";
@@ -108,6 +109,44 @@ export function nearby(
   }
   hits.sort((a, b) => a[1] - b[1]);
   return hits.slice(0, limit).map(([s, d]) => stationView(s, statuses, now, d));
+}
+
+/** 출처 구분 전(한국 전용) 저장 형식. */
+interface LegacyStation {
+  id: string; name: string; addr: string; lat: number; lng: number; operator: string; highway: boolean;
+  zcode: string; chargers: Record<string, { type: string; kw: number }>;
+}
+interface LegacyStatus { stat: string; updDt: string; nowTsdt: string }
+
+/**
+ * 출처 구분 전 형식의 충전소 목록·상태를 네트워크 없이 현재 형식으로 바꾼다 (제자리 변환).
+ * 반환: 바꾼 게 있는지.
+ */
+export function upgradeLegacy(stations: StationMap, statuses: StatusMap): boolean {
+  let changed = false;
+  for (const [k, raw] of Object.entries(stations)) {
+    if ((raw as Station).provider) continue;
+    const s = raw as unknown as LegacyStation;
+    const id = `KR:${s.id}`;
+    delete stations[k];
+    stations[id] = {
+      id, provider: "kr-keco", country: "KR", name: s.name, addr: s.addr, lat: s.lat, lng: s.lng,
+      operator: s.operator, highway: s.highway, region: s.zcode,
+      chargers: Object.fromEntries(Object.entries(s.chargers).map(([cid, c]) => [cid, { standard: c.type, kw: c.kw }])),
+    };
+    changed = true;
+  }
+  for (const [k, raw] of Object.entries(statuses)) {
+    if (!("stat" in (raw as object))) continue;
+    const s = raw as unknown as LegacyStatus;
+    const status = mapStatus(s.stat);
+    delete statuses[k];
+    statuses[k.startsWith("KR:") ? k : `KR:${k}`] = {
+      status, updatedAt: parseKst(s.updDt) ?? 0, sessionStartMs: status === "CHARGING" ? parseKst(s.nowTsdt) : null,
+    };
+    changed = true;
+  }
+  return changed;
 }
 
 /**

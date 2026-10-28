@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyStatus, migrateStationKeys, nearby } from "./chargers";
+import { applyStatus, migrateStationKeys, nearby, upgradeLegacy } from "./chargers";
 import { ChargerInfoItem } from "./evApi";
 import { convert, mapStatus, parseKst } from "./providers/krKeco";
 import { statusKey } from "./providers/types";
@@ -68,6 +68,25 @@ test("빈 충전기가 있으면 대기 0, 반경 밖은 제외", () => {
 test("parseKst 는 KST 기준", () => {
   assert.equal(new Date(parseKst("20261028090000")!).toISOString(), "2026-10-28T00:00:00.000Z");
   assert.equal(parseKst(""), null);
+});
+
+test("이전 형식 목록·상태를 네트워크 없이 현재 형식으로 변환", () => {
+  const stations = {
+    ME1: { id: "ME1", name: "A", addr: "", lat: 33, lng: 126, operator: "환경부", highway: true, zcode: "50", chargers: { "01": { type: "04", kw: 100 } } },
+  } as unknown as Parameters<typeof upgradeLegacy>[0];
+  const statuses = {
+    "ME1:01": { stat: "3", updDt: "20261028110000", nowTsdt: "20261028105000", lastTsdt: "", lastTedt: "" },
+  } as unknown as Parameters<typeof upgradeLegacy>[1];
+  assert.equal(upgradeLegacy(stations, statuses), true);
+  assert.deepEqual(Object.keys(stations), ["KR:ME1"]);
+  assert.equal(stations["KR:ME1"].provider, "kr-keco");
+  assert.equal(stations["KR:ME1"].region, "50");
+  assert.equal(statuses["KR:ME1:01"].status, "CHARGING");
+  assert.equal(statuses["KR:ME1:01"].sessionStartMs, parseKst("20261028105000"));
+  const [v] = nearby(stations, statuses, 33, 126, 1, 1, parseKst("20261028111000")!);
+  assert.equal(v.charging, 1);
+  assert.equal(v.outOfService, 0);
+  assert.equal(upgradeLegacy(stations, statuses), false);
 });
 
 test("이전 형식 키(접두사 없음) → KR: 접두사로 이전", () => {
