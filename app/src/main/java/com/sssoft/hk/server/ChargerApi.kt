@@ -28,7 +28,11 @@ data class StationView(
 }
 
 /** H-Y Server 충전소 조회 API. */
-class ChargerApi(private val baseUrl: String = BuildConfig.SERVER_URL) {
+class ChargerApi(
+    private val baseUrl: String = BuildConfig.SERVER_URL,
+    /** Gleo 호출은 7초 제한이 있어 짧게, 화면은 서버 콜드 스타트를 기다릴 수 있게 길게 */
+    private val readTimeoutMs: Int = 4_000,
+) {
 
     suspend fun nearby(at: LatLng, radiusKm: Double = 5.0, limit: Int = 20, etaMin: Double? = null): List<StationView> {
         val q = "lat=${at.lat}&lng=${at.lng}&radiusKm=$radiusKm&limit=$limit" + (etaMin?.let { "&etaMin=${it.toInt()}" } ?: "")
@@ -66,7 +70,7 @@ class ChargerApi(private val baseUrl: String = BuildConfig.SERVER_URL) {
         try {
             conn.requestMethod = method
             conn.connectTimeout = 3_000
-            conn.readTimeout = 4_000
+            conn.readTimeout = readTimeoutMs
             if (json != null) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")

@@ -44,8 +44,16 @@ export const syncStatus = onSchedule(
   { schedule: "every 5 minutes", timeZone: "Asia/Seoul", timeoutSeconds: 300, memory: "1GiB" },
   async () => {
     await syncStatusNow();
+    // 조회 API 인스턴스를 깨워 두고 캐시를 새 데이터로 미리 채운다 (Gleo 7초 제한 대비 콜드 스타트 회피)
+    try {
+      await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(30_000) });
+    } catch (e) {
+      logger.warn("api warm-up 실패", e);
+    }
   },
 );
+
+const API_URL = "https://asia-northeast3-h-y-server.cloudfunctions.net/api";
 
 // 인스턴스 메모리 캐시 (60초)
 let cache: { at: number; stations: StationMap; statuses: StatusMap; occ: OccupancyMap } | null = null;

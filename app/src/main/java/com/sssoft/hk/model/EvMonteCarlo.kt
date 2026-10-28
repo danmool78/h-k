@@ -129,29 +129,28 @@ class EvMonteCarlo(
     ): ChargePlanResult {
         val p0 = arrivalProbability(v, soc0, totalKm, tempC, ascentPerKm * totalKm).probability
         if (p0 >= targetP) return ChargePlanResult.NoChargeNeeded(p0)
+        return bestStopPerCharger(v, soc0, totalKm, tempC, ascentPerKm, speedKmh, chargers, targetP)
+            .minByOrNull(::score) ?: ChargePlanResult.Infeasible(p0)
+    }
 
-        var best: ChargePlanResult.Plan? = null
-        var bestScore = Double.MAX_VALUE
-        for (c in chargers) {
-            for (step in 0..12) {
-                val tgt = 0.30 + step * 0.05
-                val (p, t) = tripWithStop(v, soc0, totalKm, tempC, ascentPerKm, speedKmh, c, tgt)
-                if (p < targetP) continue
-                t.sort()
-                val t50 = percentile(t, 50.0)
-                val t90 = percentile(t, 90.0)
-                // 비용: 중앙값 + 지연 리스크(P90) 가중
-                val score = 0.6 * t50 + 0.4 * t90
-                if (score < bestScore) {
-                    bestScore = score
-                    best = ChargePlanResult.Plan(c.name, tgt, p, t50, t90)
-                }
-            }
-        }
-        return best ?: ChargePlanResult.Infeasible(p0)
+    /** 충전소마다 목표 확률을 만족하는 최선의 충전 목표 SOC. 만족 못 하는 충전소는 빠진다. */
+    fun bestStopPerCharger(
+        v: EvSpec, soc0: Double, totalKm: Double, tempC: Double, ascentPerKm: Double,
+        speedKmh: Double, chargers: List<Charger>, targetP: Double = 0.95,
+    ): List<ChargePlanResult.Plan> = chargers.mapNotNull { c ->
+        (0..12).mapNotNull { step ->
+            val tgt = 0.30 + step * 0.05
+            val (p, t) = tripWithStop(v, soc0, totalKm, tempC, ascentPerKm, speedKmh, c, tgt)
+            if (p < targetP) return@mapNotNull null
+            t.sort()
+            ChargePlanResult.Plan(c.name, tgt, p, percentile(t, 50.0), percentile(t, 90.0))
+        }.minByOrNull(::score)
     }
 
     companion object {
+        /** 비용: 중앙값 + 지연 리스크(P90) 가중 */
+        fun score(p: ChargePlanResult.Plan) = 0.6 * p.minutesP50 + 0.4 * p.minutesP90
+
         /** numpy.percentile 기본(linear) 방식. [sorted]는 정렬되어 있어야 함. */
         fun percentile(sorted: DoubleArray, q: Double): Double {
             val pos = (sorted.size - 1) * q / 100.0

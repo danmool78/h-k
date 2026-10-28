@@ -1,91 +1,120 @@
 package com.sssoft.hk.ui
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sssoft.hk.model.ArrivalResult
-import com.sssoft.hk.model.ChargePlanResult
-import com.sssoft.hk.model.Charger
-import com.sssoft.hk.model.EvMonteCarlo
-import com.sssoft.hk.model.EvSpec
+import com.sssoft.hk.navi.Destination
+import com.sssoft.hk.navi.LatLng
+import com.sssoft.hk.navi.NaviSource
+import com.sssoft.hk.server.ChargerApi
+import com.sssoft.hk.trip.ChargingRecommendation
+import com.sssoft.hk.trip.TripConditions
+import com.sssoft.hk.trip.TripPlanner
 import com.sssoft.hk.vehicle.BatteryState
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 data class TripInput(
-    val distanceKm: Float = 400f,
-    val tempC: Float = -3f,
-    val ascentPerKm: Float = 6f,
-    val speedKmh: Float = 95f,
-    val manualSocPercent: Float = 90f,
+    val tempC: Float = 10f,
+    /** 차량 배터리를 못 읽을 때 쓰는 값 */
+    val manualSocPercent: Float = 80f,
 )
+
+enum class RouteSource { NAVI, DEMO }
 
 data class RangeUiState(
     val input: TripInput = TripInput(),
     val battery: BatteryState = BatteryState(),
+    val source: RouteSource? = null,
+    val destination: Destination? = null,
     val arrival: ArrivalResult? = null,
-    val plan: ChargePlanResult? = null,
-    val computing: Boolean = false,
+    val recommendation: ChargingRecommendation? = null,
+    val loading: Boolean = false,
+    val error: String? = null,
+    val waypointAdded: Boolean = false,
 ) {
-    /** 차량에서 SOC를 받으면 그 값을, 아니면 수동 입력값을 사용. */
-    val socPercent: Float get() = battery.socPercent?.toFloat() ?: input.manualSocPercent
+    val socPercent: Int get() = battery.socPercent ?: input.manualSocPercent.toInt()
 }
 
-class RangeViewModel : ViewModel() {
+class RangeViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _ui = MutableStateFlow(RangeUiState())
     val ui: StateFlow<RangeUiState> = _ui.asStateFlow()
 
+    private val planner = TripPlanner(ChargerApi(readTimeoutMs = 15_000))
+    private val navi = NaviSource(app)
+    private var naviConnected: Boolean? = null
     private var job: Job? = null
 
     init {
-        recompute()
+        refresh()
     }
 
     fun onInput(input: TripInput) {
         _ui.update { it.copy(input = input) }
-        recompute()
+        refresh(debounceMs = 400)
     }
 
     fun onBattery(battery: BatteryState) {
         val prev = _ui.value.battery
         _ui.update { it.copy(battery = battery) }
-        if (prev.socPercent != battery.socPercent || prev.capacityKwh != battery.capacityKwh) recompute()
+        if (prev.socPercent != battery.socPercent || prev.capacityKwh != battery.capacityKwh) refresh(debounceMs = 400)
     }
 
-    private fun recompute() {
+    fun refresh(debounceMs: Long = 0) {
         job?.cancel()
-        val s = _ui.value
-        _ui.update { it.copy(computing = true) }
         job = viewModelScope.launch {
-            val (arrival, plan) = withContext(Dispatchers.Default) { simulate(s) }
-            _ui.update { it.copy(arrival = arrival, plan = plan, computing = false) }
+            if (debounceMs > 0) delay(debounceMs)
+            _ui.update { it.copy(loading = true, error = null) }
+            try {
+                val s = _ui.value
+                val cond = TripConditions(s.socPercent, s.battery.capacityKwh, s.input.tempC.toDouble())
+
+                if (naviConnected == null) naviConnected = navi.connect()
+                val naviDest = if (naviConnected == true) navi.destination() else null
+                val (source, dest, origin) = if (naviDest != null) {
+                    Triple(RouteSource.NAVI, naviDest, navi.currentLocation())
+                } else {
+                    Triple(RouteSource.DEMO, DEMO_DEST, DEMO_ORIGIN)
+                }
+                val trip = if (source == RouteSource.NAVI) navi.trip(dest) else null
+
+                val arrival = planner.arrival(cond, dest.remainKm)
+                val rec = planner.recommend(cond, origin, dest, trip)
+                _ui.update {
+                    it.copy(
+                        source = source, destination = dest, arrival = arrival, recommendation = rec,
+                        loading = false, waypointAdded = false,
+                    )
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _ui.update { it.copy(loading = false, error = "충전소 정보를 가져오지 못했습니다: ${e.message}") }
+            }
         }
     }
 
-    private fun simulate(s: RangeUiState): Pair<ArrivalResult, ChargePlanResult> {
-        val i = s.input
-        val spec = s.battery.capacityKwh?.let { EvSpec(batteryKwh = it) } ?: EvSpec()
-        val soc = s.socPercent / 100.0
-        val dist = i.distanceKm.toDouble()
-        val mc = EvMonteCarlo()
-        val arrival = mc.arrivalProbability(spec, soc, dist, i.tempC.toDouble(), i.ascentPerKm * dist)
-        val plan = mc.planCharging(
-            spec, soc, dist, i.tempC.toDouble(), i.ascentPerKm.toDouble(), i.speedKmh.toDouble(),
-            sampleChargers(dist),
-        )
-        return arrival to plan
+    fun addWaypoint() {
+        val s = _ui.value
+        val best = s.recommendation?.best ?: return
+        if (s.source != RouteSource.NAVI) return
+        navi.addChargingWaypoint(best.station.name, best.station.location)
+        _ui.update { it.copy(waypointAdded = true) }
     }
 
-    /** 실제 충전소 API 연동 전까지 쓰는 경로상 샘플 충전소. */
-    private fun sampleChargers(totalKm: Double) = listOf(
-        Charger("A휴게소", atKm = totalKm * 0.375, powerKw = 120.0, waitMeanMin = 4.0),
-        Charger("B휴게소", atKm = totalKm * 0.55, powerKw = 200.0, waitMeanMin = 12.0),
-        Charger("C휴게소", atKm = totalKm * 0.70, powerKw = 100.0, waitMeanMin = 2.0),
-    )
+    override fun onCleared() {
+        navi.release()
+    }
+
+    companion object {
+        /** 내비 목적지가 없을 때 쓰는 데모 경로 (충전소 데이터는 실제 서버 값) */
+        val DEMO_ORIGIN = LatLng(37.5665, 126.9780)            // 서울시청
+        val DEMO_DEST = Destination("부산 (데모 경로)", LatLng(35.1796, 129.0756), remainKm = 400.0, remainMin = 270.0)
+    }
 }

@@ -57,3 +57,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.json)   // 단위 테스트에서 android org.json 스텁 대체
 }
+
+tasks.withType<Test>().configureEach {
+    jvmArgs("-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8")
+    environment("LIVE", System.getenv("LIVE") ?: "")
+}

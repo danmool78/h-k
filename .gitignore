@@ -48,3 +48,7 @@ xcuserdata/
 server/functions/lib/
 .firebase/
 firebase-debug.log
+
+# 키 파일
+Pleos.*.txt
+*.secret.txt

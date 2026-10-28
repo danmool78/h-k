@@ -1,9 +1,7 @@
 package com.sssoft.hk.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,139 +10,205 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sssoft.hk.model.ChargePlanResult
+import com.sssoft.hk.trip.ChargingRecommendation
+import com.sssoft.hk.trip.StopOption
 import kotlin.math.roundToInt
 
-private val Safe = Color(0xFF4CAF50)
+private val Good = Color(0xFF4CAF50)
 private val Caution = Color(0xFFFFB300)
-private val Danger = Color(0xFFE53935)
+private val Bad = Color(0xFFE53935)
 
-private fun gaugeColor(p: Double) = when {
-    p >= 0.95 -> Safe
-    p >= 0.70 -> Caution
-    else -> Danger
+private fun waitColor(min: Double) = when {
+    min < 5 -> Good
+    min < 15 -> Caution
+    else -> Bad
 }
 
 @Composable
 fun RangeScreen(viewModel: RangeViewModel) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
-    Row(
+    val onBg = MaterialTheme.colorScheme.onBackground
+    Column(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .padding(32.dp),
-        horizontalArrangement = Arrangement.spacedBy(32.dp),
+            .padding(horizontal = 32.dp, vertical = 24.dp),
     ) {
-        Column(
-            Modifier.weight(1f).fillMaxHeight(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            ProbabilityGauge(ui.arrival?.probability)
-            Spacer(Modifier.height(16.dp))
-            ui.arrival?.let { a ->
-                Text(
-                    "도착 시 배터리  P10 ${pct(a.socP10)} · P50 ${pct(a.socP50)} · P90 ${pct(a.socP90)}",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
+        Header(ui, onRefresh = viewModel::refresh)
+        if (ui.loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+        else Spacer(Modifier.height(12.dp))
+        ui.error?.let { Text(it, color = Bad, modifier = Modifier.padding(vertical = 8.dp)) }
+
+        Row(Modifier.fillMaxSize().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            Column(Modifier.weight(1.2f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                RecommendationCard(ui, onAddWaypoint = viewModel::addWaypoint)
+                ArrivalLine(ui)
             }
-            Spacer(Modifier.height(24.dp))
-            PlanCard(ui.plan)
-        }
-        Column(
-            Modifier.weight(1f).fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
-        ) {
-            BatteryInfo(ui)
-            val i = ui.input
-            LabeledSlider("목적지까지", "${i.distanceKm.roundToInt()} km", i.distanceKm, 10f..600f) {
-                viewModel.onInput(i.copy(distanceKm = it))
-            }
-            LabeledSlider("외부 기온", "${i.tempC.roundToInt()} °C", i.tempC, -20f..40f) {
-                viewModel.onInput(i.copy(tempC = it))
-            }
-            LabeledSlider("오르막 (누적)", "${i.ascentPerKm.roundToInt()} m/km", i.ascentPerKm, 0f..30f) {
-                viewModel.onInput(i.copy(ascentPerKm = it))
-            }
-            if (ui.battery.socPercent == null) {
-                LabeledSlider("배터리 (수동)", "${i.manualSocPercent.roundToInt()} %", i.manualSocPercent, 5f..100f) {
-                    viewModel.onInput(i.copy(manualSocPercent = it))
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                Text("후보 충전소 비교", style = MaterialTheme.typography.titleMedium, color = onBg)
+                Spacer(Modifier.height(8.dp))
+                val options = ui.recommendation?.options.orEmpty()
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(options, key = { it.station.id }) { o ->
+                        OptionRow(o, isBest = o == options.first(), isBaseline = o == ui.recommendation?.baseline)
+                    }
                 }
+                if (ui.source == RouteSource.DEMO) DemoInputs(ui, viewModel::onInput)
             }
         }
     }
 }
 
 @Composable
-private fun ProbabilityGauge(probability: Double?) {
-    val color = probability?.let(::gaugeColor) ?: Color.Gray
-    val track = MaterialTheme.colorScheme.surfaceVariant
-    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(280.dp)) {
-        Canvas(Modifier.fillMaxSize()) {
-            val stroke = 28.dp.toPx()
-            val inset = stroke / 2
-            val arcSize = Size(size.width - stroke, size.height - stroke)
-            drawArc(track, 135f, 270f, false, Offset(inset, inset), arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
-            if (probability != null) {
-                drawArc(color, 135f, 270f * probability.toFloat(), false, Offset(inset, inset), arcSize,
-                    style = Stroke(stroke, cap = StrokeCap.Round))
-            }
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+private fun Header(ui: RangeUiState, onRefresh: () -> Unit) {
+    val onBg = MaterialTheme.colorScheme.onBackground
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
             Text(
-                probability?.let { "${(it * 100).roundToInt()}%" } ?: "—",
-                fontSize = 72.sp, fontWeight = FontWeight.Bold, color = color,
+                ui.destination?.let { "${it.name} · ${it.remainKm.roundToInt()}km" } ?: "목적지 확인 중…",
+                fontSize = 26.sp, fontWeight = FontWeight.Bold, color = onBg,
             )
-            Text("도착 확률", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
+            val battery = if (ui.battery.connected) "차량 배터리 ${ui.socPercent}%" else "배터리 ${ui.socPercent}% (수동)"
+            val src = if (ui.source == RouteSource.DEMO) " · 내비 목적지 없음, 데모 경로" else ""
+            Text("$battery · 기온 ${ui.input.tempC.roundToInt()}°C$src", color = onBg.copy(alpha = 0.7f))
+        }
+        OutlinedButton(onClick = onRefresh, enabled = !ui.loading) { Text("새로고침") }
+    }
+}
+
+@Composable
+private fun RecommendationCard(ui: RangeUiState, onAddWaypoint: () -> Unit) {
+    val rec = ui.recommendation
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(28.dp)) {
+            when (val plan = rec?.plan) {
+                null -> Text("계산 중…", fontSize = 24.sp)
+                is ChargePlanResult.NoChargeNeeded -> {
+                    Text("충전 없이 도착할 수 있어요", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Good)
+                    Text("도착 확률 ${pct(plan.probability)}", fontSize = 20.sp)
+                }
+                is ChargePlanResult.Infeasible -> {
+                    Text("한 번 충전으로는 안전하게 가기 어려워요", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Bad)
+                    Text("확인한 충전소 ${rec.checkedStations}곳", fontSize = 18.sp)
+                }
+                is ChargePlanResult.Plan -> PlanBody(rec, plan, ui, onAddWaypoint)
+            }
         }
     }
 }
 
 @Composable
-private fun PlanCard(plan: ChargePlanResult?) {
-    val text = when (plan) {
-        null -> "계산 중…"
-        is ChargePlanResult.NoChargeNeeded -> "충전 없이 도착할 수 있습니다."
-        is ChargePlanResult.Plan ->
-            "${plan.charger}에서 ${pct(plan.chargeToSoc)}까지 충전\n" +
-                "도착 확률 ${pct(plan.probability)} · 총 ${plan.minutesP50.roundToInt()}분 (늦으면 ${plan.minutesP90.roundToInt()}분)"
-        is ChargePlanResult.Infeasible -> "한 번 충전으로는 안전하게 도착하기 어렵습니다. 충전소 후보를 늘려야 합니다."
+private fun PlanBody(rec: ChargingRecommendation, plan: ChargePlanResult.Plan, ui: RangeUiState, onAddWaypoint: () -> Unit) {
+    val best = rec.best ?: return
+    val s = best.station
+    Text("추천 충전소", style = MaterialTheme.typography.labelLarge)
+    Text(s.name, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(12.dp))
+    Row(verticalAlignment = Alignment.Bottom) {
+        Text("도착 시 대기 ", fontSize = 20.sp)
+        Text("약 ${best.waitMin.roundToInt()}분", fontSize = 44.sp, fontWeight = FontWeight.Bold, color = waitColor(best.waitMin))
     }
-    Card(Modifier.fillMaxWidth()) {
-        Text(text, Modifier.padding(20.dp), style = MaterialTheme.typography.titleLarge)
+    Text(
+        "지금 빈 충전기 ${s.available}/${s.inService} · 최대 ${s.maxKw.roundToInt()}kW · ${pct(plan.chargeToSoc)}까지 충전",
+        fontSize = 18.sp,
+    )
+    Spacer(Modifier.height(16.dp))
+
+    val saved = rec.savedMin?.roundToInt()
+    val baseName = rec.baseline?.let { if (it.naviPick) "내비 추천" else "가장 빠른 충전기" } ?: "내비 추천"
+    val (badge, color) = when {
+        saved != null && saved > 0 -> "$baseName(${rec.baseline!!.station.name})보다 ${saved}분 빨라요" to Good
+        else -> "$baseName 충전소가 지금 가장 빨라요" to MaterialTheme.colorScheme.primary
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.15f))) {
+        Text(badge, Modifier.padding(horizontal = 16.dp, vertical = 10.dp), fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = color)
+    }
+    Spacer(Modifier.height(16.dp))
+    Text(
+        "총 소요 약 ${plan.minutesP50.roundToInt()}분 (늦어지면 ${plan.minutesP90.roundToInt()}분) · 도착 확률 ${pct(plan.probability)}",
+        fontSize = 18.sp,
+    )
+    if (ui.source == RouteSource.NAVI) {
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onAddWaypoint, enabled = !ui.waypointAdded) {
+            Text(if (ui.waypointAdded) "경유지에 추가됨" else "경유지로 추가", fontSize = 18.sp)
+        }
     }
 }
 
 @Composable
-private fun BatteryInfo(ui: RangeUiState) {
-    val b = ui.battery
-    val line = if (b.connected) {
-        "차량 배터리 ${b.socPercent}%" +
-            (b.capacityKwh?.let { " · 용량 ${it.roundToInt()} kWh" } ?: "") +
-            (b.rangeRemaining?.let { " · 계기판 주행가능 ${it.roundToInt()}" } ?: "")
-    } else {
-        "차량 연결 안 됨 — 수동 입력 사용" + (b.error?.let { "\n$it" } ?: "")
+private fun ArrivalLine(ui: RangeUiState) {
+    val a = ui.arrival ?: return
+    Text(
+        "충전 없이 갈 확률 ${pct(a.probability)} · 도착 시 배터리 약 ${pct(a.socP50.coerceAtLeast(0.0))}",
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), fontSize = 16.sp,
+    )
+}
+
+@Composable
+private fun OptionRow(o: StopOption, isBest: Boolean, isBaseline: Boolean) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(o.station.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                if (isBest) Tag("추천", Good)
+                if (isBaseline) Tag(if (o.naviPick) "내비 추천" else "최대 출력", MaterialTheme.colorScheme.primary)
+            }
+            Text(
+                "${o.atKm.roundToInt()}km 지점 · 대기 ${o.waitMin.roundToInt()}분 · 총 ${o.plan.minutesP50.roundToInt()}분 · " +
+                    "빈 ${o.station.available}/${o.station.inService} · ${o.station.maxKw.roundToInt()}kW",
+                fontSize = 14.sp,
+            )
+        }
     }
-    Text(line, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
+}
+
+@Composable
+private fun Tag(text: String, color: Color) {
+    Text(
+        text,
+        Modifier
+            .padding(start = 6.dp)
+            .background(color.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+    )
+}
+
+@Composable
+private fun DemoInputs(ui: RangeUiState, onInput: (TripInput) -> Unit) {
+    val i = ui.input
+    val onBg = MaterialTheme.colorScheme.onBackground
+    Column(Modifier.padding(top = 12.dp)) {
+        Text("데모 조건", style = MaterialTheme.typography.labelLarge, color = onBg)
+        LabeledSlider("외부 기온", "${i.tempC.roundToInt()} °C", i.tempC, -20f..40f) { onInput(i.copy(tempC = it)) }
+        if (!ui.battery.connected) {
+            LabeledSlider("배터리", "${i.manualSocPercent.roundToInt()} %", i.manualSocPercent, 10f..100f) {
+                onInput(i.copy(manualSocPercent = it))
+            }
+        }
+    }
 }
 
 @Composable
@@ -152,12 +216,11 @@ private fun LabeledSlider(
     label: String, valueText: String, value: Float, range: ClosedFloatingPointRange<Float>,
     onChange: (Float) -> Unit,
 ) {
-    Column {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-            Text(valueText, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-        }
-        Slider(value = value, onValueChange = onChange, valueRange = range)
+    val onBg = MaterialTheme.colorScheme.onBackground
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(0.3f), color = onBg)
+        Slider(value = value, onValueChange = onChange, valueRange = range, modifier = Modifier.weight(0.5f))
+        Text(valueText, Modifier.weight(0.2f), color = onBg)
     }
 }
 

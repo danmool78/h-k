@@ -98,22 +98,24 @@ class GleoReceiver : BroadcastReceiver() {
             )
             is ChargePlanResult.Infeasible -> GleoResult.success(
                 RECOMMEND_CHARGING_STOP,
-                "No single charging stop on this route gives a safe arrival. ${r.candidates.size} chargers were checked.",
-                "checkedChargers" to r.candidates.size,
+                "No single charging stop on this route gives a safe arrival. ${r.checkedStations} charging stations were checked.",
+                "checkedStations" to r.checkedStations,
             )
             is ChargePlanResult.Plan -> {
-                val s = r.station!!
+                val best = r.best!!
+                val s = best.station
                 if (addAsWaypoint) navi.addChargingWaypoint(s.name, s.location)
-                val wait = TripPlanner.expectedWaitMin(s, 0.0).roundToInt()
+                val wait = best.waitMin.roundToInt()
+                val saved = r.savedMin?.roundToInt()?.takeIf { it > 0 }
+                val savedText = saved?.let { " This saves about $it minutes compared with the navigation's suggestion." } ?: ""
                 val added = if (addAsWaypoint) " It has been added as a waypoint." else ""
                 GleoResult.success(
                     RECOMMEND_CHARGING_STOP,
                     "Stop at ${s.name} and charge to ${pct(plan.chargeToSoc)} percent. " +
-                        "${s.available} of ${s.inService} fast chargers are free now. " +
-                        "Arrival chance becomes ${pct(plan.probability)} percent and the trip takes about ${plan.minutesP50.roundToInt()} minutes.$added",
+                        "Expected waiting time on arrival is about $wait minutes, and the trip takes about ${plan.minutesP50.roundToInt()} minutes.$savedText$added",
                     "charger" to s.name, "chargeToPercent" to pct(plan.chargeToSoc),
-                    "freeChargers" to s.available, "totalChargers" to s.inService, "maxPowerKw" to s.maxKw.roundToInt(),
-                    "expectedWaitMin" to wait, "arrivalChancePercent" to pct(plan.probability),
+                    "freeChargersNow" to s.available, "totalChargers" to s.inService, "maxPowerKw" to s.maxKw.roundToInt(),
+                    "expectedWaitMin" to wait, "savedMinutes" to (saved ?: 0), "arrivalChancePercent" to pct(plan.probability),
                     "tripMinutes" to plan.minutesP50.roundToInt(), "addedAsWaypoint" to addAsWaypoint,
                 )
             }

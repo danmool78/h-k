@@ -2,6 +2,7 @@ package com.sssoft.hk.navi
 
 import ai.pleos.playground.navi.constants.NaviErrorCode
 import ai.pleos.playground.navi.constants.RoutePointPoiType
+import ai.pleos.playground.navi.constants.RoutePointSettingType
 import ai.pleos.playground.navi.constants.WaypointIndex
 import ai.pleos.playground.navi.data.CurrentLocationInfo
 import ai.pleos.playground.navi.data.DestinationInfo
@@ -23,8 +24,8 @@ data class Destination(
     val remainMin: Double,
 )
 
-/** 내비가 경로상에 둔 충전소. [ratioOnRoute] 는 출발 0 ~ 도착 1. */
-data class RouteCharger(val name: String, val location: LatLng, val ratioOnRoute: Double)
+/** 내비가 경로상에 둔 충전소. [ratioOnRoute] 는 출발 0 ~ 도착 1. [naviPick] = 내비가 자동으로 넣은 충전 경유지. */
+data class RouteCharger(val name: String, val location: LatLng, val ratioOnRoute: Double, val naviPick: Boolean)
 
 data class Trip(
     val distanceKm: Double,
@@ -118,7 +119,10 @@ class NaviSource(context: Context) {
             .filter { it.poiType == RoutePointPoiType.EV_CHARGING }
             .map {
                 val r = it.ratioOnRoute
-                RouteCharger(it.poiName, LatLng(it.latitude, it.longitude), if (r > 1.0) r / 100.0 else r)
+                RouteCharger(
+                    it.poiName, LatLng(it.latitude, it.longitude), if (r > 1.0) r / 100.0 else r,
+                    naviPick = it.settingType == RoutePointSettingType.AUTO,
+                )
             }
         return Trip(info.distance / 1000.0, info.eta / 60.0, info.estimatedSocAtDest, chargers)
     }
