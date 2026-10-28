@@ -171,8 +171,13 @@ export class MonteCarlo {
       remain[i] = soc0 - kwh / this.cap[i]; mins[i] = m;
     }
     const p = remain.filter((x) => x >= PROFILE.reserveSoc).length / this.n;
+    // 시각화용 시뮬레이션 결과 (정렬 전 원본: 같은 i 가 같은 시나리오)
+    const samples = { dest: Float64Array.from(remain), total: Float64Array.from(mins) };
     remain.sort(); mins.sort();
-    return { probability: p, socP10: pct(remain, 10), socP50: pct(remain, 50), socP90: pct(remain, 90), minutesP50: pct(mins, 50), minutesP90: pct(mins, 90) };
+    return {
+      probability: p, socP10: pct(remain, 10), socP50: pct(remain, 50), socP90: pct(remain, 90),
+      minutesP10: pct(mins, 10), minutesP50: pct(mins, 50), minutesP90: pct(mins, 90), samples, n: this.n,
+    };
   }
 
   /** 충전소 하나의 최선 충전 목표. 목표 확률 미달이면 null */
@@ -206,6 +211,9 @@ export class MonteCarlo {
       const ts = Float64Array.from(total).sort(), cs = Float64Array.from(chargeMin).sort();
       const ds = Float64Array.from(destSoc).sort();
       const plan = {
+        minutesP10: pct(ts, 10), n,
+        // 시각화용 시뮬레이션 결과 (정렬 전 원본)
+        samples: { socAt: Float64Array.from(socAt), dest: Float64Array.from(destSoc), total: Float64Array.from(total), arrivalReserve },
         charger: c.id, chargeToSoc: tgt, probability: p, minutesP50: pct(ts, 50), minutesP90: pct(ts, 90), chargeMinutesP50: pct(cs, 50),
         socAtChargerP10: pct(socAtSorted, 10), socAtChargerP50: pct(socAtSorted, 50), socAtChargerP90: pct(socAtSorted, 90),
         destSocP10: pct(ds, 10), destSocP50: pct(ds, 50), destSocP90: pct(ds, 90),

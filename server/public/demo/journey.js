@@ -29,6 +29,17 @@ export function journeySvg(j) {
   parts.push(`<text x="${W - R}" y="${y(j.reserve) - 6}" fill="${C.reserve}" font-size="11" text-anchor="end">도착 최소 ${P(j.reserve)}</text>`);
 
   const s = j.stop;
+  // 시뮬레이션 중 일부를 옅은 선으로: "여러 번 달려본 결과"가 띠가 된다는 걸 보여줌
+  if (j.samples) {
+    const n = j.samples.dest.length, step = Math.max(1, Math.floor(n / 40));
+    for (let i = 0; i < n; i += step) {
+      const d = j.samples.dest[i];
+      const pts = s
+        ? `${x(0)},${y(j.soc0)} ${x(s.atKm)},${y(j.samples.socAt[i])} ${x(s.atKm)},${y(Math.max(s.chargeTo, j.samples.socAt[i]))} ${x(j.totalKm)},${y(d)}`
+        : `${x(0)},${y(j.soc0)} ${x(j.totalKm)},${y(d)}`;
+      parts.push(`<polyline fill="none" stroke="${d < j.reserve ? "#e53935" : "#9aa3b5"}" stroke-opacity=".22" stroke-width="1" points="${pts}"/>`);
+    }
+  }
   if (s) {
     // 예측 범위 띠 (충전 전 / 충전 후)
     parts.push(`<polygon fill="${C.band}" points="${x(0)},${y(j.soc0)} ${x(s.atKm)},${y(s.arriveP90)} ${x(s.atKm)},${y(s.arriveP10)}"/>`);

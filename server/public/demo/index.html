@@ -43,6 +43,21 @@
   .batt-body span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:15px; text-shadow:0 1px 2px #000; }
   .batt-sub { font-size:11px; color:var(--muted); margin-top:3px; }
   .batt-arrow { color:var(--muted); font-size:18px; }
+  .luck-row { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0 6px; }
+  .luck { border:1px solid; border-radius:12px; padding:10px 12px; background:#11141a; }
+  .luck-label { font-size:13px; font-weight:700; } .luck-time { font-size:24px; font-weight:800; margin-top:2px; }
+  .luck-soc { font-size:14px; } .luck-note { font-size:11px; color:var(--muted); margin-top:4px; }
+  .sim-head { display:flex; align-items:baseline; gap:8px; } .sim-count { font-size:36px; color:var(--accent); }
+  #simCard h4 { margin:16px 0 4px; font-size:14px; color:var(--muted); font-weight:600; }
+  .sim-prob { margin-top:10px; font-size:16px; } .sim-prob b { font-size:26px; }
+  .bar { transform-origin:bottom; transform-box:fill-box; animation:grow .6s ease-out both; }
+  @keyframes grow { from { transform:scaleY(0); } to { transform:scaleY(1); } }
+  details.how summary { cursor:pointer; list-style:none; } details.how summary::-webkit-details-marker { display:none; }
+  details.how summary::before { content:"▸ "; color:var(--accent); } details.how[open] summary::before { content:"▾ "; }
+  .how-body { line-height:1.65; font-size:15px; } .how-body p { margin:12px 0; }
+  .how-table { width:100%; border-collapse:collapse; font-size:13px; margin:8px 0; }
+  .how-table th, .how-table td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:center; }
+  @media (max-width:600px) { .luck-row { grid-template-columns:1fr; } }
   .learn { display:grid; grid-template-columns: 120px 1fr; gap:18px; align-items:center; }
   .ring { position:relative; width:120px; height:120px; }
   .ring b { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:26px; }
@@ -104,6 +119,30 @@
     <div class="right">
       <section class="card rec" id="rec"><span class="muted">계산 중…</span></section>
       <section class="card" id="learnCard"></section>
+      <section class="card" id="simCard" hidden></section>
+      <details class="card how">
+        <summary><b>어떻게 계산하나요?</b> <span class="muted small">— 같은 여행을 수천 번 미리 달려보기 (몬테카를로)</span></summary>
+        <div class="how-body">
+          <p><b>왜 숫자 하나로는 부족할까요?</b> 부산까지 배터리를 얼마나 쓸지는 그날그날 다릅니다. 바람, 정체, 내 운전, 기온,
+          그리고 휴게소에 도착했을 때 앞 차가 충전 중인지까지. 평균으로 한 번만 계산하면 "35% 남음" 같은 숫자 하나가 나오지만,
+          운이 나쁜 날엔 25%일 수도 있다는 건 알 수 없습니다.</p>
+          <p><b>그래서 컴퓨터 안에서 같은 여행을 수천 번 미리 달려봅니다.</b> 매번 변수들을 "그럴 법한 범위 안에서" 조금씩 바꿉니다.</p>
+          <table class="how-table">
+            <tr><th>시뮬레이션</th><th>정체</th><th>운전</th><th>휴게소 대기</th><th>도착 배터리</th><th>도착</th></tr>
+            <tr><td>1번째</td><td>없음</td><td>평소대로</td><td>0분</td><td>38%</td><td>21:35</td></tr>
+            <tr><td>2번째</td><td>약간</td><td>빠르게</td><td>0분</td><td>33%</td><td>21:30</td></tr>
+            <tr><td>3번째</td><td>심함</td><td>평소대로</td><td>12분</td><td>36%</td><td>22:05</td></tr>
+            <tr><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td></tr>
+            <tr><td>2,000번째</td><td>없음</td><td>천천히</td><td>3분</td><td>41%</td><td>21:48</td></tr>
+          </table>
+          <p>결과를 모으면 <b>"보통이면 21:40, 37% 남음 · 운이 나빠도 21:58, 31%"</b>처럼 <b>얼마나 틀릴 수 있는지</b>까지 알 수 있습니다.</p>
+          <p><b>그다음 충전소·충전량마다 이 시뮬레이션을 다 돌려서</b>, 운이 나빠도 도착 최소 배터리를 지키는 계획 중 <b>가장 빨리 도착하는 것</b>을 고릅니다.
+          예) 칠곡에서 60%까지: 운 나쁘면 24% → 탈락 · 칠곡에서 70%까지: 운 나빠도 31%, 5시간 10분 → 선택</p>
+          <p><b>쓸수록 정확해집니다.</b> 차량과 운전 습관을 학습하면 "그럴 법한 범위"가 좁아져서, 같은 안전 기준으로도 덜 충전하고 더 빨리 갈 수 있습니다.
+          왼쪽의 <b>가상 학습 주행 수</b>를 올려 보면 아래 그래프의 띠와 분포가 좁아지는 걸 볼 수 있습니다.</p>
+          <p class="muted small">기준이 되는 주행 시간·소모는 실제 앱에서는 차량 내비의 실시간 정보(교통·사고 반영)를 쓰고, 우리는 그 위에 불확실성과 충전소 대기를 더합니다.</p>
+        </div>
+      </details>
       <section class="card" id="journeyCard" hidden>
         <h3 style="margin:0 0 12px">배터리 여정</h3>
         <div id="battRow"></div>
@@ -126,6 +165,7 @@
 <script type="module">
 import { learningProgress, recommend, TYPE_LABEL } from "./model.js";
 import { batteryRow, journeySvg } from "./journey.js";
+import { animateCount, luckRow, simCard } from "./sim.js";
 
 const API = "https://asia-northeast3-h-y-server.cloudfunctions.net/api";
 const ORIGIN = { name: "서울시청", lat: 37.5665, lng: 126.9780 };
@@ -251,7 +291,7 @@ function render(dest, dep, res) {
   const rec = $("rec");
   if (res.plan.kind === "none") {
     rec.innerHTML = `<div class="name" style="color:var(--good)">충전 없이 도착할 수 있어요</div>` +
-      `<div>목적지 도착 시 배터리 약 ${P(res.direct.socP50)} (적게 남으면 ${P(res.direct.socP10)})</div>`;
+      luckRow(dep, res.direct.samples.total, res.direct.samples.dest);
   } else if (res.plan.kind === "infeasible") {
     rec.innerHTML = `<div class="name" style="color:var(--bad)">한 번 충전으로는 어려워요</div>` +
       `<div class="muted">경로상 충전소 ${res.checked}곳을 확인했지만, 도착 시 ${state.reserve}% 이상 남기는 계획이 없습니다. 출발 전 더 충전하거나 도착 시 최소 배터리를 낮춰 보세요.</div>`;
@@ -264,6 +304,7 @@ function render(dest, dep, res) {
     rec.innerHTML = `
       <div class="muted small">추천 충전소 · 출발 후 약 ${Math.round(best.atKm)}km${s.restArea ? " · 고속도로 휴게소" : ` · 경로에서 ${s.offRouteKm}km`}</div>
       <div class="name">${s.name}</div>
+      ${luckRow(dep, p.samples.total, p.samples.dest)}
       <div class="wait">도착 시 대기 <b style="color:${waitColor(best.waitMin)}">약 ${Math.round(best.waitMin)}분</b></div>
       <div>지금 빈 충전기 ${s.available}/${s.total - s.outOfService} · 최대 ${Math.round(s.maxKw)}kW</div>
       <div class="muted">${P(p.chargeToSoc)}까지 충전 · 약 ${Math.round(p.chargeMinutesP50)}분 · 목적지 도착 약 ${P(p.destSocP50)}</div>
@@ -316,8 +357,12 @@ function drawJourney(dest, res) {
     totalKm: res.route.distanceKm, soc0, reserve: state.reserve / 100, destName: dest.name,
     dest: { p10: res.direct.socP10, p50: res.direct.socP50, p90: res.direct.socP90 },
   };
+  let sim = { total: res.direct.samples.total, dest: res.direct.samples.dest, n: res.direct.n };
+  j.samples = { dest: res.direct.samples.dest };
   if (res.plan.kind === "plan") {
     const best = res.options[0], p = best.plan;
+    sim = { total: p.samples.total, dest: p.samples.dest, n: p.n };
+    j.samples = { socAt: p.samples.socAt, dest: p.samples.dest };
     j.stop = {
       atKm: best.atKm, name: best.station.name, chargeTo: p.chargeToSoc, chargeMin: p.chargeMinutesP50,
       arriveP10: p.socAtChargerP10, arriveP50: p.socAtChargerP50, arriveP90: p.socAtChargerP90,
@@ -332,6 +377,9 @@ function drawJourney(dest, res) {
   $("journeyCard").hidden = false;
   $("battRow").innerHTML = batteryRow(j);
   $("journey").innerHTML = journeySvg(j);
+  $("simCard").hidden = false;
+  $("simCard").innerHTML = simCard(sim, departMs(), state.reserve / 100);
+  animateCount($("simCard"));
 }
 
 labels();
