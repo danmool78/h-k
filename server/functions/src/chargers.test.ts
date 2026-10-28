@@ -44,6 +44,8 @@ test("현대·기아(DC콤보) 와 맞는 충전기만: 차데모·테슬라 전
   // 예전 저장분(connectors 없음)도 대표 규격에서 복원
   assert.deepEqual(connectorsOf({ standard: "CHADEMO" }), ["CHADEMO"]);
   assert.deepEqual(connectorsOf({ standard: "IEC_62196_T1_COMBO" }), ["CCS1"]);
+  assert.deepEqual(connectorsOf({ standard: "05" }), ["CHADEMO", "CCS1"]);
+  assert.deepEqual(connectorsOf({ standard: "01" }), ["CHADEMO"]);
 });
 
 test("한국 상태 코드 → 표준 상태", () => {

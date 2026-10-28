@@ -2,7 +2,7 @@
  * 충전소 스냅샷 조회 로직 (출처 무관, Firebase 의존 없음 → 단위 테스트 가능).
  * 형식은 providers/types.ts.
  */
-import { mapStatus, parseKst } from "./providers/krKeco";
+import { CONNECTORS as KR_CONNECTORS, mapStatus, parseKst } from "./providers/krKeco";
 import { Station, StationMap, StatusMap, StatusUpdate, statusKey } from "./providers/types";
 
 export type { Station, StationMap, StatusMap } from "./providers/types";
@@ -10,6 +10,7 @@ export type { Station, StationMap, StatusMap } from "./providers/types";
 /** 충전기가 지원하는 커넥터. 예전 저장분(connectors 없음)은 대표 규격에서 복원 */
 export function connectorsOf(e: { standard: string; connectors?: string[] }): string[] {
   if (e.connectors?.length) return e.connectors;
+  if (KR_CONNECTORS[e.standard]) return KR_CONNECTORS[e.standard];  // 이전 형식에서 옮겨 온 원본 타입 코드 ("04" 등)
   switch (e.standard) {
     case "CHADEMO": return ["CHADEMO"];            // 환경공단 01, 03 (DC콤보 없음)
     case "TESLA_S": return ["NACS"];                // 09
