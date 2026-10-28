@@ -49,3 +49,13 @@ test("우회 시간: 휴게소 1분, 일반은 2km 벗어나면 약 9분", () =>
   assert.equal(detourMin(0), 1);
   assert.ok(Math.abs(detourMin(2) - 9) < 0.01);
 });
+
+test("도로 모양 유지하며 좌표 줄이기: 직선은 양 끝만, 꺾인 점은 남김", async () => {
+  const { simplifyShape } = await import("./routing");
+  const straight: [number, number][] = Array.from({ length: 50 }, (_, i) => [37, 127 + i * 0.001]);
+  assert.equal(simplifyShape(straight, 10).length, 2);
+  const bent: [number, number][] = [...straight, ...Array.from({ length: 50 }, (_, i) => [37 + (i + 1) * 0.001, 127.049] as [number, number])];
+  const s = simplifyShape(bent, 10);
+  assert.equal(s.length, 3);
+  assert.deepEqual(s[1], [37, 127.049]);
+});

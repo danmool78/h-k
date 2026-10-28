@@ -54,8 +54,23 @@ data class RouteChargers(
     val path: List<LatLng>,
     val stations: List<RouteStation>,
 ) {
-    /** 경로 위 비율 [r] (0~1) 지점 */
-    fun pointAt(r: Double): LatLng = path[((path.size - 1) * r.coerceIn(0.0, 1.0)).toInt()]
+    /** 좌표 간격이 고르지 않으므로(굽은 구간이 촘촘) 누적 거리로 찾는다 */
+    private val cumKm: DoubleArray by lazy {
+        val c = DoubleArray(path.size)
+        for (i in 1 until path.size) {
+            val a = path[i - 1]
+            val b = path[i]
+            c[i] = c[i - 1] + kotlin.math.hypot((b.lat - a.lat) * 111.0, (b.lng - a.lng) * 111.0 * kotlin.math.cos(Math.toRadians(a.lat)))
+        }
+        c
+    }
+
+    /** 경로 위 거리 비율 [r] (0~1) 지점 */
+    fun pointAt(r: Double): LatLng {
+        val target = cumKm.last() * r.coerceIn(0.0, 1.0)
+        val i = cumKm.indexOfFirst { it >= target }.coerceAtLeast(0)
+        return path[i]
+    }
 }
 
 /** H-Y Server 충전소·날씨 조회 API. */

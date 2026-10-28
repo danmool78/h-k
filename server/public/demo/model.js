@@ -183,6 +183,16 @@ export class MonteCarlo {
   }
 }
 
+/** 경로 좌표에서 거리 비율 [r] (0~1) 지점. 좌표 간격이 고르지 않으므로 누적 거리로 찾는다. */
+function pointAtRatio(path, r) {
+  const d = (a, b) => Math.hypot((b[0] - a[0]) * 111, (b[1] - a[1]) * 111 * Math.cos(a[0] * Math.PI / 180));
+  const cum = [0];
+  for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + d(path[i - 1], path[i]));
+  const target = cum.at(-1) * Math.min(Math.max(r, 0), 1);
+  const i = Math.max(1, cum.findIndex((c) => c >= target));
+  return path[i];
+}
+
 /**
  * 추천 (TripPlanner.recommend 의 웹 판). 도로 경로(서버 /route/chargers)를 따라 있는 충전소로 계산한다.
  * 반환: { route, direct, plan, options, baseline, savedMin, checked, env, weather, candidates }
@@ -199,8 +209,7 @@ export async function recommend(api, inp) {
   if (inp.useForecast) {
     // 실제 경로 위 5개 지점의 "그 지점 도착 시각" 예보
     const pts = [0, 1, 2, 3, 4].map((i) => {
-      const idx = Math.round(i / 4 * (route.path.length - 1));
-      const [lat, lng] = route.path[idx];
+      const [lat, lng] = pointAtRatio(route.path, i / 4);
       return { lat, lng, etaMin: offsetMin + (i / 4) * totalMin };
     });
     try { const w = await api.routeWeather(pts); tempC = w.tempC; weather = w.kind; forecast = true; } catch (e) { console.warn(e); }

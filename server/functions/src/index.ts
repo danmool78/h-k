@@ -21,7 +21,7 @@ import { setGlobalOptions } from "firebase-functions/v2";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { StationMap, StationView, StatusMap, migrateStationKeys, nearby, stationView, upgradeLegacy } from "./chargers";
-import { detourMin, osrm, pickCandidates, routeCached, simplify, stationsAlongRoute } from "./routing";
+import { detourMin, osrm, pickCandidates, routeCached, simplifyShape, stationsAlongRoute } from "./routing";
 import { daysUntil, getApiKeyConfig, getSyncState } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
 import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson } from "./storage";
@@ -156,7 +156,7 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
         };
       });
       res.json({
-        route: { provider: osrm.id, distanceKm: route.distanceKm, durationMin: route.durationMin, path: simplify(route, 2) },
+        route: { provider: osrm.id, distanceKm: route.distanceKm, durationMin: route.durationMin, path: simplifyShape(route.coords, 10) },
         chargers,
         attribution: "Route © OpenStreetMap contributors, OSRM",
       });

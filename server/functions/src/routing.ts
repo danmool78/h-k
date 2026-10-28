@@ -69,7 +69,38 @@ export function pointAtKm(r: Route, km: number): LatLng {
   return { lat: r.coords[i - 1][0] + (r.coords[i][0] - r.coords[i - 1][0]) * f, lng: r.coords[i - 1][1] + (r.coords[i][1] - r.coords[i - 1][1]) * f };
 }
 
-/** 지도 표시용으로 약 [stepKm] 간격으로 줄인 좌표 */
+/**
+ * 지도 표시용 좌표 줄이기 (Douglas-Peucker). 도로 모양에서 [toleranceM] 이상 벗어나지 않는 한 점을 뺀다.
+ * 직선 구간은 성기게, 굽은 구간은 촘촘하게 남아 지도 위 선이 도로를 그대로 따라간다.
+ */
+export function simplifyShape(coords: [number, number][], toleranceM = 10): [number, number][] {
+  if (coords.length <= 2) return coords;
+  const lat0 = coords[0][0] * Math.PI / 180;
+  // 위경도 → 대략적인 미터 평면
+  const xy = coords.map(([lat, lng]) => [lng * 111_320 * Math.cos(lat0), lat * 110_540]);
+  const keep = new Uint8Array(coords.length);
+  keep[0] = keep[coords.length - 1] = 1;
+  const stack: [number, number][] = [[0, coords.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    const [ax, ay] = xy[a], [bx, by] = xy[b];
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+    let maxD = 0, idx = -1;
+    for (let i = a + 1; i < b; i++) {
+      const [px, py] = xy[i];
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+      const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > toleranceM && idx > 0) {
+      keep[idx] = 1;
+      stack.push([a, idx], [idx, b]);
+    }
+  }
+  return coords.filter((_, i) => keep[i]);
+}
+
+/** 약 [stepKm] 간격으로 줄인 좌표 (지도 표시에는 [simplifyShape] 를 쓸 것) */
 export function simplify(r: Route, stepKm = 1): [number, number][] {
   const out: [number, number][] = [r.coords[0]];
   let next = stepKm;
