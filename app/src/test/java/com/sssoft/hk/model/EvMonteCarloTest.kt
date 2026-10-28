@@ -34,9 +34,9 @@ class EvMonteCarloTest {
     @Test
     fun `겨울 400km 는 한 번 충전으로 95% 이상, 총 시간에 충전·대기 포함`() {
         val chargers = listOf(
-            Charger("A휴게소", 150.0, 120.0, 4.0, highway = true),
-            Charger("B휴게소", 220.0, 200.0, 12.0, highway = true),
-            Charger("C휴게소", 280.0, 100.0, 2.0, highway = true),
+            Charger("A휴게소", 150.0, 120.0, 4.0, detourMin = 1.0),
+            Charger("B휴게소", 220.0, 200.0, 12.0, detourMin = 1.0),
+            Charger("C휴게소", 280.0, 100.0, 2.0, detourMin = 1.0),
         )
         val plan = EvMonteCarlo(profile).planCharging(0.9, 400.0, 270.0, env(tempC = -3.0), chargers)
         assertTrue(plan is ChargePlanResult.Plan)

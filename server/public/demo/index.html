@@ -100,21 +100,21 @@ import { recommend, TYPE_LABEL } from "./model.js";
 
 const API = "https://asia-northeast3-h-y-server.cloudfunctions.net/api";
 const ORIGIN = { name: "서울시청", lat: 37.5665, lng: 126.9780 };
-// 도로 거리·내비 예상 시간은 대략값 (실제 앱은 내비에서 받음)
+// 거리·시간은 서버가 실제 도로 경로(OSRM)로 계산
 const DESTS = [
-  { name: "부산", lat: 35.1796, lng: 129.0756, km: 400, min: 270 },
-  { name: "대구", lat: 35.8714, lng: 128.6014, km: 300, min: 200 },
-  { name: "광주", lat: 35.1595, lng: 126.8526, km: 300, min: 200 },
-  { name: "여수", lat: 34.7604, lng: 127.6622, km: 380, min: 260 },
-  { name: "강릉", lat: 37.7519, lng: 128.8761, km: 230, min: 160 },
-  { name: "대전", lat: 36.3504, lng: 127.3845, km: 160, min: 110 },
+  { name: "부산", lat: 35.1796, lng: 129.0756 },
+  { name: "대구", lat: 35.8714, lng: 128.6014 },
+  { name: "광주", lat: 35.1595, lng: 126.8526 },
+  { name: "여수", lat: 34.7604, lng: 127.6622 },
+  { name: "강릉", lat: 37.7519, lng: 128.8761 },
+  { name: "대전", lat: 36.3504, lng: 127.3845 },
 ];
 
 const api = {
-  async match(points, radiusKm) {
-    const r = await fetch(`${API}/chargers/match`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points, radiusKm }) });
-    if (!r.ok) throw new Error(`충전소 조회 실패 ${r.status}`);
-    return (await r.json()).matches;
+  async routeChargers(origin, dest, departOffsetMin) {
+    const r = await fetch(`${API}/route/chargers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin, dest, departOffsetMin }) });
+    if (!r.ok) throw new Error(`경로·충전소 조회 실패 ${r.status}`);
+    return r.json();
   },
   async routeWeather(points) {
     const r = await fetch(`${API}/weather/route`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points }) });
@@ -137,7 +137,7 @@ function seg(id, items, key) {
   sync();
 }
 
-$("dest").innerHTML = DESTS.map((d, i) => `<option value="${i}">${d.name} · 약 ${d.km}km</option>`).join("");
+$("dest").innerHTML = DESTS.map((d, i) => `<option value="${i}">${d.name}</option>`).join("");
 seg("mode", [["ECO", "에코"], ["NORMAL", "일반"], ["SPORT", "스포츠"]], "mode");
 seg("hvac", [["on", "켜짐 22°C"], ["off", "꺼짐"]], "hvac");
 seg("tire", [[250, "정상"], [225, "10% 부족"], [200, "20% 부족"]], "tire");
@@ -163,15 +163,14 @@ const layer = L.layerGroup().addTo(map);
 
 function drawMap(dest, res) {
   layer.clearLayers();
-  const line = L.polyline([[ORIGIN.lat, ORIGIN.lng], [dest.lat, dest.lng]], { color: "#4f8cff", weight: 3, dashArray: "6 6" }).addTo(layer);
+  const line = L.polyline(res?.route?.path ?? [[ORIGIN.lat, ORIGIN.lng], [dest.lat, dest.lng]], { color: "#4f8cff", weight: 4 }).addTo(layer);
   L.circleMarker([ORIGIN.lat, ORIGIN.lng], { radius: 7, color: "#fff", fillColor: "#4f8cff", fillOpacity: 1 }).bindTooltip("출발 " + ORIGIN.name).addTo(layer);
   L.circleMarker([dest.lat, dest.lng], { radius: 7, color: "#fff", fillColor: "#e53935", fillOpacity: 1 }).bindTooltip("도착 " + dest.name).addTo(layer);
   const bestId = res?.options?.[0]?.station.id;
-  for (const c of res?.candidates ?? []) {
-    const v = c.view;
+  for (const v of res?.candidates ?? []) {
     const color = v.id === bestId ? "#4caf50" : v.available > 0 ? "#9aa3b5" : "#ffb300";
     L.circleMarker([v.lat, v.lng], { radius: v.id === bestId ? 10 : 6, color, fillColor: color, fillOpacity: 0.85 })
-      .bindTooltip(`${v.name}<br>빈 ${v.available}/${v.total - v.outOfService} · ${Math.round(v.maxKw)}kW`).addTo(layer);
+      .bindTooltip(`${v.name}<br>${Math.round(v.atKm)}km 지점 · 빈 ${v.available}/${v.total - v.outOfService} · ${Math.round(v.maxKw)}kW`).addTo(layer);
   }
   map.fitBounds(line.getBounds(), { padding: [30, 30] });
 }
@@ -191,7 +190,7 @@ async function run() {
   $("rec").classList.add("loading");
   try {
     const res = await recommend(api, {
-      origin: ORIGIN, dest, distKm: dest.km, navMin: dest.min, departMs: dep,
+      origin: { lat: ORIGIN.lat, lng: ORIGIN.lng }, dest: { lat: dest.lat, lng: dest.lng }, departMs: dep,
       soc: +$("soc").value, occupants: +$("occ").value, mode: state.mode,
       hvacOn: state.hvac === "on", cabinSetC: 22, tireKpa: state.tire,
       useForecast: state.wsrc === "forecast", tempC: +$("temp").value, weather: state.weather,
@@ -211,10 +210,10 @@ function render(dest, dep, res) {
   $("eta").innerHTML = tot ? `<b>도착 예정 ${fmtClock(dep + tot[0] * 60000)}</b><div class="muted small">늦어도 ${fmtClock(dep + tot[1] * 60000)} · 충전·대기 포함</div>` : "";
 
   const ctx = res.env.context, w = res.weather;
-  $("cond").textContent = `${ORIGIN.name} → ${dest.name} · ${TYPE_LABEL[ctx.type]} · ${ctx.night ? "밤" : "낮"}${ctx.weekend ? " · 주말" : ""} · ` +
+  $("cond").textContent = `${ORIGIN.name} → ${dest.name} · 도로 ${Math.round(res.route.distanceKm)}km · ${Math.round(res.route.durationMin)}분 · ${TYPE_LABEL[ctx.type]} · ${ctx.night ? "밤" : "낮"}${ctx.weekend ? " · 주말" : ""} · ` +
     `경로 기온 ${Math.round(w.tempC)}°C ${{ CLEAR: "맑음", RAIN: "비", SNOW: "눈" }[w.kind]}${w.forecast ? " (예보)" : " (직접 입력)"} · ` +
     `충전 없이 갈 확률 ${P(res.direct.probability)}, 도착 시 배터리 약 ${P(Math.max(res.direct.socP50, 0))}`;
-  $("attrib").textContent = `충전소: 한국환경공단 실시간 데이터(H-Y Server 수집) · 확인한 충전소 ${res.checked}곳` + (w.forecast ? " · Weather data by Open-Meteo.com" : "");
+  $("attrib").textContent = `경로상 충전소 ${res.checked}곳 확인 · 충전소: 한국환경공단 실시간 데이터(H-Y Server 수집) · 경로: © OpenStreetMap contributors, OSRM` + (w.forecast ? " · Weather data by Open-Meteo.com" : "");
 
   const rec = $("rec");
   if (res.plan.kind === "none") {
@@ -228,7 +227,7 @@ function render(dest, dep, res) {
       ? `<span class="badge" style="background:rgba(76,175,80,.15);color:var(--good)">출력이 가장 큰 ${res.baseline.station.name}보다 ${saved}분 빨라요</span>`
       : `<span class="badge" style="background:rgba(79,140,255,.15);color:var(--accent)">출력이 가장 큰 충전소가 지금 가장 빨라요</span>`;
     rec.innerHTML = `
-      <div class="muted small">추천 충전소 · 출발 후 약 ${Math.round(best.atKm)}km</div>
+      <div class="muted small">추천 충전소 · 출발 후 약 ${Math.round(best.atKm)}km${s.restArea ? " · 고속도로 휴게소" : ` · 경로에서 ${s.offRouteKm}km`}</div>
       <div class="name">${s.name}</div>
       <div class="wait">도착 시 대기 <b style="color:${waitColor(best.waitMin)}">약 ${Math.round(best.waitMin)}분</b></div>
       <div>지금 빈 충전기 ${s.available}/${s.total - s.outOfService} · 최대 ${Math.round(s.maxKw)}kW · ${P(p.chargeToSoc)}까지 충전 (약 ${Math.round(p.chargeMinutesP50)}분)</div>
@@ -238,7 +237,7 @@ function render(dest, dep, res) {
 
   const rows = res.options.map((o, i) => {
     const s = o.station;
-    const tags = (i === 0 ? `<span class="tag" style="background:rgba(76,175,80,.2);color:var(--good)">추천</span>` : "") +
+    const tags = (s.restArea ? `<span class="tag" style="background:rgba(154,163,181,.2);color:var(--muted)">휴게소</span>` : "") + (i === 0 ? `<span class="tag" style="background:rgba(76,175,80,.2);color:var(--good)">추천</span>` : "") +
       (o === res.baseline ? `<span class="tag" style="background:rgba(79,140,255,.2);color:var(--accent)">최대 출력</span>` : "");
     return `<tr><td>${s.name}${tags}</td><td>${Math.round(o.atKm)}km</td><td style="color:${waitColor(o.waitMin)}">${Math.round(o.waitMin)}분</td>` +
       `<td>${Math.round(o.plan.chargeMinutesP50)}분 → ${P(o.plan.chargeToSoc)}</td><td>${Math.round(o.plan.minutesP50)}분</td><td>${s.available}/${s.total - s.outOfService}</td><td>${Math.round(s.maxKw)}kW</td></tr>`;

@@ -112,7 +112,7 @@ class ChargeWatchService : Service() {
         val dest = navi.destination() ?: return
         val trip = navi.trip(dest)
         val cond = TripConditions.from(reading, ProfileStore.load(this), TripPrefs.tempC(this), TripPrefs.weather(this))
-        val rec = planner.recommend(planner.withRouteWeather(cond, here, dest, trip?.etaMin ?: dest.remainMin), here, dest, trip)
+        val rec = planner.recommend(cond, here, dest, trip, forecast = true)
 
         when (val d = ReplanPolicy.decide(target.stationId, rec)) {
             ReplanPolicy.Decision.Keep ->

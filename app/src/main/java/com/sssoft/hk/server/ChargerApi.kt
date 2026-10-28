@@ -32,6 +32,32 @@ data class StationView(
 
 data class RouteWeather(val tempC: Double, val weather: Weather)
 
+/** 도로 경로상 충전소 하나. */
+data class RouteStation(
+    val view: StationView,
+    /** 출발부터 경로를 따라 이 충전소 옆까지 (km) */
+    val atKm: Double,
+    val offRouteKm: Double,
+    /** 들렀다 돌아오는 시간 평균 (분) */
+    val detourMin: Double,
+    /** 출발 기준 도착 예정 (분) */
+    val etaMin: Double,
+    /** 진행 방향 고속도로 휴게소 */
+    val restArea: Boolean,
+)
+
+/** 실제 도로 경로(OSRM)와 경로를 따라 있는 충전소 후보. */
+data class RouteChargers(
+    val distanceKm: Double,
+    val durationMin: Double,
+    /** 약 2km 간격 경로 좌표 */
+    val path: List<LatLng>,
+    val stations: List<RouteStation>,
+) {
+    /** 경로 위 비율 [r] (0~1) 지점 */
+    fun pointAt(r: Double): LatLng = path[((path.size - 1) * r.coerceIn(0.0, 1.0)).toInt()]
+}
+
 /** H-Y Server 충전소·날씨 조회 API. */
 class ChargerApi(
     private val baseUrl: String = BuildConfig.SERVER_URL,
@@ -43,6 +69,32 @@ class ChargerApi(
         val q = "lat=${at.lat}&lng=${at.lng}&radiusKm=$radiusKm&limit=$limit" + (etaMin?.let { "&etaMin=${it.toInt()}" } ?: "")
         val body = request("GET", "/chargers/nearby?$q", null)
         return body.getJSONArray("stations").let { a -> List(a.length()) { parse(a.getJSONObject(it)) } }
+    }
+
+    /** 실제 도로 경로와 경로상 충전소 후보 (서버가 OSRM 경로를 따라 찾음). */
+    suspend fun routeChargers(origin: LatLng, dest: LatLng, departOffsetMin: Double = 0.0): RouteChargers {
+        val body = request(
+            "POST", "/route/chargers",
+            JSONObject()
+                .put("origin", JSONObject().put("lat", origin.lat).put("lng", origin.lng))
+                .put("dest", JSONObject().put("lat", dest.lat).put("lng", dest.lng))
+                .put("departOffsetMin", departOffsetMin),
+        )
+        val r = body.getJSONObject("route")
+        val p = r.getJSONArray("path")
+        val c = body.getJSONArray("chargers")
+        return RouteChargers(
+            distanceKm = r.getDouble("distanceKm"),
+            durationMin = r.getDouble("durationMin"),
+            path = List(p.length()) { p.getJSONArray(it).let { xy -> LatLng(xy.getDouble(0), xy.getDouble(1)) } },
+            stations = List(c.length()) { i ->
+                val o = c.getJSONObject(i)
+                RouteStation(
+                    parse(o), o.getDouble("atKm"), o.getDouble("offRouteKm"), o.getDouble("detourMin"),
+                    o.getDouble("etaMin"), o.optBoolean("restArea", false),
+                )
+            },
+        )
     }
 
     /** 각 지점에 가장 가까운 충전소 (반경 밖이면 null). */

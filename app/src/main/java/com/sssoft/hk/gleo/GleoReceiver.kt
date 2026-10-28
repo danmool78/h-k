@@ -91,7 +91,7 @@ class GleoReceiver : BroadcastReceiver() {
             ?: return GleoResult.asking(RECOMMEND_CHARGING_STOP, "No destination is set. Please set a destination in the navigation first.")
         val origin = navi.currentLocation()
         val trip = navi.trip(dest)
-        val r = planner.recommend(planner.withRouteWeather(c, origin, dest, trip?.etaMin ?: dest.remainMin), origin, dest, trip)
+        val r = planner.recommend(c, origin, dest, trip, forecast = true)
 
         return when (val plan = r.plan) {
             is ChargePlanResult.NoChargeNeeded -> GleoResult.success(

@@ -30,6 +30,7 @@ class ReplanPolicyTest {
         o.first().plan, o.toList(), null, o.size,
         direct = ArrivalResult(0.2, -0.1, 0.0, 0.1, 270.0, 290.0),
         env = TripEnv(TripContext(TripType.LONG, false, Weather.CLEAR, false), tempC = 10.0),
+        conditions = com.sssoft.hk.trip.TripConditions(socPercent = 50, profile = com.sssoft.hk.model.VehicleProfile(), tempC = 10.0),
     )
 
     @Test

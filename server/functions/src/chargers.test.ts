@@ -14,11 +14,12 @@ const base: ChargerInfoItem = {
 };
 const ID = "KR:ME174050";
 
-test("한국 출처: 완속·삭제 충전기 제외, ID 에 국가 접두사, 표준 형식", () => {
+test("한국 출처: 완속·삭제·이용 제한 충전기 제외, ID 에 국가 접두사, 표준 형식", () => {
   const { stations, statuses } = convert([
     base,
     { ...base, chgerId: "02", chgerType: "02" },
     { ...base, chgerId: "03", delYn: "Y" },
+    { ...base, chgerId: "04", limitYn: "Y" },
   ]);
   assert.deepEqual(Object.keys(stations), [ID]);
   assert.equal(stations[ID].country, "KR");

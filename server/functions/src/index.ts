@@ -8,6 +8,7 @@
  *                   POST /chargers/match   { points: [{lat, lng, etaMin?}], radiusKm? }  (내비 경로상 충전소 매칭)
  *                   etaMin: 도착까지 남은 분 → 그 시각의 과거 평균 사용률(forecast)을 함께 반환
  *                   GET  /health
+ *                   POST /route/chargers { origin, dest, departOffsetMin? }  도로 경로(OSRM) + 경로를 따라 있는 충전소 후보
  *                   POST /weather/route { points: [{lat, lng, etaMin?}] }  지점별 도착 시각 날씨 + 경로 대표값 (Open-Meteo)
  *                   GET  /validation  혼잡 예측 검증 (이력 예측 vs 1시간 전 상태 유지 예측, 만차 예측 정밀도·재현율)
  *  - admin*       : 관리자 페이지(public/admin)용. API 키 관리, 수집 상태, 수동 실행
@@ -19,8 +20,9 @@ import { logger } from "firebase-functions";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { StationMap, StationView, StatusMap, migrateStationKeys, nearby, upgradeLegacy } from "./chargers";
-import { daysUntil, getApiKeyConfig } from "./config";
+import { StationMap, StationView, StatusMap, migrateStationKeys, nearby, stationView, upgradeLegacy } from "./chargers";
+import { detourMin, osrm, pickCandidates, routeCached, simplify, stationsAlongRoute } from "./routing";
+import { daysUntil, getApiKeyConfig, getSyncState } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
 import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson } from "./storage";
 import { ValidationMap, summarize } from "./validation";
@@ -92,7 +94,13 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
 
     if (path === "/health") {
       const s = await snapshot();
-      res.json({ stations: Object.keys(s.stations).length, chargers: Object.keys(s.statuses).length });
+      const raw = await readJson<StationMap>(STATIONS_FILE);
+      const storedLegacy = !!raw && Object.values(raw).some((st) => !st.provider);
+      const sync = await getSyncState();
+      res.json({
+        stations: Object.keys(s.stations).length, chargers: Object.keys(s.statuses).length,
+        storedFormat: storedLegacy ? "legacy" : "current", sync,
+      });
       return;
     }
 
@@ -125,6 +133,33 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
         return v ? withForecast(v, s.occ, now, num(p.etaMin)) : null;
       });
       res.json({ matches });
+      return;
+    }
+
+    if (req.method === "POST" && path === "/route/chargers") {
+      const o = req.body?.origin, d = req.body?.dest;
+      if (num(o?.lat) === undefined || num(o?.lng) === undefined || num(d?.lat) === undefined || num(d?.lng) === undefined) {
+        res.status(400).json({ error: "origin, dest {lat, lng} 필요" });
+        return;
+      }
+      const offset = num(req.body?.departOffsetMin, 0)!;
+      const route = await routeCached(osrm, o, d);
+      const s = await snapshot();
+      const along = pickCandidates(stationsAlongRoute(route, s.stations, 5), s.stations);
+      const chargers = along.map((rs) => {
+        const etaMin = offset + route.durationMin * rs.atKm / route.distanceKm;
+        const v = stationView(s.stations[rs.stationId], s.statuses, now, rs.offRouteKm);
+        return {
+          ...withForecast(v, s.occ, now, etaMin), atKm: Math.round(rs.atKm * 10) / 10,
+          offRouteKm: Math.round(rs.offRouteKm * 100) / 100, detourMin: Math.round(detourMin(rs.offRouteKm, rs.restArea) * 10) / 10, restArea: rs.restArea,
+          etaMin: Math.round(etaMin),
+        };
+      });
+      res.json({
+        route: { provider: osrm.id, distanceKm: route.distanceKm, durationMin: route.durationMin, path: simplify(route, 2) },
+        chargers,
+        attribution: "Route © OpenStreetMap contributors, OSRM",
+      });
       return;
     }
 

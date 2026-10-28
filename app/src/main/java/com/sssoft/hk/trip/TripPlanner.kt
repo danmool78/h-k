@@ -13,6 +13,7 @@ import com.sssoft.hk.navi.Destination
 import com.sssoft.hk.navi.LatLng
 import com.sssoft.hk.navi.Trip
 import com.sssoft.hk.server.ChargerApi
+import com.sssoft.hk.server.RouteChargers
 import com.sssoft.hk.server.StationView
 import com.sssoft.hk.vehicle.VehicleReading
 import kotlinx.coroutines.withTimeout
@@ -63,6 +64,8 @@ data class StopOption(
     val plan: ChargePlanResult.Plan,
     /** 내비가 자동으로 추천한 충전소 */
     val naviPick: Boolean,
+    /** 진행 방향 고속도로 휴게소 */
+    val restArea: Boolean = false,
 )
 
 data class ChargingRecommendation(
@@ -75,6 +78,10 @@ data class ChargingRecommendation(
     /** 충전 없이 갈 때 (도착 확률, 주행시간) */
     val direct: ArrivalResult,
     val env: TripEnv,
+    /** 실제로 계산에 쓴 조건 (경로 날씨 예보 반영 후) */
+    val conditions: TripConditions,
+    /** 서버가 받은 실제 도로 경로. 경로 API 실패 시 null */
+    val route: RouteChargers? = null,
 ) {
     val best: StopOption? get() = options.firstOrNull()
     val station: StationView? get() = best?.station
@@ -118,54 +125,84 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
     fun arrival(c: TripConditions, origin: LatLng?, dest: Destination): ArrivalResult =
         EvMonteCarlo(c.profile).arrivalProbability(c.socPercent / 100.0, dest.remainKm, dest.remainMin, c.env(dest.remainKm, origin, dest))
 
-    suspend fun recommend(c: TripConditions, origin: LatLng?, dest: Destination, trip: Trip?): ChargingRecommendation {
-        val totalKm = trip?.distanceKm ?: dest.remainKm
-        val totalMin = trip?.etaMin ?: dest.remainMin
+    /**
+     * 도로 경로를 따라 있는 충전소 중 도착 확률을 지키면서 총 소요시간이 가장 짧은 곳을 고른다.
+     * [forecast] 면 기온·날씨를 실제 경로 위 지점의 도착 시각 예보로 바꾼다.
+     */
+    suspend fun recommend(
+        c0: TripConditions, origin: LatLng?, dest: Destination, trip: Trip?, forecast: Boolean = false,
+    ): ChargingRecommendation {
+        // 실제 도로 경로 + 경로상 충전소 (차량 내비는 경로 좌표를 주지 않으므로 서버 경로를 쓴다)
+        val route = origin?.let { o -> runCatching { api.routeChargers(o, dest.location) }.getOrNull() }
+        // 거리·시간은 실시간 교통이 반영된 내비 값을 우선
+        val totalKm = trip?.distanceKm ?: route?.distanceKm ?: dest.remainKm
+        val totalMin = trip?.etaMin ?: route?.durationMin ?: dest.remainMin
+
+        val c = when {
+            !forecast -> c0
+            route != null -> runCatching {
+                withTimeout(3_000) { api.routeWeather((0..4).map { i -> route.pointAt(i / 4.0) to i / 4.0 * totalMin }) }
+            }.map { c0.copy(tempC = it.tempC, weather = it.weather, weatherFromForecast = true) }.getOrDefault(c0)
+            else -> withRouteWeather(c0, origin, dest, totalMin)
+        }
         val env = c.env(totalKm, origin, dest)
         val soc0 = c.socPercent / 100.0
         val mc = EvMonteCarlo(c.profile)
         val direct = mc.arrivalProbability(soc0, totalKm, totalMin, env)
 
-        // 1) 내비가 경로상에 둔 충전소를 실제 충전소와 매칭
-        data class Cand(val view: StationView, val ratio: Double, val naviPick: Boolean)
-        var cands: List<Cand> = emptyList()
-        val routeChargers = trip?.chargers.orEmpty()
-        if (routeChargers.isNotEmpty()) {
-            val views = api.match(routeChargers.map { it.location to it.ratioOnRoute * totalMin }, radiusKm = 0.3)
-            cands = views.zip(routeChargers).mapNotNull { (v, rc) -> v?.let { Cand(it, rc.ratioOnRoute, rc.naviPick) } }
+        data class Cand(val view: StationView, val ratio: Double, val naviPick: Boolean, val detourMin: Double, val restArea: Boolean)
+        val naviChargers = trip?.chargers.orEmpty()
+        fun isNaviPick(v: StationView) = naviChargers.any { it.naviPick && distanceKm(it.location, v.location) < 0.3 }
+
+        var cands = route?.stations.orEmpty().map { rs ->
+            Cand(rs.view, rs.atKm / route!!.distanceKm, isNaviPick(rs.view), rs.detourMin, rs.restArea)
         }
-        // 2) 없으면 출발-도착 직선상 지점 주변에서 찾기 (경로 형상이 없을 때의 근사)
+        // 내비가 넣었는데 경로 후보에 없는 충전소도 비교 대상에 넣는다
+        val missing = naviChargers.filter { nc -> cands.none { distanceKm(nc.location, it.view.location) < 0.3 } }
+        if (missing.isNotEmpty()) {
+            val views = runCatching { api.match(missing.map { it.location to it.ratioOnRoute * totalMin }, radiusKm = 0.3) }.getOrDefault(emptyList())
+            cands = cands + views.zip(missing).mapNotNull { (v, nc) -> v?.let { Cand(it, nc.ratioOnRoute, nc.naviPick, 1.0, false) } }
+        }
+        // 경로도 내비 충전소도 없으면 출발-도착 직선 근사 (오프라인 대비)
         if (cands.isEmpty() && origin != null) {
             val ratios = (2..18).map { it * 0.05 }
             val pts = ratios.map { r ->
                 LatLng(origin.lat + (dest.location.lat - origin.lat) * r, origin.lng + (dest.location.lng - origin.lng) * r)
             }
             val views = api.match(pts.zip(ratios).map { (p, r) -> p to r * totalMin }, radiusKm = 10.0)
-            cands = views.zip(ratios).mapNotNull { (v, r) -> v?.let { Cand(it, r, false) } }
+            cands = views.zip(ratios).mapNotNull { (v, r) -> v?.let { Cand(it, r, false, 4.0, false) } }
         }
         cands = cands.filter { it.view.inService > 0 }.distinctBy { it.view.id }
 
         if (direct.probability >= 0.95) {
-            return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env)
+            return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env, c, route)
         }
 
         val waits = cands.associate { it.view.id to expectedWaitMin(it.view, it.ratio * totalMin) }
         val chargers = cands.map { cd ->
-            Charger(cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.view.highway)
+            Charger(cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.detourMin)
         }
         val byId = cands.associateBy { it.view.id }
         val options = mc.bestStopPerCharger(soc0, totalKm, totalMin, env, chargers)
             .map { p ->
                 val cd = byId.getValue(p.charger)
-                StopOption(cd.view, cd.ratio * totalKm, cd.ratio * totalMin, waits.getValue(p.charger), p, cd.naviPick)
+                StopOption(cd.view, cd.ratio * totalKm, cd.ratio * totalMin, waits.getValue(p.charger), p, cd.naviPick, cd.restArea)
             }
             .sortedBy { EvMonteCarlo.score(it.plan) }
         val baseline = options.firstOrNull { it.naviPick } ?: options.maxByOrNull { it.station.maxKw }
         val plan = options.firstOrNull()?.plan ?: ChargePlanResult.Infeasible(direct.probability)
-        return ChargingRecommendation(plan, options, baseline, cands.size, direct, env)
+        return ChargingRecommendation(plan, options, baseline, cands.size, direct, env, c, route)
     }
 
     companion object {
+        fun distanceKm(a: LatLng, b: LatLng): Double {
+            val dLat = Math.toRadians(b.lat - a.lat)
+            val dLng = Math.toRadians(b.lng - a.lng)
+            val h = kotlin.math.sin(dLat / 2).pow(2) +
+                kotlin.math.cos(Math.toRadians(a.lat)) * kotlin.math.cos(Math.toRadians(b.lat)) * kotlin.math.sin(dLng / 2).pow(2)
+            return 2 * 6371.0 * kotlin.math.asin(kotlin.math.sqrt(h))
+        }
+
         /**
          * 도착 시점 예상 대기(분, 로그정규 평균).
          * 곧 도착하면 현재 상태를, 멀면 같은 요일·시간대 평균 사용률을 쓴다. 사용률→대기 변환은 경험식.

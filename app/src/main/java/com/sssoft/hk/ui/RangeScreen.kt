@@ -204,6 +204,7 @@ private fun OptionRow(o: StopOption, isBest: Boolean, isBaseline: Boolean) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(o.station.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                if (o.restArea) Tag("휴게소", Color.Gray)
                 if (isBest) Tag("추천", Good)
                 if (isBaseline) Tag(if (o.naviPick) "내비 추천" else "최대 출력", MaterialTheme.colorScheme.primary)
             }

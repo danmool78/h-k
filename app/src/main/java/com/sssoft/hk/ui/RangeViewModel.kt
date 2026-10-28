@@ -104,11 +104,8 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
                     Triple(RouteSource.DEMO, DEMO_DEST, DEMO_ORIGIN)
                 }
                 val trip = if (source == RouteSource.NAVI) navi.trip(dest) else null
-                val cond = if (source == RouteSource.NAVI || s.input.useForecast) {
-                    planner.withRouteWeather(base, origin, dest, trip?.etaMin ?: dest.remainMin)
-                } else base
-
-                val rec = planner.recommend(cond, origin, dest, trip)
+                val rec = planner.recommend(base, origin, dest, trip, forecast = source == RouteSource.NAVI || s.input.useForecast)
+                val cond = rec.conditions
                 _ui.update {
                     it.copy(
                         source = source, destination = dest, arrival = rec.direct, recommendation = rec,

@@ -160,7 +160,7 @@ export class MonteCarlo {
       const [k1, m1] = this.leg(i, d1, nav1, this.noise1);
       const [k2, m2] = this.leg(i, totalKm - d1, totalMin - nav1, this.noise2);
       socAt[i] = soc0 - k1 / this.cap[i]; l1[i] = m1; l2k[i] = k2; l2m[i] = m2;
-      fixed[i] = Math.exp(wl + this.waitZ[i] * 0.6) + this.overhead[i] + (c.highway ? 1 : 4) * Math.exp(this.detourZ[i] * 0.4);
+      fixed[i] = Math.exp(wl + this.waitZ[i] * 0.6) + this.overhead[i] + c.detourMin * Math.exp(this.detourZ[i] * 0.4);
     }
     let best = null;
     const total = new Float64Array(n), chargeMin = new Float64Array(n);
@@ -184,18 +184,24 @@ export class MonteCarlo {
 }
 
 /**
- * 추천 (TripPlanner.recommend 의 웹 판). [api] 는 서버 호출 함수 모음.
- * 반환: { direct, plan, options, baseline, savedMin, checked, env, weather }
+ * 추천 (TripPlanner.recommend 의 웹 판). 도로 경로(서버 /route/chargers)를 따라 있는 충전소로 계산한다.
+ * 반환: { route, direct, plan, options, baseline, savedMin, checked, env, weather, candidates }
  */
 export async function recommend(api, inp) {
-  const { origin, dest, distKm: totalKm, navMin: totalMin, departMs } = inp;
-  const offsetMin = (departMs - Date.now()) / 60000;
+  const { origin, dest, departMs } = inp;
+  const offsetMin = Math.max(0, (departMs - Date.now()) / 60000);
+
+  const rc = await api.routeChargers(origin, dest, offsetMin);
+  const route = rc.route;
+  const totalKm = route.distanceKm, totalMin = route.durationMin;
 
   let tempC = inp.tempC, weather = inp.weather, forecast = false;
   if (inp.useForecast) {
+    // 실제 경로 위 5개 지점의 "그 지점 도착 시각" 예보
     const pts = [0, 1, 2, 3, 4].map((i) => {
-      const r = i / 4;
-      return { lat: origin.lat + (dest.lat - origin.lat) * r, lng: origin.lng + (dest.lng - origin.lng) * r, etaMin: Math.max(0, offsetMin + r * totalMin) };
+      const idx = Math.round(i / 4 * (route.path.length - 1));
+      const [lat, lng] = route.path[idx];
+      return { lat, lng, etaMin: offsetMin + (i / 4) * totalMin };
     });
     try { const w = await api.routeWeather(pts); tempC = w.tempC; weather = w.kind; forecast = true; } catch (e) { console.warn(e); }
   }
@@ -206,27 +212,16 @@ export async function recommend(api, inp) {
   const soc0 = inp.soc / 100;
   const direct = mc.arrival(soc0, totalKm, totalMin);
 
-  // 출발-도착 직선상 5% 간격 지점 근처 충전소 (앱의 데모 경로와 같은 근사)
-  const ratios = Array.from({ length: 17 }, (_, i) => (i + 2) * 0.05);
-  const pts = ratios.map((r) => ({ lat: origin.lat + (dest.lat - origin.lat) * r, lng: origin.lng + (dest.lng - origin.lng) * r, etaMin: Math.max(0, offsetMin + r * totalMin) }));
-  const matches = await api.match(pts, 10);
-  const seen = new Set();
-  const cands = [];
-  matches.forEach((v, i) => {
-    if (!v || seen.has(v.id) || v.total - v.outOfService <= 0) return;
-    seen.add(v.id);
-    cands.push({ view: v, ratio: ratios[i] });
-  });
-
-  const base = { direct, env, weather: { tempC, kind: weather, forecast }, checked: cands.length, candidates: cands };
+  const cands = rc.chargers.filter((v) => v.total - v.outOfService > 0);
+  const base = { route, direct, env, weather: { tempC, kind: weather, forecast }, checked: cands.length, candidates: cands };
   if (direct.probability >= 0.95) return { ...base, plan: { kind: "none", probability: direct.probability }, options: [], baseline: null, savedMin: null };
 
   const options = [];
-  for (const cd of cands) {
-    const waitMin = expectedWaitMin(cd.view, offsetMin + cd.ratio * totalMin);
-    const c = { id: cd.view.id, atKm: cd.ratio * totalKm, powerKw: Math.min(Math.max(cd.view.maxKw, 30), 350), waitMeanMin: waitMin, highway: cd.view.highway };
+  for (const v of cands) {
+    const waitMin = expectedWaitMin(v, v.etaMin);
+    const c = { id: v.id, atKm: v.atKm, powerKw: Math.min(Math.max(v.maxKw, 30), 350), waitMeanMin: waitMin, detourMin: v.detourMin };
     const p = mc.bestForCharger(soc0, totalKm, totalMin, c);
-    if (p) options.push({ station: cd.view, atKm: c.atKm, waitMin, plan: p });
+    if (p) options.push({ station: v, atKm: v.atKm, waitMin, plan: p });
   }
   options.sort((a, b) => score(a.plan) - score(b.plan));
   const baseline = options.reduce((m, o) => (!m || o.station.maxKw > m.station.maxKw ? o : m), null);

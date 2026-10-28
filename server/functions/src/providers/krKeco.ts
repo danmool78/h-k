@@ -46,12 +46,13 @@ function state(stat: string, statUpdDt: string, nowTsdt: string): EvseState {
   };
 }
 
-/** getChargerInfo 결과 → 공통 형식 (급속만, 삭제·좌표 없는 것 제외). */
+/** getChargerInfo 결과 → 공통 형식 (누구나 쓸 수 있는 급속만, 삭제·좌표 없는 것 제외). */
 export function convert(items: ChargerInfoItem[]): { stations: StationMap; statuses: StatusMap } {
   const stations: StationMap = {};
   const statuses: StatusMap = {};
   for (const it of items) {
-    if (it.delYn === "Y" || SLOW_TYPES.has(it.chgerType)) continue;
+    // 삭제됨, 완속, 이용자 제한(버스 전용·입주민 전용 등)은 제외
+    if (it.delYn === "Y" || it.limitYn === "Y" || SLOW_TYPES.has(it.chgerType)) continue;
     const lat = Number(it.lat);
     const lng = Number(it.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0) continue;
