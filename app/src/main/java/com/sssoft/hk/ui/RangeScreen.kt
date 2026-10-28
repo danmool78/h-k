@@ -93,7 +93,11 @@ private fun Header(ui: RangeUiState, onRefresh: () -> Unit) {
             )
             val battery = if (ui.battery.connected) "차량 배터리 ${ui.socPercent}%" else "배터리 ${ui.socPercent}% (수동)"
             val src = if (ui.source == RouteSource.DEMO) " · 내비 목적지 없음, 데모 경로" else ""
-            Text("$battery · 기온 ${ui.input.tempC.roundToInt()}°C · ${ui.input.weather.label}$src", color = onBg.copy(alpha = 0.7f))
+            val c = ui.conditions
+            val weather = if (c != null) {
+                "경로 기온 ${c.tempC.roundToInt()}°C · ${c.weather.label}" + if (c.weatherFromForecast) " (예보)" else " (수동)"
+            } else "기온 ${ui.input.tempC.roundToInt()}°C · ${ui.input.weather.label}"
+            Text("$battery · $weather$src", color = onBg.copy(alpha = 0.7f))
         }
         ui.recommendation?.totalMinutes?.let { (p50, p90) ->
             Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(end = 16.dp)) {
@@ -187,6 +191,7 @@ private fun ArrivalLine(ui: RangeUiState) {
             "운전 습관 내비 대비 ${"%+.0f".format(pace)}% · 가속 지수 ${"%.2f".format(style)}",
         color = muted, fontSize = 14.sp,
     )
+    if (c.weatherFromForecast) Text("Weather data by Open-Meteo.com", color = muted, fontSize = 12.sp)
 }
 
 private fun clock(minutesFromNow: Double): String =
@@ -229,13 +234,24 @@ private fun DemoInputs(ui: RangeUiState, onInput: (TripInput) -> Unit) {
     val onBg = MaterialTheme.colorScheme.onBackground
     Column(Modifier.padding(top = 12.dp)) {
         Text("데모 조건", style = MaterialTheme.typography.labelLarge, color = onBg)
-        LabeledSlider("외부 기온", "${i.tempC.roundToInt()} °C", i.tempC, -20f..40f) { onInput(i.copy(tempC = it)) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("날씨", Modifier.weight(0.3f), color = onBg)
             Row(Modifier.weight(0.7f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Weather.entries.forEach { w ->
-                    if (w == i.weather) Button(onClick = {}) { Text(w.label) }
-                    else OutlinedButton(onClick = { onInput(i.copy(weather = w)) }) { Text(w.label) }
+                if (i.useForecast) Button(onClick = {}) { Text("실제 예보") }
+                else OutlinedButton(onClick = { onInput(i.copy(useForecast = true)) }) { Text("실제 예보") }
+                if (!i.useForecast) Button(onClick = {}) { Text("직접 입력") }
+                else OutlinedButton(onClick = { onInput(i.copy(useForecast = false)) }) { Text("직접 입력") }
+            }
+        }
+        if (!i.useForecast) {
+            LabeledSlider("외부 기온", "${i.tempC.roundToInt()} °C", i.tempC, -20f..40f) { onInput(i.copy(tempC = it)) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("", Modifier.weight(0.3f))
+                Row(Modifier.weight(0.7f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Weather.entries.forEach { w ->
+                        if (w == i.weather) Button(onClick = {}) { Text(w.label) }
+                        else OutlinedButton(onClick = { onInput(i.copy(weather = w)) }) { Text(w.label) }
+                    }
                 }
             }
         }

@@ -15,6 +15,7 @@ import androidx.core.app.ServiceCompat
 import com.sssoft.hk.R
 import com.sssoft.hk.model.TripContext
 import com.sssoft.hk.navi.NaviSource
+import com.sssoft.hk.server.ChargerApi
 import com.sssoft.hk.trip.TripPrefs
 import com.sssoft.hk.vehicle.BatteryReader
 import com.sssoft.hk.watch.ChargeTargetStore
@@ -37,6 +38,8 @@ class DriveLearningService : Service() {
     private lateinit var vehicle: Vehicle
     private lateinit var navi: NaviSource
     private lateinit var recorder: DriveRecorder
+    private val api = ChargerApi(readTimeoutMs = 10_000)
+    private var lastWeatherMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -81,6 +84,16 @@ class DriveLearningService : Service() {
         val odo = r.odometerKm ?: return false
         val profile = ProfileStore.load(this)
         val now = System.currentTimeMillis()
+        // 현재 위치 날씨 (Open-Meteo) 를 주기적으로 받아 저장 → 학습 기록과 백그라운드 예측이 실제 날씨를 쓴다
+        if (naviOk && now - lastWeatherMs > WEATHER_MS) {
+            navi.currentLocation()?.let { here ->
+                runCatching { api.routeWeather(listOf(here to 0.0)) }.onSuccess {
+                    TripPrefs.setTempC(this, it.tempC.toFloat())
+                    TripPrefs.setWeather(this, it.weather)
+                    lastWeatherMs = now
+                }
+            }
+        }
         val weather = TripPrefs.weather(this)
 
         // 주행 시작 즈음 내비 목적지로 이번 주행의 조건(유형·밤낮·목적지)과 예상 시간을 잡는다
@@ -156,6 +169,7 @@ class DriveLearningService : Service() {
         private const val NOTIF_ID = 1002
         private const val INTERVAL_MS = 10_000L
         private const val PLAN_CHECK_MS = 60_000L
+        private const val WEATHER_MS = 10 * 60_000L
         @Volatile private var running = false
 
         fun start(context: Context) {

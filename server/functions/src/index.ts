@@ -8,6 +8,7 @@
  *                   POST /chargers/match   { points: [{lat, lng, etaMin?}], radiusKm? }  (내비 경로상 충전소 매칭)
  *                   etaMin: 도착까지 남은 분 → 그 시각의 과거 평균 사용률(forecast)을 함께 반환
  *                   GET  /health
+ *                   POST /weather/route { points: [{lat, lng, etaMin?}] }  지점별 도착 시각 날씨 + 경로 대표값 (Open-Meteo)
  *                   GET  /validation  혼잡 예측 검증 (이력 예측 vs 1시간 전 상태 유지 예측, 만차 예측 정밀도·재현율)
  *  - admin*       : 관리자 페이지(public/admin)용. API 키 관리, 수집 상태, 수동 실행
  *
@@ -23,6 +24,7 @@ import { daysUntil, getApiKeyConfig } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
 import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson } from "./storage";
 import { ValidationMap, summarize } from "./validation";
+import { summarizeRoute, weatherAt } from "./weather";
 import { syncStationsNow, syncStatusNow } from "./sync";
 
 initializeApp();
@@ -120,6 +122,17 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
         return v ? withForecast(v, s.occ, now, num(p.etaMin)) : null;
       });
       res.json({ matches });
+      return;
+    }
+
+    if (req.method === "POST" && path === "/weather/route") {
+      const points: { lat: number; lng: number; etaMin?: number }[] = req.body?.points ?? [];
+      if (!Array.isArray(points) || points.length === 0 || points.length > 20) {
+        res.status(400).json({ error: "points 1~20개 필요" });
+        return;
+      }
+      const ws = await weatherAt(points.map((p) => ({ lat: p.lat, lng: p.lng, at: now + (num(p.etaMin, 0)! * 60_000) })));
+      res.json({ points: ws, route: summarizeRoute(ws), attribution: "Weather data by Open-Meteo.com" });
       return;
     }
 

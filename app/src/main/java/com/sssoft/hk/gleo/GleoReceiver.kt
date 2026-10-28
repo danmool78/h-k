@@ -68,7 +68,8 @@ class GleoReceiver : BroadcastReceiver() {
     private suspend fun checkArrival(navi: NaviSource, c: TripConditions): GleoResult {
         val dest = navi.destination()
             ?: return GleoResult.asking(CHECK_ARRIVAL_CHANCE, "No destination is set. Please set a destination in the navigation first.")
-        val a = planner.arrival(c, navi.currentLocation(), dest)
+        val here = navi.currentLocation()
+        val a = planner.arrival(planner.withRouteWeather(c, here, dest, dest.remainMin), here, dest)
         val p = pct(a.probability)
         val socAtArrival = pct(a.socP50.coerceAtLeast(0.0))
         val advice = when {
@@ -90,7 +91,7 @@ class GleoReceiver : BroadcastReceiver() {
             ?: return GleoResult.asking(RECOMMEND_CHARGING_STOP, "No destination is set. Please set a destination in the navigation first.")
         val origin = navi.currentLocation()
         val trip = navi.trip(dest)
-        val r = planner.recommend(c, origin, dest, trip)
+        val r = planner.recommend(planner.withRouteWeather(c, origin, dest, trip?.etaMin ?: dest.remainMin), origin, dest, trip)
 
         return when (val plan = r.plan) {
             is ChargePlanResult.NoChargeNeeded -> GleoResult.success(

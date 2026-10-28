@@ -15,6 +15,7 @@ import com.sssoft.hk.navi.Trip
 import com.sssoft.hk.server.ChargerApi
 import com.sssoft.hk.server.StationView
 import com.sssoft.hk.vehicle.VehicleReading
+import kotlinx.coroutines.withTimeout
 import kotlin.math.pow
 
 /** 예측에 필요한 현재 조건: 학습 프로필 + 차량 상태 + 날씨. */
@@ -30,6 +31,8 @@ data class TripConditions(
     val tirePressureKpa: Double? = null,
     val mode: DriveMode = DriveMode.NORMAL,
     val departMs: Long = System.currentTimeMillis(),
+    /** 기온·날씨가 실제 예보(Open-Meteo)에서 왔는지 */
+    val weatherFromForecast: Boolean = false,
 ) {
     fun env(plannedKm: Double, origin: LatLng?, dest: Destination): TripEnv {
         val here = origin ?: dest.location
@@ -96,6 +99,21 @@ data class ChargingRecommendation(
  * UI, Gleo 음성 호출, 주행 중 감시가 같이 쓴다.
  */
 class TripPlanner(private val api: ChargerApi = ChargerApi()) {
+
+    /**
+     * 출발~도착 5개 지점의 "그 지점 도착 시각" 예보로 기온·날씨를 바꾼 조건. 실패하면 그대로.
+     * 결과의 [TripConditions.weatherFromForecast] 로 실제 예보를 썼는지 표시한다.
+     */
+    suspend fun withRouteWeather(c: TripConditions, origin: LatLng?, dest: Destination, totalMin: Double): TripConditions {
+        val from = origin ?: return c
+        val pts = (0..4).map { i ->
+            val r = i / 4.0
+            LatLng(from.lat + (dest.location.lat - from.lat) * r, from.lng + (dest.location.lng - from.lng) * r) to r * totalMin
+        }
+        return runCatching { withTimeout(3_000) { api.routeWeather(pts) } }
+            .map { c.copy(tempC = it.tempC, weather = it.weather, weatherFromForecast = true) }
+            .getOrDefault(c)
+    }
 
     fun arrival(c: TripConditions, origin: LatLng?, dest: Destination): ArrivalResult =
         EvMonteCarlo(c.profile).arrivalProbability(c.socPercent / 100.0, dest.remainKm, dest.remainMin, c.env(dest.remainKm, origin, dest))

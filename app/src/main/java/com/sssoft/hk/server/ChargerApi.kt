@@ -1,6 +1,7 @@
 package com.sssoft.hk.server
 
 import com.sssoft.hk.BuildConfig
+import com.sssoft.hk.model.Weather
 import com.sssoft.hk.navi.LatLng
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,7 +30,9 @@ data class StationView(
     val inService: Int get() = total - outOfService
 }
 
-/** H-Y Server 충전소 조회 API. */
+data class RouteWeather(val tempC: Double, val weather: Weather)
+
+/** H-Y Server 충전소·날씨 조회 API. */
 class ChargerApi(
     private val baseUrl: String = BuildConfig.SERVER_URL,
     /** Gleo 호출은 7초 제한이 있어 짧게, 화면은 서버 콜드 스타트를 기다릴 수 있게 길게 */
@@ -51,6 +54,15 @@ class ChargerApi(
         val body = request("POST", "/chargers/match", JSONObject().put("points", arr).put("radiusKm", radiusKm))
         val a = body.getJSONArray("matches")
         return List(a.length()) { i -> if (a.isNull(i)) null else parse(a.getJSONObject(i)) }
+    }
+
+    /** 경로 지점별 (위치, 도착까지 분) 의 날씨 → 경로 대표 기온·날씨. Open-Meteo (서버 경유). */
+    suspend fun routeWeather(points: List<Pair<LatLng, Double>>): RouteWeather {
+        val arr = JSONArray()
+        for ((p, eta) in points) arr.put(JSONObject().put("lat", p.lat).put("lng", p.lng).put("etaMin", eta.toInt()))
+        val r = request("POST", "/weather/route", JSONObject().put("points", arr)).getJSONObject("route")
+        val kind = runCatching { Weather.valueOf(r.getString("kind")) }.getOrDefault(Weather.CLEAR)
+        return RouteWeather(r.getDouble("tempC"), kind)
     }
 
     private fun parse(o: JSONObject) = StationView(

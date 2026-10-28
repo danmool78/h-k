@@ -32,6 +32,8 @@ data class TripInput(
     val manualSocPercent: Float = 80f,
     /** 차량에서 못 읽을 때 쓰는 탑승 인원 */
     val manualOccupants: Int = 1,
+    /** 데모 경로에서도 실제 예보를 쓸지 (끄면 기온·날씨를 직접 바꿔 효과 확인). 내비 경로는 항상 예보 사용 */
+    val useForecast: Boolean = true,
 )
 
 enum class RouteSource { NAVI, DEMO }
@@ -88,7 +90,7 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
                 val profile = ProfileStore.load(getApplication())
                 val temp = s.input.tempC.toDouble()
                 val reading = BatteryReader.read(getApplication())
-                val cond = reading?.let { TripConditions.from(it, profile, temp, s.input.weather) }
+                val base = reading?.let { TripConditions.from(it, profile, temp, s.input.weather) }
                     ?: TripConditions(
                         socPercent = s.socPercent, profile = profile.withNominalCapacity(s.battery.capacityKwh),
                         tempC = temp, weather = s.input.weather, occupants = s.input.manualOccupants,
@@ -102,6 +104,9 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
                     Triple(RouteSource.DEMO, DEMO_DEST, DEMO_ORIGIN)
                 }
                 val trip = if (source == RouteSource.NAVI) navi.trip(dest) else null
+                val cond = if (source == RouteSource.NAVI || s.input.useForecast) {
+                    planner.withRouteWeather(base, origin, dest, trip?.etaMin ?: dest.remainMin)
+                } else base
 
                 val rec = planner.recommend(cond, origin, dest, trip)
                 _ui.update {
