@@ -294,8 +294,11 @@ function render(dest, dep, res) {
 
   const rec = $("rec");
   if (res.plan.kind === "none") {
+    const m = res.mealStop;
     rec.innerHTML = `<div class="name" style="color:var(--good)">충전 없이 도착할 수 있어요</div>` +
-      luckRow(dep, res.direct.samples.total, res.direct.samples.dest);
+      luckRow(dep, res.direct.samples.total, res.direct.samples.dest) +
+      (m ? `<div style="color:var(--warn);margin-top:8px">🍚 ${res.meal.label}은 <b>${m.station.name}</b> (${Math.round(m.atKm)}km, 약 ${fmtClock(dep + m.atKm / res.route.distanceKm * res.direct.minutesP50 * 60000)} 도착)에서 · ` +
+        `먹는 동안 ${P(m.plan.chargeToSoc)}까지 채우면 목적지 도착 약 ${P(m.plan.destSocP50)}</div>` : "");
   } else if (res.plan.kind === "infeasible") {
     rec.innerHTML = `<div class="name" style="color:var(--bad)">경로상 충전소로는 어려워요</div>` +
       `<div class="muted">경로상 충전소 ${res.checked}곳을 최대 3번 들르는 조합까지 확인했지만, 도착 시 ${state.reserve}% 이상 남기는 계획이 없습니다. 출발 전 더 충전하거나 도착 시 최소 배터리를 낮춰 보세요.</div>`;

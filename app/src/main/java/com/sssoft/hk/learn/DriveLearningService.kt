@@ -156,7 +156,8 @@ class DriveLearningService : Service() {
         )
         val rec = planner.recommend(cond, here, dest, trip, forecast = true)
         val line1 = when (val p = rec.plan) {
-            is ChargePlanResult.NoChargeNeeded -> "충전 없이 도착 · 도착 배터리 약 ${pct(rec.direct.socP50)}"
+            is ChargePlanResult.NoChargeNeeded -> "충전 없이 도착 · 도착 배터리 약 ${pct(rec.direct.socP50)}" +
+                (rec.mealStop?.let { " · ${rec.meal?.label ?: "식사"}은 ${it.station.name}에서 (먹는 동안 ${pct(it.plan.chargeToSoc)}까지)" } ?: "")
             is ChargePlanResult.Infeasible -> "경로상 충전소로는 어려워요 · 출발 전 충전을 권합니다"
             is ChargePlanResult.Plan -> {
                 val b = rec.best!!

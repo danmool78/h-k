@@ -131,6 +131,14 @@ private fun RecommendationCard(ui: RangeUiState, onAddWaypoint: () -> Unit) {
                 is ChargePlanResult.NoChargeNeeded -> {
                     Text("충전 없이 도착할 수 있어요", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Good)
                     Text("목적지 도착 시 배터리 약 ${pct(rec.direct.socP50)} (적게 남으면 ${pct(rec.direct.socP10)})", fontSize = 20.sp)
+                    rec.mealStop?.let { m ->
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "🍚 ${rec.meal?.label ?: "식사"}은 ${m.station.name} (${m.atKm.roundToInt()}km)에서 · " +
+                                "먹는 동안 ${pct(m.plan.chargeToSoc)}까지 채우면 도착 약 ${pct(m.plan.destSocP50)}",
+                            fontSize = 20.sp, color = MealAmber,
+                        )
+                    }
                 }
                 is ChargePlanResult.Infeasible -> {
                     Text("경로상 충전소로는 어려워요", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Bad)

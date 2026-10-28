@@ -270,6 +270,12 @@ export class MonteCarlo {
           if (tgt > MAX_TARGET + 1e-9) break;
           tgts[depth] = tgt;
           const dw = dwell + meanDwell(c, arr, tgt, eat);
+          if (last && eat) {
+            // 밥 먹는 시간 안에 끝나는 만큼은 더 채워도 시간이 안 든다 → 도착 배터리를 넉넉하게
+            let more = tgt;
+            while (more + 0.05 <= MAX_TARGET + 1e-9 && meanDwell(c, arr, more + 0.05, true) - cs[c].detourMin <= meal.minutes - 3) more += 0.05;
+            tgts[depth] = more;
+          }
           if (last) { record(depth + 1, m, dw); break; }
           if (depth + 1 < maxStops) extend(q, tgt, depth + 1, dw, m);
         }
@@ -427,10 +433,6 @@ export async function recommend(api, inp) {
   const cands = rc.chargers.filter((v) => v.total - v.outOfService > 0);
   const base = { route, direct, env, weather: { tempC, kind: weather, forecast }, checked: cands.length, candidates: cands };
   const arrivalReserve = inp.arrivalReserve ?? 0.30;
-  // 충전 없이도 95% 확률로 [arrivalReserve] 이상 남으면 충전 불필요
-  const directOk = direct.socP10 >= arrivalReserve && mc.arrivalShare(soc0, totalKm, totalMin, arrivalReserve) >= 0.95;
-  if (directOk) return { ...base, plan: { kind: "none", probability: direct.probability }, options: [], baseline: null, savedMin: null };
-
   // 가는 길에 점심·저녁 시간이 걸리면 식당 있는 휴게소에서 밥 먹으며 충전하는 계획도 비교
   const meal = inp.meal === false ? null : mealWindow(departMs, totalMin);
   const byId = new Map(cands.map((v) => [v.id, v]));
@@ -440,9 +442,17 @@ export async function recommend(api, inp) {
     id: v.id, atKm: v.atKm, powerKw: Math.min(Math.max(v.maxKw, 30), 350), waitMeanMin: waits.get(v.id), detourMin: v.detourMin,
     detourSigma: v.restArea ? 0.2 : 0.6, mealOk: v.restArea && v.name.includes("휴게소"),
   }));
+  const option = (p) => { const v = byId.get(p.charger); return { station: v, atKm: v.atKm, waitMin: waits.get(v.id), plan: p }; };
+  // 충전 없이도 95% 확률로 [arrivalReserve] 이상 남으면 충전 불필요
+  const directOk = direct.socP10 >= arrivalReserve && mc.arrivalShare(soc0, totalKm, totalMin, arrivalReserve) >= 0.95;
+  if (directOk) {
+    // 그래도 식사 시간이 걸리면 밥 먹을 휴게소를 고르고, 먹는 동안 채운다 (시간 손해 없음)
+    const ms = meal ? mc.planPerFirstStop(soc0, totalKm, totalMin, chargers.filter((c) => c.mealOk), arrivalReserve, 0.95, meal, 1).filter((p) => p.stops[0]?.meal) : [];
+    const mealStop = ms.length ? option(ms.reduce((a, b) => (score(b) < score(a) ? b : a))) : null;
+    return { ...base, meal, stations: byId, mealStop, plan: { kind: "none", probability: direct.probability }, options: [], baseline: null, savedMin: null };
+  }
   // 첫 충전소마다 그 뒤 충전소(최대 3곳)·충전량·식사까지 포함한 가장 빠른 계획
-  const options = mc.planPerFirstStop(soc0, totalKm, totalMin, chargers, arrivalReserve, 0.95, meal)
-    .map((p) => { const v = byId.get(p.charger); return { station: v, atKm: v.atKm, waitMin: waits.get(v.id), plan: p }; });
+  const options = mc.planPerFirstStop(soc0, totalKm, totalMin, chargers, arrivalReserve, 0.95, meal).map(option);
   options.sort((a, b) => score(a.plan) - score(b.plan));
   const baseline = options.reduce((m, o) => (!m || o.station.maxKw > m.station.maxKw ? o : m), null);
   const best = options[0];

@@ -101,6 +101,8 @@ data class ChargingRecommendation(
     val stations: Map<String, StationView> = emptyMap(),
     /** 가는 길에 걸린 식사 시간대 */
     val meal: MealWindow? = null,
+    /** 충전은 필요 없지만 식사 시간이 걸릴 때: 밥 먹을 휴게소와 먹는 동안 채울 만큼 */
+    val mealStop: StopOption? = null,
 ) {
     fun stationOf(stop: PlannedStop): StationView? = stations[stop.charger]
 
@@ -229,9 +231,6 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
         }
         cands = cands.filter { it.view.inService > 0 }.distinctBy { it.view.id }
 
-        if (direct.probability >= 0.95) {
-            return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env, c, route, navSoc)
-        }
         val meal = if (c.meal) mealWindow(c.departMs, totalMin) else null
 
         val waits = cands.associate { it.view.id to expectedWaitMin(it.view, departOffsetMin + it.ratio * totalMin) }
@@ -243,12 +242,25 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
             )
         }
         val byId = cands.associateBy { it.view.id }
+        fun option(p: ChargePlanResult.Plan): StopOption {
+            val cd = byId.getValue(p.charger)
+            return StopOption(cd.view, cd.ratio * totalKm, cd.ratio * totalMin, waits.getValue(p.charger), p, cd.naviPick, cd.restArea)
+        }
+        if (direct.probability >= 0.95) {
+            // 충전 없이 가도 되지만 식사 시간이 걸리면, 밥 먹을 휴게소를 고르고 먹는 동안 채운다 (시간 손해 없음)
+            val mealStop = meal?.let { m ->
+                mc.bestPlanPerFirstStop(soc0, totalKm, totalMin, env, chargers.filter { it.mealOk }, c.arrivalReserveSoc, meal = m, maxStops = 1)
+                    .filter { it.stops.firstOrNull()?.meal == true }
+                    .minByOrNull(EvMonteCarlo::score)?.let(::option)
+            }
+            return ChargingRecommendation(
+                ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env, c, route, navSoc,
+                cands.associate { it.view.id to it.view }, meal, mealStop,
+            )
+        }
         // 첫 충전소마다, 그 뒤 충전소(최대 3곳)·충전량·식사까지 포함한 가장 빠른 계획
         val options = mc.bestPlanPerFirstStop(soc0, totalKm, totalMin, env, chargers, c.arrivalReserveSoc, meal = meal)
-            .map { p ->
-                val cd = byId.getValue(p.charger)
-                StopOption(cd.view, cd.ratio * totalKm, cd.ratio * totalMin, waits.getValue(p.charger), p, cd.naviPick, cd.restArea)
-            }
+            .map(::option)
             .sortedBy { EvMonteCarlo.score(it.plan) }
         val baseline = options.firstOrNull { it.naviPick } ?: options.maxByOrNull { it.station.maxKw }
         val plan = options.firstOrNull()?.plan ?: ChargePlanResult.Infeasible(direct.probability)

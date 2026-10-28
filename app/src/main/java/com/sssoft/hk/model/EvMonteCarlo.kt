@@ -304,6 +304,14 @@ class EvMonteCarlo(
                     if (tgt > MAX_TARGET + 1e-9) break
                     tgts[depth] = tgt
                     val dw = dwell + rs.meanDwell(c, arr, tgt, if (mealHere) meal else null)
+                    if (last && mealHere) {
+                        // 밥 먹는 시간 안에 끝나는 만큼은 더 채워도 시간이 안 든다 → 도착 배터리를 넉넉하게
+                        var more = tgt
+                        while (more + 0.05 <= MAX_TARGET + 1e-9 &&
+                            rs.meanDwell(c, arr, more + 0.05, meal) - rs.cs[c].detourMin <= meal!!.minutes - MEAL_SLACK_MIN
+                        ) more += 0.05
+                        tgts[depth] = more
+                    }
                     if (last) {
                         record(depth + 1, m, dw)
                         break
@@ -503,6 +511,8 @@ class EvMonteCarlo(
         private const val SCREEN_Z = 1.75
         private const val KEEP_PER_FIRST = 3
         private const val MAX_BUMPS = 8
+        /** 밥 먹는 동안 더 채울 때 남겨 두는 여유 (분): 대기·충전이 조금 길어져도 식사 시간 안에 끝나게 */
+        private const val MEAL_SLACK_MIN = 3.0
 
         fun ceil05(x: Double) = kotlin.math.ceil(x / 0.05 - 1e-6) * 0.05
 
