@@ -10,8 +10,10 @@
 export type EvseStatus = "AVAILABLE" | "CHARGING" | "OUTOFORDER" | "INOPERATIVE" | "UNKNOWN";
 
 export interface Evse {
-  /** 커넥터 규격 (OCPI ConnectorType 이름 또는 출처 원본 코드) */
+  /** 대표 커넥터 규격 (OCPI ConnectorType 이름 또는 출처 원본 코드) */
   standard: string;
+  /** 지원하는 커넥터 전부 (예: ["CHADEMO", "CCS1"]). 차와 맞는 충전기만 셀 때 쓴다 */
+  connectors?: string[];
   /** 최대 출력 kW */
   kw: number;
 }

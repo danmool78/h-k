@@ -23,7 +23,9 @@ import { logger } from "firebase-functions";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { StationMap, StationView, StatusMap, migrateStationKeys, nearby, stationView, upgradeLegacy } from "./chargers";
+import {
+  StationMap, StationView, StatusMap, compatibleStations, migrateStationKeys, nearby, stationView, upgradeLegacy,
+} from "./chargers";
 import { detourMin, isRestArea, osrm, pickCandidates, routeCached, simplifyShape, stationsAlongRoute } from "./routing";
 import { daysUntil, getApiKeyConfig, getSyncState } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
@@ -92,6 +94,20 @@ async function historyIndex(ver: string): Promise<string[] | null> {
   return indexCache.get(ver)!;
 }
 
+/** 차량 커넥터 규격. 기본은 현대·기아 국내 전기차의 DC콤보(CCS1) */
+const DEFAULT_CONNECTOR = "CCS1";
+const compatCache = new Map<string, { at: number; stations: StationMap }>();
+
+/** 스냅샷에서 [connector] 와 맞는 충전기만 남긴 목록 (스냅샷이 갱신되면 다시 만듦) */
+async function stationsFor(connector: string): Promise<StationMap> {
+  const s = await snapshot();
+  const hit = compatCache.get(connector);
+  if (hit && hit.at === s.at) return hit.stations;
+  const stations = compatibleStations(s.stations, connector);
+  compatCache.set(connector, { at: s.at, stations });
+  return stations;
+}
+
 function withForecast(v: StationView, occ: OccupancyMap, now: number, etaMin: number | undefined) {
   return etaMin === undefined ? v : { ...v, forecast: forecast(occ, v.id, now + etaMin * 60_000) };
 }
@@ -129,7 +145,8 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
       const limit = Math.min(num(req.query.limit, 20)!, 100);
       const etaMin = num(req.query.etaMin);
       const s = await snapshot();
-      const views = nearby(s.stations, s.statuses, lat, lng, radiusKm, limit, now);
+      const st = await stationsFor(String(req.query.connector ?? DEFAULT_CONNECTOR));
+      const views = nearby(st, s.statuses, lat, lng, radiusKm, limit, now);
       res.json({ stations: views.map((v) => withForecast(v, s.occ, now, etaMin)) });
       return;
     }
@@ -142,8 +159,9 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
       }
       const radiusKm = Math.min(num(req.body?.radiusKm, 0.3)!, 5);
       const s = await snapshot();
+      const st = await stationsFor(String(req.body?.connector ?? DEFAULT_CONNECTOR));
       const matches = points.map((p) => {
-        const v = nearby(s.stations, s.statuses, p.lat, p.lng, radiusKm, 1, now)[0];
+        const v = nearby(st, s.statuses, p.lat, p.lng, radiusKm, 1, now)[0];
         return v ? withForecast(v, s.occ, now, num(p.etaMin)) : null;
       });
       res.json({ matches });
@@ -159,10 +177,11 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
       const offset = num(req.body?.departOffsetMin, 0)!;
       const route = await routeCached(osrm, o, d);
       const s = await snapshot();
-      const along = pickCandidates(stationsAlongRoute(route, s.stations, 5), s.stations);
+      const st = await stationsFor(String(req.body?.connector ?? DEFAULT_CONNECTOR));
+      const along = pickCandidates(stationsAlongRoute(route, st, 5), st);
       const chargers = along.map((rs) => {
         const etaMin = offset + route.durationMin * rs.atKm / route.distanceKm;
-        const v = stationView(s.stations[rs.stationId], s.statuses, now, rs.offRouteKm);
+        const v = stationView(st[rs.stationId], s.statuses, now, rs.offRouteKm);
         return {
           ...withForecast(v, s.occ, now, etaMin), atKm: Math.round(rs.atKm * 10) / 10,
           offRouteKm: Math.round(rs.offRouteKm * 100) / 100, detourMin: Math.round(detourMin(rs.offRouteKm, rs.restArea) * 10) / 10, restArea: rs.restArea,
@@ -190,7 +209,8 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
 
     if (req.method === "GET" && path === "/restareas") {
       const s = await snapshot();
-      const list = Object.values(s.stations).filter((st) => isRestArea(st.name)).map((st) => {
+      const compat = await stationsFor(String(req.query.connector ?? DEFAULT_CONNECTOR));
+      const list = Object.values(compat).filter((st) => isRestArea(st.name)).map((st) => {
         const v = stationView(st, s.statuses, now, 0);
         return {
           id: v.id, name: v.name, lat: v.lat, lng: v.lng, maxKw: v.maxKw, total: v.total,
@@ -233,7 +253,7 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
         res.status(400).json({ error: "day(yyyyMMdd), stationIds(1~80) 필요" });
         return;
       }
-      const s = await snapshot();
+      const compat = await stationsFor(String(req.body?.connector ?? DEFAULT_CONNECTOR));
       const files = (await listNames(`history/${day}/`)).filter((n) => {
         const t = n.split("/")[2].slice(0, 4);
         return t >= from && t <= to;
@@ -250,7 +270,7 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
         const st = decodeTick(order, buf, at);
         const stations: Record<string, { available: number; inService: number; waitMin: number | null }> = {};
         for (const id of ids) {
-          const station = s.stations[id];
+          const station = compat[id];
           if (!station) continue;
           const v = stationView(station, st, at, 0);
           stations[id] = { available: v.available, inService: v.total - v.outOfService, waitMin: v.waitMin };

@@ -7,6 +7,27 @@ import { Station, StationMap, StatusMap, StatusUpdate, statusKey } from "./provi
 
 export type { Station, StationMap, StatusMap } from "./providers/types";
 
+/** 충전기가 지원하는 커넥터. 예전 저장분(connectors 없음)은 대표 규격에서 복원 */
+export function connectorsOf(e: { standard: string; connectors?: string[] }): string[] {
+  if (e.connectors?.length) return e.connectors;
+  switch (e.standard) {
+    case "CHADEMO": return ["CHADEMO"];            // 환경공단 01, 03 (DC콤보 없음)
+    case "TESLA_S": return ["NACS"];                // 09
+    case "IEC_62196_T1_COMBO": return ["CCS1"];     // 04, 05, 06, 10 (모두 DC콤보 포함)
+    default: return [e.standard];
+  }
+}
+
+/** [connector] 를 꽂을 수 있는 충전기만 남긴 충전소 목록 (하나도 없으면 충전소 제외) */
+export function compatibleStations(stations: StationMap, connector: string): StationMap {
+  const out: StationMap = {};
+  for (const s of Object.values(stations)) {
+    const chargers = Object.fromEntries(Object.entries(s.chargers).filter(([, e]) => connectorsOf(e).includes(connector)));
+    if (Object.keys(chargers).length) out[s.id] = { ...s, chargers };
+  }
+  return out;
+}
+
 /** 상태 변경분 반영. 알려진 급속 충전기만, 더 최신일 때만 갱신. 반영 개수를 반환. */
 export function applyStatus(statuses: StatusMap, stations: StationMap, updates: StatusUpdate[]): number {
   let n = 0;

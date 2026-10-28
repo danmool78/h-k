@@ -12,6 +12,12 @@ const PREFIX = "KR:";
 /** 완속 충전기 타입. 02: AC완속, 07: AC3상, 08: DC콤보(완속) */
 const SLOW_TYPES = new Set(["02", "07", "08"]);
 
+/** 환경공단 충전기 타입 → 지원 커넥터 (현대·기아 국내 전기차는 CCS1 = DC콤보) */
+export const CONNECTORS: Record<string, string[]> = {
+  "01": ["CHADEMO"], "03": ["CHADEMO", "AC3"], "04": ["CCS1"], "05": ["CHADEMO", "CCS1"],
+  "06": ["CHADEMO", "AC3", "CCS1"], "09": ["NACS"], "10": ["CCS1", "NACS"],
+};
+
 /** 환경공단 충전기 타입 → OCPI 커넥터 이름 (대표 규격) */
 const STANDARD: Record<string, string> = {
   "01": "CHADEMO", "03": "CHADEMO", "04": "IEC_62196_T1_COMBO", "05": "IEC_62196_T1_COMBO",
@@ -62,7 +68,9 @@ export function convert(items: ChargerInfoItem[]): { stations: StationMap; statu
       name: it.statNm, addr: it.addr, lat, lng, operator: it.busiNm,
       highway: it.trafficYn === "Y", region: it.zcode, chargers: {},
     });
-    s.chargers[it.chgerId] = { standard: STANDARD[it.chgerType] ?? it.chgerType, kw: Number(it.output) || 50 };
+    s.chargers[it.chgerId] = {
+      standard: STANDARD[it.chgerType] ?? it.chgerType, connectors: CONNECTORS[it.chgerType] ?? [], kw: Number(it.output) || 50,
+    };
     statuses[statusKey(id, it.chgerId)] = state(it.stat, it.statUpdDt, it.nowTsdt);
   }
   return { stations, statuses };

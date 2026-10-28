@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyStatus, migrateStationKeys, nearby, upgradeLegacy } from "./chargers";
+import { applyStatus, compatibleStations, connectorsOf, migrateStationKeys, nearby, upgradeLegacy } from "./chargers";
 import { ChargerInfoItem } from "./evApi";
 import { convert, mapStatus, parseKst } from "./providers/krKeco";
 import { statusKey } from "./providers/types";
@@ -28,6 +28,22 @@ test("한국 출처: 완속·삭제·이용 제한 충전기 제외, ID 에 국�
   assert.equal(stations[ID].chargers["01"].standard, "IEC_62196_T1_COMBO");
   assert.equal(statuses[statusKey(ID, "01")].status, "CHARGING");
   assert.equal(statuses[statusKey(ID, "01")].sessionStartMs, parseKst("20261028110000"));
+});
+
+test("현대·기아(DC콤보) 와 맞는 충전기만: 차데모·테슬라 전용 제외, 혼합형은 포함", () => {
+  const { stations } = convert([
+    { ...base, statId: "A", chgerId: "01", chgerType: "01" },   // 차데모 전용
+    { ...base, statId: "A", chgerId: "02", chgerType: "04" },   // DC콤보
+    { ...base, statId: "B", chgerId: "01", chgerType: "09" },   // 테슬라 전용
+    { ...base, statId: "C", chgerId: "01", chgerType: "06" },   // 차데모+AC3상+DC콤보
+  ]);
+  const ccs = compatibleStations(stations, "CCS1");
+  assert.deepEqual(Object.keys(ccs).sort(), ["KR:A", "KR:C"]);
+  assert.deepEqual(Object.keys(ccs["KR:A"].chargers), ["02"]);
+  assert.deepEqual(Object.keys(compatibleStations(stations, "NACS")), ["KR:B"]);
+  // 예전 저장분(connectors 없음)도 대표 규격에서 복원
+  assert.deepEqual(connectorsOf({ standard: "CHADEMO" }), ["CHADEMO"]);
+  assert.deepEqual(connectorsOf({ standard: "IEC_62196_T1_COMBO" }), ["CCS1"]);
 });
 
 test("한국 상태 코드 → 표준 상태", () => {
