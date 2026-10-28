@@ -45,7 +45,7 @@ export const syncStations = onSchedule(
 );
 
 export const syncStatus = onSchedule(
-  { schedule: "every 5 minutes", timeZone: "Asia/Seoul", timeoutSeconds: 300, memory: "1GiB" },
+  { schedule: "every 5 minutes", timeZone: "Asia/Seoul", timeoutSeconds: 300, memory: "2GiB" },
   async () => {
     await syncStatusNow();
     // 조회 API 인스턴스를 깨워 두고 캐시를 새 데이터로 미리 채운다 (Gleo 7초 제한 대비 콜드 스타트 회피)

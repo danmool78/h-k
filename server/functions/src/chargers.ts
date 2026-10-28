@@ -1,108 +1,23 @@
 /**
- * 충전소 스냅샷 모델과 조회 로직 (Firebase 의존 없음 → 단위 테스트 가능).
+ * 충전소 스냅샷 조회 로직 (출처 무관, Firebase 의존 없음 → 단위 테스트 가능).
+ * 형식은 providers/types.ts.
  */
-import { ChargerInfoItem, ChargerStatusItem, isFastCharger } from "./evApi";
+import { Station, StationMap, StatusMap, StatusUpdate, statusKey } from "./providers/types";
 
-/** 충전기 상태 코드. */
-export const Stat = {
-  COMM_ERROR: "1",
-  AVAILABLE: "2",
-  CHARGING: "3",
-  SUSPENDED: "4",
-  MAINTENANCE: "5",
-  UNKNOWN: "9",
-} as const;
+export type { Station, StationMap, StatusMap } from "./providers/types";
 
-export interface ChargerSpec {
-  type: string;
-  kw: number;
-}
-
-export interface Station {
-  id: string;
-  name: string;
-  addr: string;
-  lat: number;
-  lng: number;
-  operator: string;
-  highway: boolean;
-  zcode: string;
-  chargers: Record<string, ChargerSpec>;
-}
-
-/** 충전기별 동적 상태. key = `${statId}:${chgerId}` */
-export interface ChargerStatus {
-  stat: string;
-  updDt: string;
-  nowTsdt: string;
-  lastTsdt: string;
-  lastTedt: string;
-}
-
-export type StationMap = Record<string, Station>;
-export type StatusMap = Record<string, ChargerStatus>;
-
-export const statusKey = (statId: string, chgerId: string) => `${statId}:${chgerId}`;
-
-/** getChargerInfo 결과에서 급속 충전소만 모아 스테이션/초기 상태 생성. */
-export function buildStations(items: ChargerInfoItem[]): { stations: StationMap; statuses: StatusMap } {
-  const stations: StationMap = {};
-  const statuses: StatusMap = {};
-  for (const it of items) {
-    if (it.delYn === "Y" || !isFastCharger(it)) continue;
-    const lat = Number(it.lat);
-    const lng = Number(it.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0) continue;
-
-    const s = (stations[it.statId] ??= {
-      id: it.statId,
-      name: it.statNm,
-      addr: it.addr,
-      lat,
-      lng,
-      operator: it.busiNm,
-      highway: it.trafficYn === "Y",
-      zcode: it.zcode,
-      chargers: {},
-    });
-    s.chargers[it.chgerId] = { type: it.chgerType, kw: Number(it.output) || 50 };
-    statuses[statusKey(it.statId, it.chgerId)] = {
-      stat: it.stat,
-      updDt: it.statUpdDt,
-      nowTsdt: it.nowTsdt,
-      lastTsdt: it.lastTsdt,
-      lastTedt: it.lastTedt,
-    };
-  }
-  return { stations, statuses };
-}
-
-/** 상태 변경분을 반영. 알려진 급속 충전기만 갱신하고, 반영 개수를 반환. */
-export function applyStatus(statuses: StatusMap, stations: StationMap, items: ChargerStatusItem[]): number {
+/** 상태 변경분 반영. 알려진 급속 충전기만, 더 최신일 때만 갱신. 반영 개수를 반환. */
+export function applyStatus(statuses: StatusMap, stations: StationMap, updates: StatusUpdate[]): number {
   let n = 0;
-  for (const it of items) {
-    if (!stations[it.statId]?.chargers[it.chgerId]) continue;
-    const key = statusKey(it.statId, it.chgerId);
+  for (const u of updates) {
+    if (!stations[u.stationId]?.chargers[u.evseId]) continue;
+    const key = statusKey(u.stationId, u.evseId);
     const prev = statuses[key];
-    if (prev && prev.updDt >= it.statUpdDt) continue;
-    statuses[key] = {
-      stat: it.stat,
-      updDt: it.statUpdDt,
-      nowTsdt: it.nowTsdt,
-      lastTsdt: it.lastTsdt,
-      lastTedt: it.lastTedt,
-    };
+    if (prev && prev.updatedAt >= u.state.updatedAt) continue;
+    statuses[key] = u.state;
     n++;
   }
   return n;
-}
-
-/** "yyyyMMddHHmmss" (KST) → epoch ms. 빈 값이면 null. */
-export function parseKst(s: string | undefined): number | null {
-  if (!s || s.length < 12) return null;
-  const iso = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14) || "00"}+09:00`;
-  const t = Date.parse(iso);
-  return Number.isNaN(t) ? null : t;
 }
 
 /** 충전 1회 평균 소요(분). 출력이 높을수록 짧다고 가정 — 이력 데이터로 교체 예정. */
@@ -115,12 +30,14 @@ export function typicalSessionMin(kw: number): number {
 export interface ChargerView {
   id: string;
   kw: number;
-  stat: string;
+  status: string;
   chargingMin: number | null;   // 충전 중이면 경과 분
 }
 
 export interface StationView {
   id: string;
+  provider: string;
+  country: string;
   name: string;
   addr: string;
   lat: number;
@@ -148,39 +65,27 @@ export function stationView(s: Station, statuses: StatusMap, now: number, distan
 
   for (const [cid, spec] of Object.entries(s.chargers)) {
     const st = statuses[statusKey(s.id, cid)];
-    const stat = st?.stat ?? Stat.UNKNOWN;
+    const status = st?.status ?? "UNKNOWN";
     maxKw = Math.max(maxKw, spec.kw);
     let chargingMin: number | null = null;
-    if (stat === Stat.AVAILABLE) {
+    if (status === "AVAILABLE") {
       available++;
-    } else if (stat === Stat.CHARGING) {
+    } else if (status === "CHARGING") {
       charging++;
-      const start = parseKst(st?.nowTsdt);
-      chargingMin = start != null ? Math.max(0, Math.round((now - start) / 60_000)) : null;
+      chargingMin = st?.sessionStartMs != null ? Math.max(0, Math.round((now - st.sessionStartMs) / 60_000)) : null;
       remaining.push(Math.max(5, typicalSessionMin(spec.kw) - (chargingMin ?? 0)));
     } else {
       outOfService++;
     }
-    chargers.push({ id: cid, kw: spec.kw, stat, chargingMin });
+    chargers.push({ id: cid, kw: spec.kw, status, chargingMin });
   }
 
   const waitMin = available > 0 ? 0 : remaining.length > 0 ? Math.min(...remaining) : null;
   return {
-    id: s.id,
-    name: s.name,
-    addr: s.addr,
-    lat: s.lat,
-    lng: s.lng,
-    operator: s.operator,
-    highway: s.highway,
+    id: s.id, provider: s.provider, country: s.country, name: s.name, addr: s.addr, lat: s.lat, lng: s.lng,
+    operator: s.operator, highway: s.highway,
     distanceKm: Math.round(distanceKm * 100) / 100,
-    maxKw,
-    total: chargers.length,
-    available,
-    charging,
-    outOfService,
-    waitMin,
-    chargers,
+    maxKw, total: chargers.length, available, charging, outOfService, waitMin, chargers,
   };
 }
 
@@ -203,4 +108,19 @@ export function nearby(
   }
   hits.sort((a, b) => a[1] - b[1]);
   return hits.slice(0, limit).map(([s, d]) => stationView(s, statuses, now, d));
+}
+
+/**
+ * 출처 구분 전 형식의 충전소 ID 키(접두사 없는 한국 ID) → "KR:" 접두사 (혼잡도 통계·1시간 전 기록 이전용, 한 번만 필요).
+ * 반환: 바꾼 게 있는지.
+ */
+export function migrateStationKeys<T>(map: Record<string, T>): boolean {
+  let changed = false;
+  for (const k of Object.keys(map)) {
+    if (k.includes(":")) continue;
+    map[`KR:${k}`] = map[k];
+    delete map[k];
+    changed = true;
+  }
+  return changed;
 }

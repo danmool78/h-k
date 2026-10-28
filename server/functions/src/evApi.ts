@@ -12,8 +12,6 @@ export const ZCODES = [
   "43", "44", "45", "46", "47", "48", "50", "51", "52",
 ];
 
-/** 완속 충전기 타입. 02: AC완속, 07: AC3상, 08: DC콤보(완속) */
-const SLOW_TYPES = new Set(["02", "07", "08"]);
 
 export interface ChargerInfoItem {
   statNm: string;
@@ -94,10 +92,6 @@ async function fetchAll<T>(op: string, params: Record<string, string>, key: stri
     out.push(...p.items);
     if (p.items.length === 0 || out.length >= p.totalCount) return out;
   }
-}
-
-export function isFastCharger(item: Pick<ChargerInfoItem, "chgerType">): boolean {
-  return !SLOW_TYPES.has(item.chgerType);
 }
 
 export function fetchChargerInfo(zcode: string, key: string): Promise<ChargerInfoItem[]> {

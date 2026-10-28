@@ -6,7 +6,8 @@
  *
  * 저장 형식: statId → base64(336바이트) = 사용률 168바이트(0~200, 0.5% 단위) + 표본수 168바이트(최대 MAX_N)
  */
-import { Stat, StationMap, StatusMap, statusKey } from "./chargers";
+import { StationMap, StatusMap } from "./chargers";
+import { statusKey } from "./providers/types";
 
 export const SLOTS = 168;
 /** 칸당 표본 상한. 5분 간격이면 칸당 주 12회 → 약 4주 이동평균. */
@@ -38,11 +39,11 @@ export function currentBusyRatio(statId: string, chargerIds: string[], statuses:
   let charging = 0;
   let inService = 0;
   for (const cid of chargerIds) {
-    const stat = statuses[statusKey(statId, cid)]?.stat;
-    if (stat === Stat.CHARGING) {
+    const status = statuses[statusKey(statId, cid)]?.status;
+    if (status === "CHARGING") {
       charging++;
       inService++;
-    } else if (stat === Stat.AVAILABLE) {
+    } else if (status === "AVAILABLE") {
       inService++;
     }
   }

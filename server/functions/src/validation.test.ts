@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { StationMap, StatusMap } from "./chargers";
+import { EvseStatus } from "./providers/types";
 import { MIN_N_FOR_FORECAST, recordOccupancy } from "./occupancy";
 import { LAG_TICKS, LagMap, ValidationMap, summarize, validateAndShift } from "./validation";
 
 const stations: StationMap = {
   S1: {
-    id: "S1", name: "A", addr: "", lat: 0, lng: 0, operator: "", highway: true, zcode: "41",
-    chargers: { "01": { type: "04", kw: 200 }, "02": { type: "04", kw: 200 } },
+    id: "S1", provider: "test", country: "KR", name: "A", addr: "", lat: 0, lng: 0, operator: "", highway: true, region: "41",
+    chargers: { "01": { standard: "IEC_62196_T1_COMBO", kw: 200 }, "02": { standard: "IEC_62196_T1_COMBO", kw: 200 } },
   },
 };
+const st = (c: string): EvseStatus => (c === "2" ? "AVAILABLE" : c === "3" ? "CHARGING" : "OUTOFORDER");
 const status = (a: string, b: string): StatusMap => ({
-  "S1:01": { stat: a, updDt: "", nowTsdt: "", lastTsdt: "", lastTedt: "" },
-  "S1:02": { stat: b, updDt: "", nowTsdt: "", lastTsdt: "", lastTedt: "" },
+  "S1:01": { status: st(a), updatedAt: 0, sessionStartMs: null },
+  "S1:02": { status: st(b), updatedAt: 0, sessionStartMs: null },
 });
 const T = Date.parse("2026-10-30T18:10:00+09:00");
 

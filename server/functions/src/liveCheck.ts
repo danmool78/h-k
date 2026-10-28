@@ -1,9 +1,10 @@
 /**
- * Firebase 없이 실제 공공데이터 API로 수집 → 조회 흐름을 점검.
+ * Firebase 없이 실제 출처 API로 수집 → 조회 흐름을 점검 (한국 출처, 한 지역만).
  *   DATA_GO_KR_KEY=... node lib/liveCheck.js [zcode=50] [lat] [lng]
  */
-import { applyStatus, buildStations, nearby } from "./chargers";
+import { applyStatus, nearby } from "./chargers";
 import { fetchChargerInfo, fetchChargerStatus } from "./evApi";
+import { convert, mapStatus, parseKst } from "./providers/krKeco";
 
 async function main() {
   const key = process.env.DATA_GO_KR_KEY;
@@ -12,12 +13,16 @@ async function main() {
 
   let t = Date.now();
   const info = await fetchChargerInfo(zcode, key);
-  const { stations, statuses } = buildStations(info);
+  const { stations, statuses } = convert(info);
   console.log(`getChargerInfo zcode=${zcode}: ${info.length}대 → 급속 충전소 ${Object.keys(stations).length}곳 / ${Object.keys(statuses).length}대 (${Date.now() - t}ms)`);
 
   t = Date.now();
   const changes = await fetchChargerStatus(10, key);
-  const n = applyStatus(statuses, stations, changes);
+  const updates = changes.map((it) => ({
+    stationId: `KR:${it.statId}`, evseId: it.chgerId,
+    state: { status: mapStatus(it.stat), updatedAt: parseKst(it.statUpdDt) ?? 0, sessionStartMs: it.stat === "3" ? parseKst(it.nowTsdt) : null },
+  }));
+  const n = applyStatus(statuses, stations, updates);
   console.log(`getChargerStatus 10분: 전국 ${changes.length}건 중 이 지역 급속 ${n}건 반영 (${Date.now() - t}ms)`);
 
   const views = nearby(stations, statuses, Number(lat), Number(lng), 10, 5, Date.now());
