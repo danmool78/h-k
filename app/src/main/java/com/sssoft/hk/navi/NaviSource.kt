@@ -6,6 +6,7 @@ import ai.pleos.playground.navi.constants.RoutePointSettingType
 import ai.pleos.playground.navi.constants.WaypointIndex
 import ai.pleos.playground.navi.data.CurrentLocationInfo
 import ai.pleos.playground.navi.data.DestinationInfo
+import ai.pleos.playground.navi.data.DrivingInfo
 import ai.pleos.playground.navi.data.RequestWaypointInfo
 import ai.pleos.playground.navi.data.TripInfo
 import ai.pleos.playground.navi.data.TripRequest
@@ -34,7 +35,12 @@ data class Trip(
     val etaMin: Double,
     val estimatedSocAtDest: Int,
     val chargers: List<RouteCharger>,
+    /** 내비가 추천 충전소에 대해 계산한 충전 계획 (충전 시간 보정용) */
+    val chargePlans: List<NavChargePlan> = emptyList(),
 )
+
+/** 내비의 충전 계획: [durationMin] 동안 [startSoc] → [endSoc] (%), 충전소 최대 출력 [maxKw] */
+data class NavChargePlan(val name: String, val durationMin: Double, val startSoc: Int, val endSoc: Int, val maxKw: Double)
 
 /**
  * Pleos NaviHelper 래퍼. 요청 → 리스너 이벤트 응답 구조를 suspend 함수로 감싼다.
@@ -52,6 +58,8 @@ class NaviSource(context: Context) {
         class Waypoints(val d: CompletableDeferred<List<WaypointInfo>?>) : Pending
     }
 
+    @Volatile private var lastDrivingInfo: DrivingInfo? = null
+
     /** 경유지 도착 이벤트 (감시 서비스가 구독). */
     var onWaypointArrived: (() -> Unit)? = null
 
@@ -62,6 +70,10 @@ class NaviSource(context: Context) {
 
         override fun onCurrentLocationInfo(info: CurrentLocationInfo) {
             (pending as? Pending.Loc)?.d?.complete(info)
+        }
+
+        override fun onDrivingInfo(info: DrivingInfo) {
+            lastDrivingInfo = info
         }
 
         override fun onTripInfo(info: TripInfo) {
@@ -139,7 +151,13 @@ class NaviSource(context: Context) {
                     naviPick = it.settingType == RoutePointSettingType.AUTO,
                 )
             }
-        return Trip(info.distance / 1000.0, info.eta / 60.0, info.estimatedSocAtDest, chargers)
+        val plans = lastDrivingInfo?.waypoints.orEmpty().filter { it.isChargingStation && (it.chargingPlan?.duration ?: 0) > 0 }.map {
+            val p = it.chargingPlan!!
+            // 단위가 문서에 없음: 300 넘으면 초로 본다 (에뮬레이터에서 확인 필요)
+            val min = if (p.duration > 300) p.duration / 60.0 else p.duration.toDouble()
+            NavChargePlan(it.name, min, p.startSoc, p.endSoc, it.maxChargingPower.toDouble())
+        }
+        return Trip(info.distance / 1000.0, info.eta / 60.0, info.estimatedSocAtDest, chargers, plans)
     }
 
     /**

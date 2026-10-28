@@ -88,6 +88,8 @@ export async function replay({ origin, dest, day, departTime, soc, arrivalReserv
         }
       }
     }
+    // 출발 시점에 이 방식이 예측한 총 소요 (내비 방식은 대기를 모르니 대기 없이 계산한 값)
+    const predictedMin = firstChoice.p.minutesP50;
     const c = choice.c, p = choice.p;
     const driveMin1 = totalMin * c.atKm / totalKm;
     const arriveAt = departAt + driveMin1 * 60_000;
@@ -104,7 +106,7 @@ export async function replay({ origin, dest, day, departTime, soc, arrivalReserv
     events.push({ t: driveMin1 + waitMin, text: `${Math.round(chargeMin)}분 충전 → ${Math.round(p.chargeToSoc * 100)}%`, kind: "charge" });
     events.push({ t: total, text: `도착 · 배터리 약 ${Math.round(p.destSocP50 * 100)}%`, kind: "arrive" });
     return {
-      name, stop: c, plan: p, events, totalMin: total,
+      name, stop: c, plan: p, events, totalMin: total, predictedMin,
       legs: { driveMin1, waitMin, chargeMin, driveMin2, detourMin: c.detourMin + 3 },
       socs: { start: soc0, atCharger: p.socAtChargerP50, after: p.chargeToSoc, dest: p.destSocP50 },
     };

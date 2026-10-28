@@ -35,12 +35,23 @@ class DriveRecorder(
 ) {
     sealed interface Event {
         data class Segment(val segment: DriveSegment, val deltaWh: Double, val deltaSoc: Double) : Event
-        data class TripEnd(val context: TripContext, val navEtaMin: Double, val actualDriveMin: Double) : Event
+        data class TripEnd(
+            val context: TripContext, val navEtaMin: Double, val actualDriveMin: Double,
+            val plan: Plan, val socEnd: Double, val chargedDuringTrip: Boolean,
+        ) : Event
         data class Charge(val session: ChargeSession) : Event
     }
 
     /** 이번 주행의 내비 계획. 주행 시작 시 서비스가 넣어준다. */
-    data class Plan(val context: TripContext, val navEtaMin: Double)
+    /**
+     * 이번 주행의 계획과 출발 시점 예측. [navSocAtDest] 내비의 도착 예상 배터리(0~1),
+     * [oursSoc]·[oursMin] 은 안기다려 예측 (정확도 비교용).
+     */
+    data class Plan(
+        val context: TripContext, val navEtaMin: Double,
+        val socStart: Double = 0.0, val navSocAtDest: Double? = null,
+        val oursSoc: Double? = null, val oursMin: Double? = null,
+    )
 
     var plan: Plan? = null
     /** 충전 중일 때 충전기 출력 (감시 대상 충전소에서). 모르면 50kW 로 본다 */
@@ -50,6 +61,7 @@ class DriveRecorder(
     private var lastMoveMs: Long = 0
     private var tripDriveMs: Long = 0
     private var tripActive = false
+    private var chargedDuringTrip = false
 
     // 진행 중인 구간
     private var segStart: VehicleSample? = null
@@ -94,6 +106,7 @@ class DriveRecorder(
             if (s.soc > prev.soc + 0.001) {
                 if (segStart != null) closeSegment(prev, context, events)
                 if (chargeStart == null) chargeStart = prev
+                if (tripActive) chargedDuringTrip = true
                 chargeLastRise = s
             } else if (chargeStart != null && s.timeMs - (chargeLastRise?.timeMs ?: s.timeMs) > CHARGE_END_IDLE_MIN * 60_000) {
                 closeCharge(events)
@@ -101,7 +114,8 @@ class DriveRecorder(
             // 오래 서 있으면 주행 종료
             if (tripActive && s.timeMs - lastMoveMs > TRIP_END_IDLE_MIN * 60_000) {
                 if (segStart != null) closeSegment(prev, context, events)
-                plan?.let { p -> events += Event.TripEnd(p.context, p.navEtaMin, tripDriveMs / 60_000.0) }
+                plan?.let { p -> events += Event.TripEnd(p.context, p.navEtaMin, tripDriveMs / 60_000.0, p, prev.soc, chargedDuringTrip) }
+                chargedDuringTrip = false
                 plan = null
                 tripActive = false
             }

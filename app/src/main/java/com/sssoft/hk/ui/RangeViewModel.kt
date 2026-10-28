@@ -3,6 +3,8 @@ package com.sssoft.hk.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.sssoft.hk.learn.AccuracySummary
+import com.sssoft.hk.learn.PredictionLog
 import com.sssoft.hk.learn.ProfileStore
 import com.sssoft.hk.model.ArrivalResult
 import com.sssoft.hk.model.VehicleProfile
@@ -53,6 +55,8 @@ data class RangeUiState(
     /** 예측에 쓴 조건 (차량에서 읽은 탑승 인원·공조·주행 모드 등) */
     val conditions: TripConditions? = null,
     val profile: VehicleProfile? = null,
+    /** 내비 예측 vs 안기다려 예측 정확도 (실제 주행 기록 기반) */
+    val accuracy: AccuracySummary? = null,
 ) {
     val socPercent: Int get() = battery.socPercent ?: input.manualSocPercent.toInt()
 }
@@ -112,6 +116,7 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         source = source, destination = dest, arrival = rec.direct, recommendation = rec,
                         loading = false, waypointAdded = false, conditions = cond, profile = profile,
+                        accuracy = PredictionLog.summarize(PredictionLog.load(getApplication())),
                     )
                 }
             } catch (e: Exception) {

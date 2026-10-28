@@ -16,7 +16,10 @@ import com.sssoft.hk.server.ChargerApi
 import com.sssoft.hk.server.RouteChargers
 import com.sssoft.hk.server.StationView
 import com.sssoft.hk.vehicle.VehicleReading
+import com.sssoft.hk.model.ChargeCurve
 import kotlinx.coroutines.withTimeout
+import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.pow
 
 /** 예측에 필요한 현재 조건: 학습 프로필 + 차량 상태 + 날씨. */
@@ -88,6 +91,8 @@ data class ChargingRecommendation(
     val conditions: TripConditions,
     /** 서버가 받은 실제 도로 경로. 경로 API 실패 시 null */
     val route: RouteChargers? = null,
+    /** 소모 예측의 중심을 차량 내비의 도착 예상 배터리에 맞췄는지, 그 값(%) */
+    val navSocAtDest: Int? = null,
 ) {
     val best: StopOption? get() = options.firstOrNull()
     val station: StationView? get() = best?.station
@@ -151,9 +156,23 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
             }.map { c0.copy(tempC = it.tempC, weather = it.weather, weatherFromForecast = true) }.getOrDefault(c0)
             else -> withRouteWeather(c0, origin, dest, totalMin)
         }
-        val env = c.env(totalKm, origin, dest)
         val soc0 = c.socPercent / 100.0
-        val mc = EvMonteCarlo(c.profile)
+        // 내비가 준 충전 계획으로 충전 속도 보정 (내비가 이 차의 충전 특성을 가장 잘 앎)
+        val profile = calibrateCharging(c.profile, trip, c.tempC)
+        // 주행 소모의 중심은 내비의 도착 예상 배터리에 맞추고, 우리는 범위와 학습된 차이를 더한다.
+        // 내비가 이미 충전 경유지를 넣은 경로면 그 값에 충전이 섞여 있을 수 있어 쓰지 않는다.
+        val navSoc = trip?.estimatedSocAtDest?.takeIf { s ->
+            s in 0..100 && s < c.socPercent && trip.chargers.none { it.naviPick }
+        }
+        val env = c.env(totalKm, origin, dest).let { e ->
+            if (navSoc == null) return@let e
+            val raw = EvMonteCarlo(profile, samples = 800).arrivalProbability(soc0, totalKm, totalMin, e)
+            val ourUsed = soc0 - raw.socP50
+            val navUsed = soc0 - navSoc / 100.0
+            if (ourUsed < 0.01 || navUsed < 0.01) e
+            else e.copy(energyScale = navUsed / ourUsed * exp(profile.navLogBias), energyScaleLogStd = profile.navLogBiasStd)
+        }
+        val mc = EvMonteCarlo(profile)
         val direct = mc.arrivalProbability(soc0, totalKm, totalMin, env, c.arrivalReserveSoc)
 
         data class Cand(val view: StationView, val ratio: Double, val naviPick: Boolean, val detourMin: Double, val restArea: Boolean)
@@ -181,7 +200,7 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
         cands = cands.filter { it.view.inService > 0 }.distinctBy { it.view.id }
 
         if (direct.probability >= 0.95) {
-            return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env, c, route)
+            return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env, c, route, navSoc)
         }
 
         val waits = cands.associate { it.view.id to expectedWaitMin(it.view, it.ratio * totalMin) }
@@ -197,7 +216,19 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
             .sortedBy { EvMonteCarlo.score(it.plan) }
         val baseline = options.firstOrNull { it.naviPick } ?: options.maxByOrNull { it.station.maxKw }
         val plan = options.firstOrNull()?.plan ?: ChargePlanResult.Infeasible(direct.probability)
-        return ChargingRecommendation(plan, options, baseline, cands.size, direct, env, c, route)
+        return ChargingRecommendation(plan, options, baseline, cands.size, direct, env, c, route, navSoc)
+    }
+
+    /** 내비 충전 계획(시간)과 우리 충전 곡선의 비율로 충전 효율 계수를 맞춘다. 범위 0.6~1.6배. */
+    private fun calibrateCharging(p: VehicleProfile, trip: Trip?, tempC: Double): VehicleProfile {
+        val ratios = trip?.chargePlans.orEmpty().mapNotNull { np ->
+            if (np.endSoc <= np.startSoc || np.durationMin <= 0 || np.maxKw <= 0) return@mapNotNull null
+            val ours = ChargeCurve.minutes(np.startSoc / 100.0, np.endSoc / 100.0, np.maxKw, p.capacityKwh, p.vehicleMaxKw, tempC, p.chargeK)
+            (ours / np.durationMin).takeIf { it.isFinite() && it > 0 }
+        }
+        if (ratios.isEmpty()) return p
+        val factor = ratios.sorted()[ratios.size / 2].coerceIn(0.6, 1.6)
+        return p.copy(chargeLogK = p.chargeLogK + ln(factor))
     }
 
     companion object {

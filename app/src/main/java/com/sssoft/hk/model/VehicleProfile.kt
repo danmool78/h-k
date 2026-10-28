@@ -38,6 +38,10 @@ data class VehicleProfile(
     val chargeLogKStd: Double = CHARGE_PRIOR_STD,
     val reserveSoc: Double = 0.10,
     val sessions: Int = 0,
+    /** ln(실제 소모 / 내비 예측 소모). 차량 내비의 도착 예상 배터리를 이 운전자·차에 맞게 보정 */
+    val navLogBias: Double = 0.0,
+    val navLogBiasStd: Double = NAV_BIAS_PRIOR_STD,
+    val navTrips: Int = 0,
 ) {
     val chargeK: Double get() = exp(chargeLogK)
     val segments: Int get() = energy.updates
@@ -84,9 +88,11 @@ data class VehicleProfile(
         val priorPace = BayesLinear.prior(DoubleArray(HABITS), PACE_PRIOR_STD, PACE_FORGET)
         val habit = shrink(sqrt(pace.predictVar(hx)), sqrt(priorPace.predictVar(hx)))
 
+        // 내비 보정을 학습했다면 차량 특성은 그만큼 알고 있는 것
+        val navCal = ((NAV_BIAS_PRIOR_STD - navLogBiasStd) / (NAV_BIAS_PRIOR_STD - NAV_BIAS_FLOOR)).coerceIn(0.0, 1.0)
         val charging = ((CHARGE_PRIOR_STD - chargeLogKStd) / (CHARGE_PRIOR_STD - 0.04)).coerceIn(0.0, 1.0)
         val places = (destinations.values.count { it.visits >= 2 } / 5.0).coerceIn(0.0, 1.0)
-        return LearningProgress(vehicle, habit, charging, places)
+        return LearningProgress(maxOf(vehicle, navCal), habit, charging, places)
     }
 
     // ---- 학습 ----
@@ -116,6 +122,17 @@ data class VehicleProfile(
         val x = ctx.habitFeatures()
         val resid = obs - pace.predict(x)
         return copy(pace = pace.update(x, obs, PACE_NOISE)).withDest(ctx.destKey) { it.learnPace(resid) }
+    }
+
+    /**
+     * 주행 하나가 끝났을 때 내비 예측 소모(출발 배터리 − 내비 도착 예상) 대비 실제 소모로 보정값 갱신.
+     * 최근 약 30회 위주, 날마다 다른 몫은 [NAV_BIAS_FLOOR] 아래로 줄이지 않는다.
+     */
+    fun learnNavBias(navUsedSoc: Double, actualUsedSoc: Double): VehicleProfile {
+        if (navUsedSoc < 0.03 || actualUsedSoc <= 0) return this
+        val inflated = navLogBiasStd / sqrt(PACE_FORGET)
+        val (mean, std) = gaussUpdate(navLogBias, inflated, ln(actualUsedSoc / navUsedSoc), NAV_BIAS_OBS_STD)
+        return copy(navLogBias = mean, navLogBiasStd = maxOf(std, NAV_BIAS_FLOOR), navTrips = navTrips + 1)
     }
 
     /** 충전 기록으로 충전 효율 계수 갱신. */
@@ -157,6 +174,7 @@ data class VehicleProfile(
         .put("curbMassKg", curbMassKg).put("vehicleMaxKw", vehicleMaxKw).put("tirePressureNominalKpa", tirePressureNominalKpa)
         .put("chargeLogK", chargeLogK).put("chargeLogKStd", chargeLogKStd)
         .put("reserveSoc", reserveSoc).put("sessions", sessions)
+        .put("navLogBias", navLogBias).put("navLogBiasStd", navLogBiasStd).put("navTrips", navTrips)
         .toString()
 
     companion object {
@@ -182,6 +200,10 @@ data class VehicleProfile(
         const val ACCEL_NOISE = 0.25
         private const val CHARGE_OBS_STD = 0.10
         private const val CHARGE_PRIOR_STD = 0.15
+        /** 내비 예측 소모와 실제의 차이: 처음엔 ±8%, 학습해도 ±2% 아래로는 안 줄임 */
+        const val NAV_BIAS_PRIOR_STD = 0.08
+        private const val NAV_BIAS_OBS_STD = 0.05
+        private const val NAV_BIAS_FLOOR = 0.02
 
         fun fromJson(s: String): VehicleProfile {
             val o = JSONObject(s)
@@ -198,6 +220,8 @@ data class VehicleProfile(
                 tirePressureNominalKpa = o.optDouble("tirePressureNominalKpa", 250.0),
                 chargeLogK = o.optDouble("chargeLogK", ln(0.9)), chargeLogKStd = o.optDouble("chargeLogKStd", 0.15),
                 reserveSoc = o.optDouble("reserveSoc", 0.10), sessions = o.optInt("sessions", 0),
+                navLogBias = o.optDouble("navLogBias", 0.0), navLogBiasStd = o.optDouble("navLogBiasStd", NAV_BIAS_PRIOR_STD),
+                navTrips = o.optInt("navTrips", 0),
             )
         }
 

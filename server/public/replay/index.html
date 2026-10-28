@@ -204,7 +204,8 @@ function compare(res) {
       <div style="width:${w(L.detourMin)};background:#9aa3b5"></div>
       <div style="width:${w(L.waitMin)};background:#e53935">${L.waitMin >= 4 ? `대기 ${Math.round(L.waitMin)}` : ""}</div>
       <div style="width:${w(L.chargeMin)};background:#4caf50">${L.chargeMin >= 6 ? `충전 ${Math.round(L.chargeMin)}` : ""}</div>
-    </div><div>${Math.floor(r.totalMin / 60)}시간 ${Math.round(r.totalMin % 60)}분</div></div>`;
+    </div><div>${Math.floor(r.totalMin / 60)}시간 ${Math.round(r.totalMin % 60)}분</div></div>
+    <div class="muted small" style="margin:-4px 0 6px 122px">출발 때 예측 ${fmt(res.departAt + r.predictedMin * 60_000)} → 실제 ${fmt(res.departAt + r.totalMin * 60_000)} · 예측 오차 <b style="color:${Math.abs(r.totalMin - r.predictedMin) > 10 ? "var(--bad)" : "var(--good)"}">${Math.round(Math.abs(r.totalMin - r.predictedMin))}분</b></div>`;
   };
   $("compare").innerHTML = bar(res.navi, "내비 방식", "#9aa3b5") + bar(res.ours, "안기다려", "#4f8cff");
   const d = res.navi.totalMin && res.ours.totalMin ? res.navi.totalMin - res.ours.totalMin : null;
@@ -268,9 +269,11 @@ async function runAll() {
   const saves = rows.map(({ r }) => r.navi.totalMin - r.ours.totalMin);
   const avg = saves.reduce((a, b) => a + b, 0) / Math.max(saves.length, 1);
   const waitsN = rows.map(({ r }) => r.navi.legs.waitMin), waitsO = rows.map(({ r }) => r.ours.legs.waitMin);
+  const mae = (k) => rows.reduce((a, { r }) => a + Math.abs(r[k].totalMin - r[k].predictedMin), 0) / Math.max(rows.length, 1);
   $("batchSummary").innerHTML = rows.length
     ? `출발 ${rows.length}회 비교 · 평균 <b style="color:var(--good);font-size:20px">${avg.toFixed(1)}분</b> 절약 · 최대 ${Math.round(Math.max(...saves))}분 · ` +
-      `내비 방식 대기 발생 ${waitsN.filter((w) => w > 3).length}회, 안기다려 ${waitsO.filter((w) => w > 3).length}회`
+      `내비 방식 대기 발생 ${waitsN.filter((w) => w > 3).length}회, 안기다려 ${waitsO.filter((w) => w > 3).length}회<br>` +
+      `도착 시각 예측 오차 평균: 내비 방식 <b style="color:var(--bad)">${mae("navi").toFixed(1)}분</b> → 안기다려 <b style="color:var(--good)">${mae("ours").toFixed(1)}분</b>`
     : "비교할 기록이 부족합니다";
   $("batchTable").innerHTML = `<tr><th>출발</th><th>내비 방식 충전소</th><th>대기</th><th>안기다려 충전소</th><th>대기</th><th>절약</th></tr>` +
     rows.map(({ t, r }) => `<tr><td>${t.slice(0, 2)}:${t.slice(2)}</td><td>${r.navi.stop.name}</td><td>${Math.round(r.navi.legs.waitMin)}분</td>` +

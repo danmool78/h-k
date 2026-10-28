@@ -104,7 +104,12 @@ class DriveLearningService : Service() {
             if (dest != null) {
                 val ctx = TripContext.of(dest.remainKm, now, here?.lat ?: dest.location.lat, here?.lng ?: dest.location.lng,
                     weather, dest.location.lat, dest.location.lng, r.mode)
-                recorder.plan = DriveRecorder.Plan(ctx, dest.remainMin)
+                // 출발 시점 예측 기록: 내비 도착 예상 배터리 vs 안기다려(내비 + 학습된 차이)
+                val soc = r.socPercent / 100.0
+                val navSoc = navi.trip(dest)?.estimatedSocAtDest?.takeIf { it in 0..100 && it < r.socPercent }?.div(100.0)
+                val oursSoc = navSoc?.let { soc - (soc - it) * kotlin.math.exp(profile.navLogBias) }
+                val oursMin = dest.remainMin * kotlin.math.exp(profile.paceLog(ctx).first)
+                recorder.plan = DriveRecorder.Plan(ctx, dest.remainMin, soc, navSoc, oursSoc, oursMin)
                 context = ctx
             }
         }
@@ -135,7 +140,19 @@ class DriveLearningService : Service() {
                     .put("ctx", e.segment.context.toString())
             }
             is DriveRecorder.Event.TripEnd -> {
-                ProfileStore.update(this) { it.learnPace(e.context, e.navEtaMin, e.actualDriveMin) }
+                val p = e.plan
+                // 중간에 충전했으면 배터리 비교가 무의미하므로 시간만 학습
+                val navSoc = p.navSocAtDest.takeIf { !e.chargedDuringTrip }
+                ProfileStore.update(this) { prof ->
+                    val paced = prof.learnPace(e.context, e.navEtaMin, e.actualDriveMin)
+                    if (navSoc != null) paced.learnNavBias(p.socStart - navSoc, p.socStart - e.socEnd) else paced
+                }
+                if (navSoc != null && p.oursSoc != null && p.oursMin != null) {
+                    PredictionLog.append(
+                        this,
+                        PredictionRecord(System.currentTimeMillis(), navSoc, p.oursSoc, e.socEnd, e.navEtaMin, p.oursMin, e.actualDriveMin),
+                    )
+                }
                 record.put("type", "trip").put("navMin", e.navEtaMin).put("actualMin", e.actualDriveMin)
                     .put("ctx", e.context.toString())
             }

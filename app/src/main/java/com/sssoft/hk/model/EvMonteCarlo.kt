@@ -20,6 +20,12 @@ data class TripEnv(
     val tirePressureKpa: Double? = null,
     /** km당 누적 오르막 (m). 내리막도 비슷하다고 본다 */
     val ascentPerKm: Double = 3.0,
+    /**
+     * 소모 배율. 차량 내비의 도착 예상 배터리에 우리 예측의 중심을 맞출 때 쓴다 (1 = 보정 없음).
+     * [energyScaleLogStd] 는 그 배율의 불확실성 (내비 대비 실제 차이를 학습할수록 줄어듦).
+     */
+    val energyScale: Double = 1.0,
+    val energyScaleLogStd: Double = 0.0,
 )
 
 data class Charger(
@@ -84,6 +90,7 @@ class EvMonteCarlo(
         /** 결제·플러그 연결 등 (분) */
         val overhead = DoubleArray(samples) { 3.0 * exp(rng.nextGaussian() * 0.3) }
         val detourZ = DoubleArray(samples) { rng.nextGaussian() }
+        val scaleZ = DoubleArray(samples) { rng.nextGaussian() }
 
         init {
             val (m, s) = profile.paceLog(env.context)
@@ -109,7 +116,8 @@ class EvMonteCarlo(
         val pred = BayesLinear.dot(d.theta[i], EnergyModel.features(input)) + EnergyModel.climbWh(input)
         // 설명 안 되는 변동은 학습 구간(약 10km)마다 독립이라 긴 주행에서는 √구간수 로만 커진다
         val nSeg = (distKm / SEGMENT_KM).coerceAtLeast(1.0)
-        val wh = pred + noise[i] * EnergyModel.noiseStdWh(pred / nSeg) * kotlin.math.sqrt(nSeg)
+        val wh = (pred + noise[i] * EnergyModel.noiseStdWh(pred / nSeg) * kotlin.math.sqrt(nSeg)) *
+            env.energyScale * exp(d.scaleZ[i] * env.energyScaleLogStd)
         return wh.coerceAtLeast(0.0) / 1000.0 to minutes
     }
 

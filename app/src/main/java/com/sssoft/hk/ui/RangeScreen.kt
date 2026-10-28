@@ -239,6 +239,14 @@ private fun LearningCard(ui: RangeUiState) {
             Text("개인 학습도", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             LearningGauge(p.learningProgress, Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            val acc = ui.accuracy
+            Text(
+                if (acc == null) "주행 기록이 쌓이면 내비 대비 예측 정확도를 보여줍니다."
+                else "예측 정확도 (최근 ${acc.trips}회) · 도착 배터리 오차 내비 ${"%.1f".format(acc.navSocErr * 100)}%p → " +
+                    "안기다려 ${"%.1f".format(acc.oursSocErr * 100)}%p · 주행 시간 오차 내비 ${acc.navMinErr.roundToInt()}분 → 안기다려 ${acc.oursMinErr.roundToInt()}분",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onBackground,
+            )
             if (ctx != null) {
                 val pace = (kotlin.math.exp(p.paceLog(ctx).first) - 1) * 100
                 val style = p.accelWhPerKmTon(ctx) / VehicleProfile.DEFAULT_ACCEL_WH_PER_KM_TON
