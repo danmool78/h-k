@@ -1,0 +1,42 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+local.properties
+
+# Node
+node_modules/
+dist/
+build/
+coverage/
+npm-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Android / Gradle
+.gradle/
+*.apk
+*.aab
+
+# iOS
+Pods/
+DerivedData/
+xcuserdata/
+
+# Logs
+*.log
