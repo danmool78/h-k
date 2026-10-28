@@ -40,3 +40,6 @@ xcuserdata/
 
 # Logs
 *.log
+
+# Kotlin
+.kotlin/
