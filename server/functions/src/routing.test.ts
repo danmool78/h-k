@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { StationMap } from "./chargers";
-import { detourMin, pickCandidates, pointAtKm, simplify, stationsAlongRoute, withCumulative } from "./routing";
+import { detourMin, onHighway, pickCandidates, pointAtKm, simplify, stationsAlongRoute, withCumulative } from "./routing";
 
 // 위도 0도에서 경도 방향 직선 100km 정도의 가짜 경로 (0.009° ≈ 1km)
 const coords: [number, number][] = Array.from({ length: 101 }, (_, i) => [0, i * 0.009]);
@@ -33,6 +33,20 @@ test("경로 옆 충전소만 — 휴게소 0.5km, 일반 2km, 출발·도착 �
   assert.ok(Math.abs(along[0].atKm - 50) <= 1);
 });
 
+test("고속도로 구간에서는 휴게소만, 일반 충전소는 고속도로가 아닌 구간에서만", () => {
+  // 앞 50km 는 시내(느림), 뒤 50km 는 고속도로
+  const fast = Array.from({ length: 100 }, (_, i) => i >= 50);
+  const r = withCumulative(coords, 100, 60, fast);
+  const stations: StationMap = {
+    CITY: st("CITY", 0.005, 0.27, false),      // 30km 지점 시내 → 포함
+    EXIT: st("EXIT", 0.005, 0.72, false),      // 80km 지점 고속도로 옆 일반 충전소 → 제외
+    REST: st("REST", -0.003, 0.72, true),      // 80km 지점 휴게소 → 포함
+  };
+  assert.deepEqual(stationsAlongRoute(r, stations, 15).map((a) => a.stationId), ["CITY", "REST"]);
+  assert.equal(onHighway(r, 80), true);
+  assert.equal(onHighway(r, 30), false);
+});
+
 test("구간마다 휴게소·고출력 우선으로 추림", () => {
   const stations: StationMap = {
     A: st("A", 0.001, 0.36, false, 50),
@@ -42,6 +56,17 @@ test("구간마다 휴게소·고출력 우선으로 추림", () => {
   const along = stationsAlongRoute(route, stations, 15);
   const picked = pickCandidates(along, stations, 20, 2);
   assert.deepEqual(picked.map((p) => p.stationId).sort(), ["B", "C"]);
+});
+
+test("실제 우회 = 앞→충전소→뒤 주행시간 − 원래 구간 시간 + 1분 (길 건너 유턴이면 커짐)", async () => {
+  const { realDetourMin, segmentMinutes } = await import("./routing");
+  const r = withCumulative(coords, 100, 60, undefined, Array(100).fill(36)); // 구간당 36초 = 100km/h
+  assert.ok(Math.abs(segmentMinutes(r, 48, 52) - 2.4) < 0.05);
+  const rs = { stationId: "X", atKm: 50, offRouteKm: 0.1, restArea: false };
+  const near = { id: "osrm", route: async () => r, routeVia: async () => 2.4 + 2 };   // 2분 더
+  const uturn = { id: "osrm2", route: async () => r, routeVia: async () => 2.4 + 14 }; // 유턴·일방통행으로 14분 더
+  assert.ok(Math.abs((await realDetourMin(near, r, rs, { lat: 0, lng: 0.45 }))! - 3) < 0.1);
+  assert.ok(Math.abs((await realDetourMin(uturn, r, { ...rs, stationId: "Y" }, { lat: 0, lng: 0.45 }))! - 15) < 0.1);
 });
 
 test("우회 시간: 휴게소 1분, 일반은 2km 벗어나면 약 9분", () => {

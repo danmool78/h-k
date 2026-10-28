@@ -191,7 +191,7 @@ export class MonteCarlo {
       const [k1, m1] = this.leg(i, d1, nav1, this.noise1);
       const [k2, m2] = this.leg(i, totalKm - d1, totalMin - nav1, this.noise2);
       socAt[i] = soc0 - k1 / this.cap[i]; l1[i] = m1; l2k[i] = k2; l2m[i] = m2;
-      fixed[i] = Math.exp(wl + this.waitZ[i] * 0.6) + this.overhead[i] + c.detourMin * Math.exp(this.detourZ[i] * 0.4);
+      fixed[i] = Math.exp(wl + this.waitZ[i] * 0.6) + this.overhead[i] + c.detourMin * Math.exp(this.detourZ[i] * (c.detourSigma ?? 0.4));
     }
     let best = null;
     const total = new Float64Array(n), chargeMin = new Float64Array(n), destSoc = new Float64Array(n);
@@ -272,7 +272,8 @@ export async function recommend(api, inp) {
   const options = [];
   for (const v of cands) {
     const waitMin = expectedWaitMin(v, v.etaMin);
-    const c = { id: v.id, atKm: v.atKm, powerKw: Math.min(Math.max(v.maxKw, 30), 350), waitMeanMin: waitMin, detourMin: v.detourMin };
+    // 우회 흔들림: 휴게소 진출입은 일정, 시내는 신호·정체로 들쭉날쭉 → 시내는 확실히 빠를 때만 뽑힘
+    const c = { id: v.id, atKm: v.atKm, powerKw: Math.min(Math.max(v.maxKw, 30), 350), waitMeanMin: waitMin, detourMin: v.detourMin, detourSigma: v.restArea ? 0.2 : 0.6 };
     const p = mc.bestForCharger(soc0, totalKm, totalMin, c, arrivalReserve);
     if (p) options.push({ station: v, atKm: v.atKm, waitMin, plan: p });
   }

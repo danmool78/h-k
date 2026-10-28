@@ -15,35 +15,83 @@ export interface Route {
   coords: [number, number][];
   /** coords[i] 까지 누적 거리 (km) */
   cumKm: number[];
+  /** 구간 i (coords[i] → coords[i+1]) 가 고속도로인지 (경로 API 속도 기준). 모르면 없음 */
+  fastSeg?: boolean[];
+  /** 구간 i 의 주행 시간 (초). 실제 우회 시간 계산용 */
+  segSec?: number[];
 }
 
 /** 경로 API 교체용 규격 */
 export interface RouteProvider {
   id: string;
   route(from: LatLng, to: LatLng): Promise<Route>;
+  /** 여러 지점을 차례로 들르는 주행 시간 (분) */
+  routeVia(points: LatLng[]): Promise<number>;
 }
 
 const OSRM = "https://router.project-osrm.org/route/v1/driving";
 
-export function withCumulative(coords: [number, number][], distanceKm: number, durationMin: number): Route {
+export function withCumulative(
+  coords: [number, number][], distanceKm: number, durationMin: number, fastSeg?: boolean[], segSec?: number[],
+): Route {
   const cumKm = [0];
   for (let i = 1; i < coords.length; i++) {
     cumKm.push(cumKm[i - 1] + haversineKm(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]));
   }
-  return { distanceKm, durationMin, coords, cumKm };
+  return { distanceKm, durationMin, coords, cumKm, fastSeg, segSec };
+}
+
+/** 이 속도(m/s, 약 79km/h) 이상인 구간을 고속도로로 본다 */
+export const HIGHWAY_SPEED_MS = 22;
+
+/**
+ * 경로 위 [km](누적 거리 기준) 가 고속도로 구간인지. 요금소처럼 잠깐 느린 곳에 흔들리지 않게
+ * 앞뒤 1km 구간 길이의 절반 이상이 고속이면 고속도로로 본다.
+ */
+export function onHighway(r: Route, km: number): boolean {
+  if (!r.fastSeg) return false;
+  let fast = 0, all = 0;
+  for (let i = 0; i < r.fastSeg.length; i++) {
+    const a = r.cumKm[i], b = r.cumKm[i + 1];
+    if (b < km - 1) continue;
+    if (a > km + 1) break;
+    const len = Math.min(b, km + 1) - Math.max(a, km - 1);
+    if (len <= 0) continue;
+    all += len;
+    if (r.fastSeg[i]) fast += len;
+  }
+  return all > 0 && fast / all >= 0.5;
 }
 
 export const osrm: RouteProvider = {
   id: "osrm",
+  async routeVia(points) {
+    const url = `${OSRM}/${points.map((p) => `${p.lng},${p.lat}`).join(";")}?overview=false`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(6_000) });
+    if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
+    const body = (await res.json()) as { code: string; routes?: { duration: number }[] };
+    if (body.code !== "Ok" || !body.routes?.length) throw new Error(`OSRM ${body.code}`);
+    return body.routes[0].duration / 60;
+  },
   async route(from, to) {
-    const url = `${OSRM}/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`;
+    const url = `${OSRM}/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&annotations=speed,duration`;
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(`OSRM HTTP ${res.status}`);
-    const body = (await res.json()) as { code: string; message?: string; routes?: { distance: number; duration: number; geometry: { coordinates: [number, number][] } }[] };
+    const body = (await res.json()) as {
+      code: string; message?: string;
+      routes?: {
+        distance: number; duration: number; geometry: { coordinates: [number, number][] };
+        legs?: { annotation?: { speed?: number[]; duration?: number[] } }[];
+      }[];
+    };
     if (body.code !== "Ok" || !body.routes?.length) throw new Error(`OSRM ${body.code}: ${body.message ?? "경로 없음"}`);
     const r = body.routes![0];
     const coords = (r.geometry.coordinates as [number, number][]).map(([lng, lat]) => [lat, lng] as [number, number]);
-    return withCumulative(coords, r.distance / 1000, r.duration / 60);
+    const speeds = r.legs?.flatMap((l) => l.annotation?.speed ?? []) ?? [];
+    const fastSeg = speeds.length === coords.length - 1 ? speeds.map((v) => v >= HIGHWAY_SPEED_MS) : undefined;
+    const secs = r.legs?.flatMap((l) => l.annotation?.duration ?? []) ?? [];
+    const segSec = secs.length === coords.length - 1 ? secs : undefined;
+    return withCumulative(coords, r.distance / 1000, r.duration / 60, fastSeg, segSec);
   },
 };
 
@@ -144,6 +192,7 @@ function onRightSide(r: Route, km: number, lat: number, lng: number): boolean {
 /**
  * 경로를 따라 있는 충전소. 충전소를 0.05° 격자에 넣어 두고, 경로를 약 1km 간격으로 훑으며 가까운 격자만 본다.
  * 출발·도착 근처(각 [edgeKm])는 제외. 휴게소는 진행 방향 쪽(우측 통행이면 오른쪽, 좌측 통행 국가면 왼쪽)만 남긴다.
+ * 고속도로 구간에서는 휴게소·졸음쉼터만, 일반 충전소는 고속도로가 아닌 구간에서만 후보로 둔다.
  */
 export function stationsAlongRoute(r: Route, stations: StationMap, edgeKm = 15): RouteStation[] {
   const CELL = 0.05;
@@ -162,6 +211,8 @@ export function stationsAlongRoute(r: Route, stations: StationMap, edgeKm = 15):
       for (const id of grid.get(`${gi + di}:${gj + dj}`) ?? []) {
         const s = stations[id];
         const rest = isRestArea(s.name);
+        // 고속도로 구간에서는 IC로 나가야 하는 일반 충전소는 제외 (실제 우회 10~20분 + 통행료)
+        if (!rest && onHighway(r, km * scale)) continue;
         const off = haversineKm(p.lat, p.lng, s.lat, s.lng);
         if (off > (rest ? CORRIDOR_REST_KM : CORRIDOR_KM)) continue;
         const prev = best.get(id);
@@ -198,6 +249,49 @@ export function pickCandidates(
   };
   return [...bins.values()].flatMap((list) => list.sort((a, b) => score(b) - score(a)).slice(0, perBin))
     .sort((a, b) => a.atKm - b.atKm);
+}
+
+/** 경로 위 [kmA]~[kmB] (누적 거리 기준) 구간의 원래 주행 시간 (분). 구간 시간이 없으면 평균 속도로 */
+export function segmentMinutes(r: Route, kmA: number, kmB: number): number {
+  if (!r.segSec) return (kmB - kmA) / r.distanceKm * r.durationMin;
+  let sec = 0;
+  for (let i = 0; i < r.segSec.length; i++) {
+    const a = r.cumKm[i], b = r.cumKm[i + 1];
+    if (b <= kmA) continue;
+    if (a >= kmB) break;
+    const len = b - a;
+    if (len > 0) sec += r.segSec[i] * (Math.min(b, kmB) - Math.max(a, kmA)) / len;
+  }
+  return sec / 60;
+}
+
+/** 실제 우회를 볼 때 충전소 앞뒤로 잡는 경로 구간 (km) */
+export const DETOUR_WINDOW_KM = 2;
+/** 실제 우회가 이보다 크면 후보에서 뺀다 (분) */
+export const MAX_DETOUR_MIN = 20;
+
+const detourCache = new Map<string, number>();
+
+/**
+ * 실제 도로 기준 우회 시간 (분): "경로상 앞 지점 → 충전소 → 경로상 뒤 지점" 주행 시간 − 원래 그 구간 시간 + 진입·주차 1분.
+ * 경로 API가 일방통행·회전 금지를 반영하므로 유턴·길 건너가 필요한 곳은 자연히 커진다. 실패하면 null.
+ */
+export async function realDetourMin(p: RouteProvider, r: Route, rs: RouteStation, station: { lat: number; lng: number }): Promise<number | null> {
+  const scale = r.cumKm[r.cumKm.length - 1] / r.distanceKm;
+  const kmA = Math.max(0, rs.atKm * scale - DETOUR_WINDOW_KM);
+  const kmB = Math.min(r.cumKm[r.cumKm.length - 1], rs.atKm * scale + DETOUR_WINDOW_KM);
+  const a = pointAtKm(r, kmA), b = pointAtKm(r, kmB);
+  const key = `${rs.stationId}:${a.lat.toFixed(3)},${a.lng.toFixed(3)}:${b.lat.toFixed(3)},${b.lng.toFixed(3)}`;
+  if (detourCache.has(key)) return detourCache.get(key)!;
+  try {
+    const via = await p.routeVia([a, station, b]);
+    const d = Math.max(1, via - segmentMinutes(r, kmA, kmB) + 1);
+    detourCache.set(key, d);
+    if (detourCache.size > 5000) detourCache.delete(detourCache.keys().next().value!);
+    return d;
+  } catch {
+    return null;
+  }
 }
 
 /** 우회 시간 평균 (분). 휴게소는 진출입 1분, 그 외는 왕복 이탈 거리를 시내 평균 30km/h + 진출입 1분 */

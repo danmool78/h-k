@@ -208,7 +208,10 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
 
         val waits = cands.associate { it.view.id to expectedWaitMin(it.view, departOffsetMin + it.ratio * totalMin) }
         val chargers = cands.map { cd ->
-            Charger(cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.detourMin)
+            Charger(
+                cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.detourMin,
+                detourSigma = if (cd.restArea) DETOUR_SIGMA_REST else DETOUR_SIGMA_CITY,
+            )
         }
         val byId = cands.associateBy { it.view.id }
         val options = mc.bestStopPerCharger(soc0, totalKm, totalMin, env, chargers, c.arrivalReserveSoc)
@@ -246,6 +249,10 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
     }
 
     companion object {
+        /** 우회 시간 흔들림: 휴게소 진출입은 거의 일정, 시내는 신호·정체로 크게 흔들림 */
+        const val DETOUR_SIGMA_REST = 0.2
+        const val DETOUR_SIGMA_CITY = 0.6
+
         fun distanceKm(a: LatLng, b: LatLng): Double {
             val dLat = Math.toRadians(b.lat - a.lat)
             val dLng = Math.toRadians(b.lng - a.lng)

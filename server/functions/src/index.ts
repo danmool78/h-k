@@ -26,7 +26,9 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import {
   StationMap, StationView, StatusMap, compatibleStations, migrateStationKeys, nearby, stationView, upgradeLegacy,
 } from "./chargers";
-import { detourMin, isRestArea, osrm, pickCandidates, routeCached, simplifyShape, stationsAlongRoute } from "./routing";
+import {
+  MAX_DETOUR_MIN, detourMin, isRestArea, osrm, pickCandidates, realDetourMin, routeCached, simplifyShape, stationsAlongRoute,
+} from "./routing";
 import { daysUntil, getApiKeyConfig, getSyncState } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
 import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, listNames, readBuffer, readJson } from "./storage";
@@ -178,13 +180,24 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
       const route = await routeCached(osrm, o, d);
       const s = await snapshot();
       const st = await stationsFor(String(req.body?.connector ?? DEFAULT_CONNECTOR));
-      const along = pickCandidates(stationsAlongRoute(route, st, 5), st);
+      const picked = pickCandidates(stationsAlongRoute(route, st, 5), st);
+      // 휴게소가 아닌 곳은 실제 도로로 우회 시간을 계산 (유턴·길 건너·일방통행 반영). 공개 서버 부담을 줄이려 2개씩
+      const detours = new Map<string, number>();
+      const need = picked.filter((rs) => !rs.restArea);
+      for (let i = 0; i < need.length; i += 2) {
+        await Promise.all(need.slice(i, i + 2).map(async (rs) => {
+          const d = await realDetourMin(osrm, route, rs, st[rs.stationId]);
+          if (d != null) detours.set(rs.stationId, d);
+        }));
+      }
+      const along = picked.filter((rs) => (detours.get(rs.stationId) ?? 0) <= MAX_DETOUR_MIN);
       const chargers = along.map((rs) => {
         const etaMin = offset + route.durationMin * rs.atKm / route.distanceKm;
         const v = stationView(st[rs.stationId], s.statuses, now, rs.offRouteKm);
         return {
           ...withForecast(v, s.occ, now, etaMin), atKm: Math.round(rs.atKm * 10) / 10,
-          offRouteKm: Math.round(rs.offRouteKm * 100) / 100, detourMin: Math.round(detourMin(rs.offRouteKm, rs.restArea) * 10) / 10, restArea: rs.restArea,
+          offRouteKm: Math.round(rs.offRouteKm * 100) / 100, detourMin: Math.round((detours.get(rs.stationId) ?? detourMin(rs.offRouteKm, rs.restArea)) * 10) / 10,
+          detourReal: detours.has(rs.stationId), restArea: rs.restArea,
           etaMin: Math.round(etaMin),
         };
       });

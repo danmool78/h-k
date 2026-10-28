@@ -33,8 +33,10 @@ data class Charger(
     val atKm: Double,          // 출발지로부터 거리
     val powerKw: Double,       // 충전기 최대 출력
     val waitMeanMin: Double,   // 도착 시 대기 평균
-    /** 경로에서 들렀다 돌아오는 시간 평균 (분). 휴게소 1분, 그 외는 이탈 거리에 따라 */
+    /** 경로에서 들렀다 돌아오는 시간 평균 (분). 휴게소 1분, 그 외는 실제 도로 우회 */
     val detourMin: Double = 4.0,
+    /** 우회 시간의 흔들림 (로그 표준편차). 휴게소 진출입은 일정(0.2), 시내는 신호·정체로 들쭉날쭉(0.6) */
+    val detourSigma: Double = 0.4,
     val waitSigma: Double = 0.6,
 )
 
@@ -169,7 +171,7 @@ class EvMonteCarlo(
             leg2Kwh[i] = k2
             leg2Min[i] = m2
             val wait = exp(waitLog + d.waitZ[i] * c.waitSigma)
-            val detour = c.detourMin * exp(d.detourZ[i] * 0.4)
+            val detour = c.detourMin * exp(d.detourZ[i] * c.detourSigma)
             fixedMin[i] = wait + d.overhead[i] + detour
         }
 
