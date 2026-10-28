@@ -52,6 +52,14 @@ sealed interface ChargePlanResult {
         val minutesP90: Double,
         /** 총 시간 중 충전에 쓰는 시간 (중앙값) */
         val chargeMinutesP50: Double = 0.0,
+        /** 충전소 도착 시 배터리 (적게 남는 경우 / 보통 / 많이 남는 경우) */
+        val socAtChargerP10: Double = 0.0,
+        val socAtChargerP50: Double = 0.0,
+        val socAtChargerP90: Double = 0.0,
+        /** 목적지 도착 시 배터리 */
+        val destSocP10: Double = 0.0,
+        val destSocP50: Double = 0.0,
+        val destSocP90: Double = 0.0,
     ) : ChargePlanResult
     data class Infeasible(val probability: Double) : ChargePlanResult
 }
@@ -105,7 +113,10 @@ class EvMonteCarlo(
         return wh.coerceAtLeast(0.0) / 1000.0 to minutes
     }
 
-    fun arrivalProbability(soc0: Double, distKm: Double, navMin: Double, env: TripEnv): ArrivalResult {
+    /** 충전 없이 갈 때. probability = 도착 배터리가 [arrivalReserve] 이상일 확률 */
+    fun arrivalProbability(
+        soc0: Double, distKm: Double, navMin: Double, env: TripEnv, arrivalReserve: Double = profile.reserveSoc,
+    ): ArrivalResult {
         val d = Draws(env)
         val remain = DoubleArray(samples)
         val minutes = DoubleArray(samples)
@@ -114,7 +125,7 @@ class EvMonteCarlo(
             remain[i] = soc0 - kwh / d.capKwh[i]
             minutes[i] = min
         }
-        val p = remain.count { it >= profile.reserveSoc }.toDouble() / samples
+        val p = remain.count { it >= arrivalReserve }.toDouble() / samples
         remain.sort()
         minutes.sort()
         return ArrivalResult(
@@ -123,8 +134,14 @@ class EvMonteCarlo(
         )
     }
 
-    /** 충전소 하나를 들를 때, 충전 목표 SOC 별 최선안. 목표 확률을 못 넘기면 null. */
-    private fun bestForCharger(d: Draws, soc0: Double, totalKm: Double, totalNavMin: Double, env: TripEnv, c: Charger, targetP: Double): ChargePlanResult.Plan? {
+    /**
+     * 충전소 하나를 들를 때, 충전 목표 SOC 별 최선안. 목표 확률을 못 넘기면 null.
+     * 충전소까지는 [VehicleProfile.reserveSoc], 목적지에는 [arrivalReserve] 이상 남아야 성공으로 본다.
+     */
+    private fun bestForCharger(
+        d: Draws, soc0: Double, totalKm: Double, totalNavMin: Double, env: TripEnv, c: Charger,
+        arrivalReserve: Double, targetP: Double,
+    ): ChargePlanResult.Plan? {
         val d1 = c.atKm.coerceIn(0.0, totalKm)
         val nav1 = totalNavMin * d1 / totalKm
         val table = ChargeCurve.cumulativeMinutesPerKwh(c.powerKw, profile.vehicleMaxKw, env.tempC)
@@ -151,6 +168,8 @@ class EvMonteCarlo(
         var best: ChargePlanResult.Plan? = null
         val total = DoubleArray(samples)
         val chargeMin = DoubleArray(samples)
+        val destSoc = DoubleArray(samples)
+        val socAtSorted = socAt.copyOf().also { it.sort() }
         for (step in 0..13) {
             val tgt = 0.30 + step * 0.05
             var ok = 0
@@ -159,15 +178,19 @@ class EvMonteCarlo(
                 val to = maxOf(tgt, from)
                 chargeMin[i] = ChargeCurve.lookup(table, from, to) * d.capKwh[i] / d.chargeK[i]
                 total[i] = leg1Min[i] + leg2Min[i] + fixedMin[i] + chargeMin[i]
-                val reach1 = socAt[i] >= profile.reserveSoc
-                val reach2 = to - leg2Kwh[i] / d.capKwh[i] >= profile.reserveSoc
-                if (reach1 && reach2) ok++
+                destSoc[i] = to - leg2Kwh[i] / d.capKwh[i]
+                if (socAt[i] >= profile.reserveSoc && destSoc[i] >= arrivalReserve) ok++
             }
             val p = ok.toDouble() / samples
             if (p < targetP) continue
-            total.sort()
-            chargeMin.sort()
-            val plan = ChargePlanResult.Plan(c.name, tgt, p, percentile(total, 50.0), percentile(total, 90.0), percentile(chargeMin, 50.0))
+            val ts = total.copyOf().also { it.sort() }
+            val cs = chargeMin.copyOf().also { it.sort() }
+            val ds = destSoc.copyOf().also { it.sort() }
+            val plan = ChargePlanResult.Plan(
+                c.name, tgt, p, percentile(ts, 50.0), percentile(ts, 90.0), percentile(cs, 50.0),
+                percentile(socAtSorted, 10.0), percentile(socAtSorted, 50.0), percentile(socAtSorted, 90.0),
+                percentile(ds, 10.0), percentile(ds, 50.0), percentile(ds, 90.0),
+            )
             if (best == null || score(plan) < score(best)) best = plan
         }
         return best
@@ -175,19 +198,21 @@ class EvMonteCarlo(
 
     /** 충전소마다 목표 확률을 만족하는 최선의 충전 목표 SOC. 만족 못 하는 충전소는 빠진다. */
     fun bestStopPerCharger(
-        soc0: Double, totalKm: Double, totalNavMin: Double, env: TripEnv, chargers: List<Charger>, targetP: Double = 0.95,
+        soc0: Double, totalKm: Double, totalNavMin: Double, env: TripEnv, chargers: List<Charger>,
+        arrivalReserve: Double = profile.reserveSoc, targetP: Double = 0.95,
     ): List<ChargePlanResult.Plan> {
         val d = Draws(env)
-        return chargers.mapNotNull { bestForCharger(d, soc0, totalKm, totalNavMin, env, it, targetP) }
+        return chargers.mapNotNull { bestForCharger(d, soc0, totalKm, totalNavMin, env, it, arrivalReserve, targetP) }
     }
 
     /** 충전 없이 목표 확률을 못 넘기면, 확률 조건을 만족하는 최소 시간 계획을 탐색. */
     fun planCharging(
-        soc0: Double, totalKm: Double, totalNavMin: Double, env: TripEnv, chargers: List<Charger>, targetP: Double = 0.95,
+        soc0: Double, totalKm: Double, totalNavMin: Double, env: TripEnv, chargers: List<Charger>,
+        arrivalReserve: Double = profile.reserveSoc, targetP: Double = 0.95,
     ): ChargePlanResult {
-        val p0 = arrivalProbability(soc0, totalKm, totalNavMin, env).probability
+        val p0 = arrivalProbability(soc0, totalKm, totalNavMin, env, arrivalReserve).probability
         if (p0 >= targetP) return ChargePlanResult.NoChargeNeeded(p0)
-        return bestStopPerCharger(soc0, totalKm, totalNavMin, env, chargers, targetP)
+        return bestStopPerCharger(soc0, totalKm, totalNavMin, env, chargers, arrivalReserve, targetP)
             .minByOrNull(::score) ?: ChargePlanResult.Infeasible(p0)
     }
 

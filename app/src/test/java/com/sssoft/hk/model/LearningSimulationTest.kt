@@ -138,6 +138,20 @@ class LearningSimulationTest {
     }
 
     @Test
+    fun `학습도는 처음 0% 에서 주행할수록 오른다`() {
+        var p = VehicleProfile()
+        assertTrue(p.learningProgress.overall < 0.01)
+        val seen = mutableListOf<Double>()
+        repeat(40) { i ->
+            p = drive(p)
+            if (i in setOf(4, 19, 39)) seen += p.learningProgress.overall
+        }
+        println("학습도 5회 %.0f%% → 20회 %.0f%% → 40회 %.0f%%".format(seen[0] * 100, seen[1] * 100, seen[2] * 100))
+        assertTrue(seen[0] > 0.1 && seen[1] > seen[0] && seen[2] >= seen[1] - 0.02)
+        assertTrue(p.learningProgress.vehicle > 0.5)
+    }
+
+    @Test
     fun `프로필 저장·복원`() {
         var p = VehicleProfile()
         repeat(5) { p = drive(p) }

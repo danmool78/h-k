@@ -34,6 +34,8 @@ data class TripConditions(
     val departMs: Long = System.currentTimeMillis(),
     /** 기온·날씨가 실제 예보(Open-Meteo)에서 왔는지 */
     val weatherFromForecast: Boolean = false,
+    /** 목적지 도착 시 최소 배터리. 겨우 도착하면 다음 날이 힘드므로 기본 30% */
+    val arrivalReserveSoc: Double = 0.30,
 ) {
     fun env(plannedKm: Double, origin: LatLng?, dest: Destination): TripEnv {
         val here = origin ?: dest.location
@@ -45,8 +47,12 @@ data class TripConditions(
     }
 
     companion object {
-        fun from(r: VehicleReading, profile: VehicleProfile, tempC: Double, weather: Weather, luggageKg: Double = 30.0) =
+        fun from(
+            r: VehicleReading, profile: VehicleProfile, tempC: Double, weather: Weather,
+            luggageKg: Double = 30.0, arrivalReserveSoc: Double = 0.30,
+        ) =
             TripConditions(
+                arrivalReserveSoc = arrivalReserveSoc,
                 socPercent = r.socPercent, profile = profile.withNominalCapacity(r.capacityKwh),
                 tempC = tempC, weather = weather, occupants = r.occupants, luggageKg = luggageKg,
                 hvacOn = r.hvacOn, cabinSetC = r.cabinSetC, tirePressureKpa = r.tirePressureKpa, mode = r.mode,
@@ -148,7 +154,7 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
         val env = c.env(totalKm, origin, dest)
         val soc0 = c.socPercent / 100.0
         val mc = EvMonteCarlo(c.profile)
-        val direct = mc.arrivalProbability(soc0, totalKm, totalMin, env)
+        val direct = mc.arrivalProbability(soc0, totalKm, totalMin, env, c.arrivalReserveSoc)
 
         data class Cand(val view: StationView, val ratio: Double, val naviPick: Boolean, val detourMin: Double, val restArea: Boolean)
         val naviChargers = trip?.chargers.orEmpty()
@@ -183,7 +189,7 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
             Charger(cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.detourMin)
         }
         val byId = cands.associateBy { it.view.id }
-        val options = mc.bestStopPerCharger(soc0, totalKm, totalMin, env, chargers)
+        val options = mc.bestStopPerCharger(soc0, totalKm, totalMin, env, chargers, c.arrivalReserveSoc)
             .map { p ->
                 val cd = byId.getValue(p.charger)
                 StopOption(cd.view, cd.ratio * totalKm, cd.ratio * totalMin, waits.getValue(p.charger), p, cd.naviPick, cd.restArea)

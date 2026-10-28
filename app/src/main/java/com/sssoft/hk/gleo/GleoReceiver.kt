@@ -50,7 +50,7 @@ class GleoReceiver : BroadcastReceiver() {
     private suspend fun handle(context: Context, fn: String, params: JSONObject): GleoResult {
         val reading = BatteryReader.read(context)
             ?: return GleoResult.fail(fn, "Could not read the battery level from the vehicle.")
-        val cond = TripConditions.from(reading, ProfileStore.load(context), TripPrefs.tempC(context), TripPrefs.weather(context))
+        val cond = TripConditions.from(reading, ProfileStore.load(context), TripPrefs.tempC(context), TripPrefs.weather(context), arrivalReserveSoc = TripPrefs.arrivalReserve(context))
 
         val navi = NaviSource(context)
         try {

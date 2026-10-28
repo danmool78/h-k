@@ -21,6 +21,13 @@ object TripPrefs {
         prefs(context).edit().putFloat(KEY_TEMP, value).apply()
     }
 
+    /** 목적지 도착 시 최소 배터리 (기본 30%) */
+    fun arrivalReserve(context: Context): Double = prefs(context).getFloat("arrivalReserve", 0.30f).toDouble()
+
+    fun setArrivalReserve(context: Context, value: Double) {
+        prefs(context).edit().putFloat("arrivalReserve", value.toFloat()).apply()
+    }
+
     fun weather(context: Context): Weather =
         runCatching { Weather.valueOf(prefs(context).getString(KEY_WEATHER, null)!!) }.getOrDefault(Weather.CLEAR)
 

@@ -35,7 +35,7 @@ data class VehicleProfile(
     val tirePressureNominalKpa: Double = 250.0,
     /** 충전 효율 계수 k (실제 출력 / 기대 출력)의 로그 평균·표준편차 */
     val chargeLogK: Double = ln(0.9),
-    val chargeLogKStd: Double = 0.15,
+    val chargeLogKStd: Double = CHARGE_PRIOR_STD,
     val reserveSoc: Double = 0.10,
     val sessions: Int = 0,
 ) {
@@ -61,6 +61,33 @@ data class VehicleProfile(
 
     fun tireUnderinflation(pressureKpa: Double?): Double =
         pressureKpa?.let { ((tirePressureNominalKpa - it) / tirePressureNominalKpa).coerceIn(0.0, 0.5) } ?: 0.0
+
+    // ---- 학습도 ----
+
+    /**
+     * 학습도 (0~1). 학습 횟수가 아니라 "예측 불확실성이 처음보다 얼마나 줄었나"로 계산한다.
+     * 날마다 다른 몫은 학습으로 줄지 않으므로, 불확실성이 처음의 30% 이하가 되면 100% 로 본다.
+     */
+    val learningProgress: LearningProgress get() {
+        fun shrink(now: Double, prior: Double) = ((1 - now / prior) / 0.7).coerceIn(0.0, 1.0)
+        val mass = curbMassKg + EnergyModel.PASSENGER_KG + 30
+        val ref = EnergyInput(
+            distKm = 100.0, hours = 1.0, tempC = 5.0, massKg = mass, hvacOn = true, cabinSetC = 22.0,
+            weather = Weather.CLEAR, night = false, tireUnderinflation = 0.0,
+            accelKineticWh = EnergyModel.accelWh(DEFAULT_ACCEL_WH_PER_KM_TON, 100.0, mass),
+        )
+        val x = EnergyModel.features(ref)
+        val priorEnergy = BayesLinear.prior(EnergyModel.PRIOR_MEAN, EnergyModel.PRIOR_STD, ENERGY_FORGET, true)
+        val vehicle = shrink(sqrt(energy.predictVar(x)), sqrt(priorEnergy.predictVar(x)))
+
+        val hx = TripContext(TripType.SHORT, night = false, weather = Weather.CLEAR, weekend = false).habitFeatures()
+        val priorPace = BayesLinear.prior(DoubleArray(HABITS), PACE_PRIOR_STD, PACE_FORGET)
+        val habit = shrink(sqrt(pace.predictVar(hx)), sqrt(priorPace.predictVar(hx)))
+
+        val charging = ((CHARGE_PRIOR_STD - chargeLogKStd) / (CHARGE_PRIOR_STD - 0.04)).coerceIn(0.0, 1.0)
+        val places = (destinations.values.count { it.visits >= 2 } / 5.0).coerceIn(0.0, 1.0)
+        return LearningProgress(vehicle, habit, charging, places)
+    }
 
     // ---- 학습 ----
 
@@ -154,6 +181,7 @@ data class VehicleProfile(
         const val PACE_NOISE = 0.06
         const val ACCEL_NOISE = 0.25
         private const val CHARGE_OBS_STD = 0.10
+        private const val CHARGE_PRIOR_STD = 0.15
 
         fun fromJson(s: String): VehicleProfile {
             val o = JSONObject(s)
@@ -180,6 +208,11 @@ data class VehicleProfile(
             return (mean * v1 + obs * v0) / (v0 + v1) to sqrt(v0 * v1 / (v0 + v1))
         }
     }
+}
+
+/** 학습도 (각 0~1). */
+data class LearningProgress(val vehicle: Double, val habit: Double, val charging: Double, val places: Double) {
+    val overall: Double get() = 0.45 * vehicle + 0.25 * habit + 0.2 * charging + 0.1 * places
 }
 
 /** 자주 가는 목적지별 보정 (모델 예측과 실제의 차이 이동평균). 몇 번 안 가본 곳은 보정을 약하게 쓴다. */

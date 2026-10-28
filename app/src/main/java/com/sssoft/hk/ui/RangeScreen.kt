@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -63,11 +65,19 @@ fun RangeScreen(viewModel: RangeViewModel) {
         ui.error?.let { Text(it, color = Bad, modifier = Modifier.padding(vertical = 8.dp)) }
 
         Row(Modifier.fillMaxSize().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            Column(Modifier.weight(1.2f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(
+                Modifier.weight(1.2f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
                 RecommendationCard(ui, onAddWaypoint = viewModel::addWaypoint)
+                JourneyCard(ui)
                 ArrivalLine(ui)
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
+                LearningCard(ui)
+                Spacer(Modifier.height(12.dp))
+                ReserveSelector(ui, viewModel::onInput)
+                Spacer(Modifier.height(12.dp))
                 Text("후보 충전소 비교", style = MaterialTheme.typography.titleMedium, color = onBg)
                 Spacer(Modifier.height(8.dp))
                 val options = ui.recommendation?.options.orEmpty()
@@ -118,11 +128,15 @@ private fun RecommendationCard(ui: RangeUiState, onAddWaypoint: () -> Unit) {
                 null -> Text("계산 중…", fontSize = 24.sp)
                 is ChargePlanResult.NoChargeNeeded -> {
                     Text("충전 없이 도착할 수 있어요", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Good)
-                    Text("도착 확률 ${pct(plan.probability)}", fontSize = 20.sp)
+                    Text("목적지 도착 시 배터리 약 ${pct(rec.direct.socP50)} (적게 남으면 ${pct(rec.direct.socP10)})", fontSize = 20.sp)
                 }
                 is ChargePlanResult.Infeasible -> {
-                    Text("한 번 충전으로는 안전하게 가기 어려워요", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Bad)
-                    Text("확인한 충전소 ${rec.checkedStations}곳", fontSize = 18.sp)
+                    Text("한 번 충전으로는 어려워요", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Bad)
+                    Text(
+                        "경로상 충전소 ${rec.checkedStations}곳을 확인했지만 도착 시 ${pct(rec.conditions.arrivalReserveSoc)} 이상 남기는 계획이 없습니다. " +
+                            "출발 전 더 충전하거나 도착 최소 배터리를 낮춰 보세요.",
+                        fontSize = 18.sp,
+                    )
                 }
                 is ChargePlanResult.Plan -> PlanBody(rec, plan, ui, onAddWaypoint)
             }
@@ -142,7 +156,7 @@ private fun PlanBody(rec: ChargingRecommendation, plan: ChargePlanResult.Plan, u
         Text("약 ${best.waitMin.roundToInt()}분", fontSize = 44.sp, fontWeight = FontWeight.Bold, color = waitColor(best.waitMin))
     }
     Text(
-        "지금 빈 충전기 ${s.available}/${s.inService} · 최대 ${s.maxKw.roundToInt()}kW · ${pct(plan.chargeToSoc)}까지 충전",
+        "지금 빈 충전기 ${s.available}/${s.inService} · 최대 ${s.maxKw.roundToInt()}kW · ${pct(plan.chargeToSoc)}까지 충전 (약 ${plan.chargeMinutesP50.roundToInt()}분)",
         fontSize = 18.sp,
     )
     Spacer(Modifier.height(16.dp))
@@ -158,7 +172,7 @@ private fun PlanBody(rec: ChargingRecommendation, plan: ChargePlanResult.Plan, u
     }
     Spacer(Modifier.height(16.dp))
     Text(
-        "총 소요 약 ${plan.minutesP50.roundToInt()}분 (늦어지면 ${plan.minutesP90.roundToInt()}분) · 도착 확률 ${pct(plan.probability)}",
+        "총 소요 약 ${plan.minutesP50.roundToInt()}분 (늦어지면 ${plan.minutesP90.roundToInt()}분) · 목적지 도착 배터리 약 ${pct(plan.destSocP50)}",
         fontSize = 18.sp,
     )
     if (ui.source == RouteSource.NAVI) {
@@ -171,9 +185,7 @@ private fun PlanBody(rec: ChargingRecommendation, plan: ChargePlanResult.Plan, u
 
 @Composable
 private fun ArrivalLine(ui: RangeUiState) {
-    val a = ui.arrival ?: return
     val muted = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-    Text("충전 없이 갈 확률 ${pct(a.probability)} · 도착 시 배터리 약 ${pct(a.socP50.coerceAtLeast(0.0))}", color = muted, fontSize = 16.sp)
 
     val c = ui.conditions ?: return
     val ctx = ui.recommendation?.env?.context
@@ -182,16 +194,75 @@ private fun ArrivalLine(ui: RangeUiState) {
     val when_ = ctx?.let { listOfNotNull(it.type.label, if (it.night) "밤" else "낮", if (it.weekend) "주말" else null).joinToString("·") } ?: ""
     Text("예측 조건: 탑승 ${c.occupants}명 · $hvac · ${c.mode.label} 모드$tire · $when_", color = muted, fontSize = 14.sp)
 
-    val p = ui.profile ?: return
-    val (paceMean, _) = ctx?.let(p::paceLog) ?: (0.0 to 0.0)
-    val pace = (kotlin.math.exp(paceMean) - 1) * 100
-    val style = ctx?.let { p.accelWhPerKmTon(it) / VehicleProfile.DEFAULT_ACCEL_WH_PER_KM_TON } ?: 1.0
-    Text(
-        "학습: 주행 ${p.segments}구간 · ${p.trips}회 · 충전 ${p.sessions}회 · " +
-            "운전 습관 내비 대비 ${"%+.0f".format(pace)}% · 가속 지수 ${"%.2f".format(style)}",
-        color = muted, fontSize = 14.sp,
+    val credits = listOfNotNull(
+        "경로 © OpenStreetMap contributors, OSRM".takeIf { ui.recommendation?.route != null },
+        "Weather data by Open-Meteo.com".takeIf { c.weatherFromForecast },
     )
-    if (c.weatherFromForecast) Text("Weather data by Open-Meteo.com", color = muted, fontSize = 12.sp)
+    if (credits.isNotEmpty()) Text(credits.joinToString(" · "), color = muted, fontSize = 12.sp)
+}
+
+/** 출발 → 충전소 도착 → 충전 후 → 목적지 도착 배터리 게이지 + 경로 거리별 그래프 */
+@Composable
+private fun JourneyCard(ui: RangeUiState) {
+    val rec = ui.recommendation ?: return
+    val totalKm = rec.route?.distanceKm ?: ui.destination?.remainKm ?: return
+    val base = Journey(
+        totalKm = totalKm, soc0 = ui.socPercent / 100.0, reserve = rec.conditions.arrivalReserveSoc,
+        destName = ui.destination?.name?.substringBefore(" (") ?: "목적지",
+        dest = Triple(rec.direct.socP10, rec.direct.socP50, rec.direct.socP90),
+    )
+    val plan = rec.plan
+    val best = rec.best
+    val j = if (plan is ChargePlanResult.Plan && best != null) base.copy(
+        stop = Journey.Stop(
+            best.atKm, best.station.name, plan.chargeToSoc, plan.chargeMinutesP50,
+            Triple(plan.socAtChargerP10, plan.socAtChargerP50, plan.socAtChargerP90),
+        ),
+        dest = Triple(plan.destSocP10, plan.destSocP50, plan.destSocP90),
+    ) else base
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("배터리 여정", style = MaterialTheme.typography.titleMedium)
+            BatteryRow(j)
+            BatteryJourney(j)
+        }
+    }
+}
+
+@Composable
+private fun LearningCard(ui: RangeUiState) {
+    val p = ui.profile ?: return
+    val ctx = ui.recommendation?.env?.context
+    val muted = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text("개인 학습도", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            LearningGauge(p.learningProgress, Modifier.fillMaxWidth())
+            if (ctx != null) {
+                val pace = (kotlin.math.exp(p.paceLog(ctx).first) - 1) * 100
+                val style = p.accelWhPerKmTon(ctx) / VehicleProfile.DEFAULT_ACCEL_WH_PER_KM_TON
+                Text(
+                    "주행 ${p.segments}구간 · ${p.trips}회 · 충전 ${p.sessions}회 · 이번 조건(${ctx.type.label}) 습관: " +
+                        "내비 대비 ${"%+.0f".format(pace)}%, 가속 지수 ${"%.2f".format(style)}",
+                    fontSize = 11.sp, color = muted,
+                )
+            }
+        }
+    }
+}
+
+/** 목적지 도착 시 최소 배터리. 겨우 도착하면 다음 날 힘드므로 기본 30% */
+@Composable
+private fun ReserveSelector(ui: RangeUiState, onInput: (TripInput) -> Unit) {
+    val i = ui.input
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("도착 최소 배터리", color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
+        for (r in listOf(0.10, 0.20, 0.30, 0.50)) {
+            if (kotlin.math.abs(r - i.arrivalReserve) < 1e-6) Button(onClick = {}) { Text(pct(r)) }
+            else OutlinedButton(onClick = { onInput(i.copy(arrivalReserve = r)) }) { Text(pct(r)) }
+        }
+    }
 }
 
 private fun clock(minutesFromNow: Double): String =

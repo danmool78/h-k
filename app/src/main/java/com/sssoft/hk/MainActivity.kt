@@ -33,9 +33,10 @@ class MainActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             // Gleo 음성 호출에서 쓸 기온 (차량 SDK에 외부 기온 없음)
-            viewModel.ui.map { it.input.tempC to it.input.weather }.distinctUntilChanged().collect { (t, w) ->
+            viewModel.ui.map { Triple(it.input.tempC, it.input.weather, it.input.arrivalReserve) }.distinctUntilChanged().collect { (t, w, r) ->
                 TripPrefs.setTempC(this@MainActivity, t)
                 TripPrefs.setWeather(this@MainActivity, w)
+                TripPrefs.setArrivalReserve(this@MainActivity, r)
             }
         }
         setContent {

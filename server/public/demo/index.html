@@ -34,6 +34,22 @@
   .err { color:var(--bad); }
   .right { display:flex; flex-direction:column; gap:16px; }
   .scroll { overflow-x:auto; }
+  .batt-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .batt { flex:1; min-width:110px; }
+  .batt-label { font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .batt-body { position:relative; height:30px; border:2px solid #3a4150; border-radius:7px; overflow:hidden; background:#11141a; }
+  .batt-body::after { content:""; position:absolute; right:-6px; top:8px; width:4px; height:10px; background:#3a4150; border-radius:0 2px 2px 0; }
+  .batt-fill { height:100%; transition:width .4s; }
+  .batt-body span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:15px; text-shadow:0 1px 2px #000; }
+  .batt-sub { font-size:11px; color:var(--muted); margin-top:3px; }
+  .batt-arrow { color:var(--muted); font-size:18px; }
+  .learn { display:grid; grid-template-columns: 120px 1fr; gap:18px; align-items:center; }
+  .ring { position:relative; width:120px; height:120px; }
+  .ring b { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:26px; }
+  .ring b small { font-size:11px; color:var(--muted); font-weight:400; }
+  .bar { margin:6px 0; } .bar .t { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); }
+  .bar .track { height:8px; background:#11141a; border-radius:4px; overflow:hidden; margin-top:4px; }
+  .bar .fill { height:100%; background:var(--accent); transition:width .4s; }
 </style>
 </head>
 <body>
@@ -57,6 +73,12 @@
       <label>배터리 <span id="socV"></span></label>
       <input id="soc" type="range" min="10" max="100" step="1" value="80">
 
+      <label>가상 학습 주행 수 <span id="learnV"></span></label>
+      <input id="learn" type="range" min="0" max="80" step="1" value="0">
+
+      <label>목적지 도착 시 최소 배터리</label>
+      <div class="seg" id="reserve"></div>
+
       <label>탑승 인원 <span id="occV"></span></label>
       <input id="occ" type="range" min="1" max="5" step="1" value="1">
 
@@ -76,11 +98,17 @@
         <input id="temp" type="range" min="-20" max="40" step="1" value="10">
         <div class="seg" id="weather" style="margin-top:8px"></div>
       </div>
-      <p class="muted small" style="margin-top:18px">학습 전 기본값(차종 평균)으로 계산합니다. 실제 앱은 차량별 주행 기록으로 계속 학습합니다.</p>
+      <p class="muted small" style="margin-top:18px">웹 데모는 학습을 근사로 흉내 냅니다(가상 학습 주행 수). 실제 앱은 차량·운전자별 주행 기록으로 계속 학습합니다.</p>
     </section>
 
     <div class="right">
       <section class="card rec" id="rec"><span class="muted">계산 중…</span></section>
+      <section class="card" id="learnCard"></section>
+      <section class="card" id="journeyCard" hidden>
+        <h3 style="margin:0 0 12px">배터리 여정</h3>
+        <div id="battRow"></div>
+        <div id="journey"></div>
+      </section>
       <section class="card">
         <div class="muted small" id="cond"></div>
         <div id="map"></div>
@@ -96,7 +124,8 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module">
-import { recommend, TYPE_LABEL } from "./model.js";
+import { learningProgress, recommend, TYPE_LABEL } from "./model.js";
+import { batteryRow, journeySvg } from "./journey.js";
 
 const API = "https://asia-northeast3-h-y-server.cloudfunctions.net/api";
 const ORIGIN = { name: "서울시청", lat: 37.5665, lng: 126.9780 };
@@ -124,7 +153,7 @@ const api = {
 };
 
 const $ = (id) => document.getElementById(id);
-const state = { mode: "NORMAL", hvac: "on", tire: 250, wsrc: "forecast", weather: "CLEAR" };
+const state = { mode: "NORMAL", hvac: "on", tire: 250, wsrc: "forecast", weather: "CLEAR", reserve: 30 };
 
 function seg(id, items, key) {
   const el = $(id);
@@ -138,6 +167,7 @@ function seg(id, items, key) {
 }
 
 $("dest").innerHTML = DESTS.map((d, i) => `<option value="${i}">${d.name}</option>`).join("");
+seg("reserve", [[10, "10%"], [20, "20%"], [30, "30%"], [50, "50%"]], "reserve");
 seg("mode", [["ECO", "에코"], ["NORMAL", "일반"], ["SPORT", "스포츠"]], "mode");
 seg("hvac", [["on", "켜짐 22°C"], ["off", "꺼짐"]], "hvac");
 seg("tire", [[250, "정상"], [225, "10% 부족"], [200, "20% 부족"]], "tire");
@@ -153,6 +183,8 @@ function labels() {
   $("socV").textContent = `${$("soc").value}%`;
   $("occV").textContent = `${$("occ").value}명`;
   $("tempV").textContent = `${$("temp").value}°C`;
+  $("learnV").textContent = `${$("learn").value}회`;
+  drawLearning(+$("learn").value);
   $("manualWeather").hidden = state.wsrc !== "manual";
 }
 
@@ -178,7 +210,7 @@ function drawMap(dest, res) {
 // ---- 계산 ----
 let seq = 0, timer = null;
 function onChange() { labels(); clearTimeout(timer); timer = setTimeout(run, 300); }
-for (const id of ["dest", "depart", "soc", "occ", "temp"]) $(id).addEventListener("input", onChange);
+for (const id of ["dest", "depart", "soc", "occ", "temp", "learn"]) $(id).addEventListener("input", onChange);
 
 const waitColor = (m) => (m < 5 ? "var(--good)" : m < 15 ? "var(--warn)" : "var(--bad)");
 const P = (x) => `${Math.round(x * 100)}%`;
@@ -191,7 +223,8 @@ async function run() {
   try {
     const res = await recommend(api, {
       origin: { lat: ORIGIN.lat, lng: ORIGIN.lng }, dest: { lat: dest.lat, lng: dest.lng }, departMs: dep,
-      soc: +$("soc").value, occupants: +$("occ").value, mode: state.mode,
+      soc: +$("soc").value, occupants: +$("occ").value, mode: state.mode, arrivalReserve: state.reserve / 100,
+      learnedTrips: +$("learn").value,
       hvacOn: state.hvac === "on", cabinSetC: 22, tireKpa: state.tire,
       useForecast: state.wsrc === "forecast", tempC: +$("temp").value, weather: state.weather,
     });
@@ -217,9 +250,11 @@ function render(dest, dep, res) {
 
   const rec = $("rec");
   if (res.plan.kind === "none") {
-    rec.innerHTML = `<div class="name" style="color:var(--good)">충전 없이 도착할 수 있어요</div><div>도착 확률 ${P(res.plan.probability)}</div>`;
+    rec.innerHTML = `<div class="name" style="color:var(--good)">충전 없이 도착할 수 있어요</div>` +
+      `<div>목적지 도착 시 배터리 약 ${P(res.direct.socP50)} (적게 남으면 ${P(res.direct.socP10)})</div>`;
   } else if (res.plan.kind === "infeasible") {
-    rec.innerHTML = `<div class="name" style="color:var(--bad)">한 번 충전으로는 안전하게 가기 어려워요</div><div class="muted">확인한 충전소 ${res.checked}곳 · 배터리를 더 채우고 출발하세요</div>`;
+    rec.innerHTML = `<div class="name" style="color:var(--bad)">한 번 충전으로는 어려워요</div>` +
+      `<div class="muted">경로상 충전소 ${res.checked}곳을 확인했지만, 도착 시 ${state.reserve}% 이상 남기는 계획이 없습니다. 출발 전 더 충전하거나 도착 시 최소 배터리를 낮춰 보세요.</div>`;
   } else {
     const best = res.options[0], s = best.station, p = res.plan;
     const saved = res.savedMin != null ? Math.round(res.savedMin) : null;
@@ -230,7 +265,8 @@ function render(dest, dep, res) {
       <div class="muted small">추천 충전소 · 출발 후 약 ${Math.round(best.atKm)}km${s.restArea ? " · 고속도로 휴게소" : ` · 경로에서 ${s.offRouteKm}km`}</div>
       <div class="name">${s.name}</div>
       <div class="wait">도착 시 대기 <b style="color:${waitColor(best.waitMin)}">약 ${Math.round(best.waitMin)}분</b></div>
-      <div>지금 빈 충전기 ${s.available}/${s.total - s.outOfService} · 최대 ${Math.round(s.maxKw)}kW · ${P(p.chargeToSoc)}까지 충전 (약 ${Math.round(p.chargeMinutesP50)}분)</div>
+      <div>지금 빈 충전기 ${s.available}/${s.total - s.outOfService} · 최대 ${Math.round(s.maxKw)}kW</div>
+      <div class="muted">${P(p.chargeToSoc)}까지 충전 · 약 ${Math.round(p.chargeMinutesP50)}분 · 목적지 도착 약 ${P(p.destSocP50)}</div>
       ${badge}
       <div class="muted">총 소요 약 ${Math.round(p.minutesP50)}분 (늦어지면 ${Math.round(p.minutesP90)}분) · 도착 확률 ${P(p.probability)}</div>`;
   }
@@ -240,12 +276,62 @@ function render(dest, dep, res) {
     const tags = (s.restArea ? `<span class="tag" style="background:rgba(154,163,181,.2);color:var(--muted)">휴게소</span>` : "") + (i === 0 ? `<span class="tag" style="background:rgba(76,175,80,.2);color:var(--good)">추천</span>` : "") +
       (o === res.baseline ? `<span class="tag" style="background:rgba(79,140,255,.2);color:var(--accent)">최대 출력</span>` : "");
     return `<tr><td>${s.name}${tags}</td><td>${Math.round(o.atKm)}km</td><td style="color:${waitColor(o.waitMin)}">${Math.round(o.waitMin)}분</td>` +
-      `<td>${Math.round(o.plan.chargeMinutesP50)}분 → ${P(o.plan.chargeToSoc)}</td><td>${Math.round(o.plan.minutesP50)}분</td><td>${s.available}/${s.total - s.outOfService}</td><td>${Math.round(s.maxKw)}kW</td></tr>`;
+      `<td>${Math.round(o.plan.chargeMinutesP50)}분 → ${P(o.plan.chargeToSoc)}</td><td>${P(o.plan.destSocP50)}</td><td>${Math.round(o.plan.minutesP50)}분</td><td>${s.available}/${s.total - s.outOfService}</td><td>${Math.round(s.maxKw)}kW</td></tr>`;
   }).join("");
-  $("table").innerHTML = `<tr><th>충전소</th><th>위치</th><th>도착 시 대기</th><th>충전</th><th>총 소요</th><th>지금 빈자리</th><th>출력</th></tr>` +
-    (rows || `<tr><td colspan="7" class="muted">${res.plan.kind === "none" ? "충전이 필요 없습니다" : "목표 확률(95%)을 만족하는 충전소가 없습니다"}</td></tr>`);
+  $("table").innerHTML = `<tr><th>충전소</th><th>위치</th><th>도착 시 대기</th><th>충전</th><th>도착 배터리</th><th>총 소요</th><th>지금 빈자리</th><th>출력</th></tr>` +
+    (rows || `<tr><td colspan="8" class="muted">${res.plan.kind === "none" ? "충전이 필요 없습니다" : `도착 시 ${state.reserve}% 이상 남기는 계획이 없습니다`}</td></tr>`);
 
   drawMap(dest, res);
+  drawJourney(dest, res);
+}
+
+function drawLearning(trips) {
+  const g = learningProgress(trips);
+  const R = 52, C = 2 * Math.PI * R, pct = Math.round(g.overall * 100);
+  const color = g.overall >= 0.7 ? "var(--good)" : g.overall >= 0.35 ? "var(--warn)" : "var(--muted)";
+  const bar = (name, v, note) => `<div class="bar"><div class="t"><span>${name}</span><span>${Math.round(v * 100)}%</span></div>` +
+    `<div class="track"><div class="fill" style="width:${Math.round(v * 100)}%"></div></div>${note ? `<div class="muted small">${note}</div>` : ""}</div>`;
+  const msg = trips === 0 ? "아직 이 차를 모릅니다. 차종 평균으로 넓게 예측합니다."
+    : g.overall < 0.7 ? "학습 중입니다. 주행할수록 예측 범위가 좁아집니다." : "이 차와 운전 습관을 잘 알고 있습니다.";
+  $("learnCard").innerHTML = `<h3 style="margin:0 0 12px">개인 학습도 <span class="muted small">(웹 데모: 근사)</span></h3>
+    <div class="learn">
+      <div class="ring"><svg viewBox="0 0 120 120" width="120" height="120">
+        <circle cx="60" cy="60" r="${R}" fill="none" stroke="#11141a" stroke-width="12"/>
+        <circle cx="60" cy="60" r="${R}" fill="none" stroke="${color}" stroke-width="12" stroke-linecap="round"
+          stroke-dasharray="${C * g.overall} ${C}" transform="rotate(-90 60 60)" style="transition:stroke-dasharray .4s"/>
+      </svg><b>${pct}%<small>종합</small></b></div>
+      <div>
+        ${bar("차량 특성 (소모·공조·저온)", g.vehicle)}
+        ${bar("운전 습관 (속도·가속)", g.habit)}
+        ${bar("충전 특성", g.charging)}
+        ${bar("자주 가는 곳", g.places)}
+        <div class="muted small" style="margin-top:6px">${msg}</div>
+      </div>
+    </div>`;
+}
+
+function drawJourney(dest, res) {
+  const soc0 = +$("soc").value / 100;
+  const j = {
+    totalKm: res.route.distanceKm, soc0, reserve: state.reserve / 100, destName: dest.name,
+    dest: { p10: res.direct.socP10, p50: res.direct.socP50, p90: res.direct.socP90 },
+  };
+  if (res.plan.kind === "plan") {
+    const best = res.options[0], p = best.plan;
+    j.stop = {
+      atKm: best.atKm, name: best.station.name, chargeTo: p.chargeToSoc, chargeMin: p.chargeMinutesP50,
+      arriveP10: p.socAtChargerP10, arriveP50: p.socAtChargerP50, arriveP90: p.socAtChargerP90,
+    };
+    j.dest = { p10: p.destSocP10, p50: p.destSocP50, p90: p.destSocP90 };
+  } else if (res.plan.kind === "infeasible") {
+    $("journeyCard").hidden = false;
+    $("battRow").innerHTML = batteryRow(j);
+    $("journey").innerHTML = journeySvg(j);
+    return;
+  }
+  $("journeyCard").hidden = false;
+  $("battRow").innerHTML = batteryRow(j);
+  $("journey").innerHTML = journeySvg(j);
 }
 
 labels();

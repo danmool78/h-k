@@ -14,6 +14,21 @@ const DEFAULT_ACCEL = 25;
 const PROFILE = { capacityKwh: 74, capacityStd: 3, curbMassKg: 1950, vehicleMaxKw: 200, chargeLogK: Math.log(0.9), chargeLogKStd: 0.15, reserveSoc: 0.10, tireNominalKpa: 250 };
 const PASSENGER_KG = 70, LUGGAGE_KG = 30, REGEN = 0.6, SEGMENT_KM = 10;
 
+// ---- 웹 데모용 가상 학습 (앱은 실제 주행 기록으로 학습) ----
+// LearningSimulationTest 결과를 근사: 주행 n회 후 차량·습관 값의 불확실성 배율 (최소 0.3)
+export function learnedScale(trips) { return Math.max(0.3, 1 / Math.sqrt(1 + trips / 2)); }
+
+/** 학습도 (0~1). 불확실성이 처음보다 줄어든 정도. 앱의 VehicleProfile.learningProgress 와 같은 기준 */
+export function learningProgress(trips) {
+  const scale = learnedScale(trips);
+  const vehicle = (1 - scale) / 0.7;
+  const habit = trips / (trips + 8);
+  const sessions = Math.floor(trips / 4);
+  const charging = Math.min(1, sessions / (sessions + 3) / 0.85);
+  const places = Math.min(1, Math.min(trips, 30) / 15);
+  return { vehicle, habit, charging, places, overall: 0.45 * vehicle + 0.25 * habit + 0.2 * charging + 0.1 * places };
+}
+
 // ---- 난수 (재현 가능한 시드) ----
 function rng(seed) {
   let a = seed >>> 0;
@@ -105,17 +120,20 @@ export const score = (p) => 0.6 * p.minutesP50 + 0.4 * p.minutesP90;
 
 // ---- 몬테카를로 (EvMonteCarlo) ----
 export class MonteCarlo {
-  constructor(env, samples = 1500, seed = 42) {
+  constructor(env, samples = 1500, seed = 42, learnedTrips = 0) {
     this.env = env; this.n = samples;
     const r = rng(seed);
-    const [pm, ps] = paceLog(env.context);
-    this.theta = Array.from({ length: samples }, () => PRIOR_MEAN.map((m, j) => Math.max(0, m + PRIOR_STD[j] * r.gauss())));
+    const k = learnedScale(learnedTrips);
+    const [pm, ps0] = paceLog(env.context);
+    const ps = Math.sqrt(Math.max(ps0 ** 2 - PACE_NOISE ** 2, 0) * k * k + PACE_NOISE ** 2);
+    this.theta = Array.from({ length: samples }, () => PRIOR_MEAN.map((m, j) => Math.max(0, m + PRIOR_STD[j] * k * r.gauss())));
     this.pace = Float64Array.from({ length: samples }, () => Math.exp(pm + r.gauss() * ps));
     this.accelMul = Float64Array.from({ length: samples }, () => Math.exp(r.gauss() * ACCEL_NOISE));
     this.noise1 = Float64Array.from({ length: samples }, () => r.gauss());
     this.noise2 = Float64Array.from({ length: samples }, () => r.gauss());
     this.cap = Float64Array.from({ length: samples }, () => PROFILE.capacityKwh + r.gauss() * PROFILE.capacityStd);
-    this.k = Float64Array.from({ length: samples }, () => Math.exp(PROFILE.chargeLogK + r.gauss() * PROFILE.chargeLogKStd));
+    const kStd = PROFILE.chargeLogKStd * Math.max(0.25, 1 / Math.sqrt(1 + learnedTrips / 8));
+    this.k = Float64Array.from({ length: samples }, () => Math.exp(PROFILE.chargeLogK + r.gauss() * kStd));
     this.waitZ = Float64Array.from({ length: samples }, () => r.gauss());
     this.overhead = Float64Array.from({ length: samples }, () => 3 * Math.exp(r.gauss() * 0.3));
     this.detourZ = Float64Array.from({ length: samples }, () => r.gauss());
@@ -139,6 +157,13 @@ export class MonteCarlo {
     return [Math.max(wh, 0) / 1000, minutes];
   }
 
+  /** 충전 없이 갈 때 도착 배터리가 [reserve] 이상일 확률 */
+  arrivalShare(soc0, distKm, navMin, reserve) {
+    let ok = 0;
+    for (let i = 0; i < this.n; i++) if (soc0 - this.leg(i, distKm, navMin, this.noise1)[0] / this.cap[i] >= reserve) ok++;
+    return ok / this.n;
+  }
+
   arrival(soc0, distKm, navMin) {
     const remain = new Float64Array(this.n), mins = new Float64Array(this.n);
     for (let i = 0; i < this.n; i++) {
@@ -151,7 +176,8 @@ export class MonteCarlo {
   }
 
   /** 충전소 하나의 최선 충전 목표. 목표 확률 미달이면 null */
-  bestForCharger(soc0, totalKm, totalMin, c, targetP = 0.95) {
+  /** [arrivalReserve]: 목적지 도착 시 최소 배터리 (95% 확률로 이 이상 남게) */
+  bestForCharger(soc0, totalKm, totalMin, c, arrivalReserve = 0.30, targetP = 0.95) {
     const d1 = Math.min(Math.max(c.atKm, 0), totalKm), nav1 = totalMin * d1 / totalKm;
     const table = chargeTable(c.powerKw);
     const n = this.n, socAt = new Float64Array(n), l1 = new Float64Array(n), l2k = new Float64Array(n), l2m = new Float64Array(n), fixed = new Float64Array(n);
@@ -163,7 +189,8 @@ export class MonteCarlo {
       fixed[i] = Math.exp(wl + this.waitZ[i] * 0.6) + this.overhead[i] + c.detourMin * Math.exp(this.detourZ[i] * 0.4);
     }
     let best = null;
-    const total = new Float64Array(n), chargeMin = new Float64Array(n);
+    const total = new Float64Array(n), chargeMin = new Float64Array(n), destSoc = new Float64Array(n);
+    const socAtSorted = Float64Array.from(socAt).sort();
     for (let step = 0; step <= 13; step++) {
       const tgt = 0.30 + step * 0.05;
       let ok = 0;
@@ -171,12 +198,18 @@ export class MonteCarlo {
         const from = Math.max(socAt[i], 0), to = Math.max(tgt, from);
         chargeMin[i] = lookup(table, from, to) * this.cap[i] / this.k[i];
         total[i] = l1[i] + l2m[i] + fixed[i] + chargeMin[i];
-        if (socAt[i] >= PROFILE.reserveSoc && to - l2k[i] / this.cap[i] >= PROFILE.reserveSoc) ok++;
+        destSoc[i] = to - l2k[i] / this.cap[i];
+        if (socAt[i] >= PROFILE.reserveSoc && destSoc[i] >= arrivalReserve) ok++;
       }
       const p = ok / n;
       if (p < targetP) continue;
       const ts = Float64Array.from(total).sort(), cs = Float64Array.from(chargeMin).sort();
-      const plan = { charger: c.id, chargeToSoc: tgt, probability: p, minutesP50: pct(ts, 50), minutesP90: pct(ts, 90), chargeMinutesP50: pct(cs, 50) };
+      const ds = Float64Array.from(destSoc).sort();
+      const plan = {
+        charger: c.id, chargeToSoc: tgt, probability: p, minutesP50: pct(ts, 50), minutesP90: pct(ts, 90), chargeMinutesP50: pct(cs, 50),
+        socAtChargerP10: pct(socAtSorted, 10), socAtChargerP50: pct(socAtSorted, 50), socAtChargerP90: pct(socAtSorted, 90),
+        destSocP10: pct(ds, 10), destSocP50: pct(ds, 50), destSocP90: pct(ds, 90),
+      };
       if (!best || score(plan) < score(best)) best = plan;
     }
     return best;
@@ -217,19 +250,22 @@ export async function recommend(api, inp) {
 
   const context = tripContext(totalKm, departMs, origin.lat, origin.lng, weather, inp.mode);
   const env = { context, tempC, occupants: inp.occupants, hvacOn: inp.hvacOn, cabinSetC: inp.cabinSetC, tireKpa: inp.tireKpa, ascentPerKm: 3 };
-  const mc = new MonteCarlo(env);
+  const mc = new MonteCarlo(env, 1500, 42, inp.learnedTrips ?? 0);
   const soc0 = inp.soc / 100;
   const direct = mc.arrival(soc0, totalKm, totalMin);
 
   const cands = rc.chargers.filter((v) => v.total - v.outOfService > 0);
   const base = { route, direct, env, weather: { tempC, kind: weather, forecast }, checked: cands.length, candidates: cands };
-  if (direct.probability >= 0.95) return { ...base, plan: { kind: "none", probability: direct.probability }, options: [], baseline: null, savedMin: null };
+  const arrivalReserve = inp.arrivalReserve ?? 0.30;
+  // 충전 없이도 95% 확률로 [arrivalReserve] 이상 남으면 충전 불필요
+  const directOk = direct.socP10 >= arrivalReserve && mc.arrivalShare(soc0, totalKm, totalMin, arrivalReserve) >= 0.95;
+  if (directOk) return { ...base, plan: { kind: "none", probability: direct.probability }, options: [], baseline: null, savedMin: null };
 
   const options = [];
   for (const v of cands) {
     const waitMin = expectedWaitMin(v, v.etaMin);
     const c = { id: v.id, atKm: v.atKm, powerKw: Math.min(Math.max(v.maxKw, 30), 350), waitMeanMin: waitMin, detourMin: v.detourMin };
-    const p = mc.bestForCharger(soc0, totalKm, totalMin, c);
+    const p = mc.bestForCharger(soc0, totalKm, totalMin, c, arrivalReserve);
     if (p) options.push({ station: v, atKm: v.atKm, waitMin, plan: p });
   }
   options.sort((a, b) => score(a.plan) - score(b.plan));
