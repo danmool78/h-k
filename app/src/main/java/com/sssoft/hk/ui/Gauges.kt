@@ -38,7 +38,9 @@ import kotlin.math.roundToInt
 
 private val Line = Color(0xFF4F8CFF)
 private val Band = Color(0x2E4F8CFF)
-private val ChargeGreen = Color(0xFF4CAF50)
+internal val ChargeGreen = Color(0xFF4CAF50)
+/** 밥 먹으며 충전하는 곳 */
+internal val MealAmber = Color(0xFFFFB300)
 private val ReserveRed = Color(0xFFE53935)
 private val Grid = Color(0xFF2A2F3A)
 
@@ -50,20 +52,24 @@ fun levelColor(soc: Double): Color = when {
 
 private fun pct(x: Double) = "${(x.coerceAtLeast(0.0) * 100).roundToInt()}%"
 
-/** 배터리 여정 데이터: 충전소 없이 가면 [stop] = null. 배터리 값은 0~1. */
+/** 배터리 여정 데이터: 충전소 없이 가면 [stops] 가 비어 있음. 배터리 값은 0~1. */
 data class Journey(
     val totalKm: Double,
     val soc0: Double,
     val reserve: Double,
     val destName: String,
     val dest: Triple<Double, Double, Double>,          // 적게 / 보통 / 많이
-    val stop: Stop? = null,
+    val stops: List<Stop> = emptyList(),
 ) {
     data class Stop(
         val atKm: Double, val name: String, val chargeTo: Double, val chargeMin: Double,
         val arrive: Triple<Double, Double, Double>,
+        /** 여기서 밥도 먹음 ("점심"/"저녁") */
+        val meal: String? = null,
     )
 }
+
+private val NUM = listOf("①", "②", "③", "④")
 
 /** 배터리 모양 게이지 하나 */
 @Composable
@@ -100,11 +106,20 @@ fun BatteryRow(j: Journey) {
     val muted = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Battery("출발", j.soc0, null, Modifier.weight(1f))
-        j.stop?.let { s ->
+        if (j.stops.size == 1) {
+            val s = j.stops[0]
             Text("→", color = muted)
             Battery("충전소 도착", s.arrive.second, "적으면 ${pct(s.arrive.first)}", Modifier.weight(1f))
             Text("→", color = muted)
-            Battery("충전 후", s.chargeTo, "${s.chargeMin.roundToInt()}분 충전", Modifier.weight(1f))
+            Battery("충전 후", s.chargeTo, "${s.chargeMin.roundToInt()}분 충전" + (s.meal?.let { " · $it" } ?: ""), Modifier.weight(1f))
+        } else for ((k, s) in j.stops.withIndex()) {
+            // 여러 곳이면 충전소마다 "충전 후" 하나씩: 도착 배터리·충전 시간은 아래 글씨로
+            Text("→", color = muted)
+            Battery(
+                "${NUM[k]} 충전 후", s.chargeTo,
+                "도착 ${pct(s.arrive.second)} · ${s.chargeMin.roundToInt()}분" + (s.meal?.let { " · $it" } ?: ""),
+                Modifier.weight(1f),
+            )
         }
         Text("→", color = muted)
         Battery("목적지 도착", j.dest.second, "적으면 ${pct(j.dest.first)}", Modifier.weight(1f))
@@ -129,22 +144,26 @@ fun BatteryJourney(j: Journey, modifier: Modifier = Modifier) {
             fun band(x0: Double, s0: Double, x1: Double, lo: Double, hi: Double) {
                 drawPath(Path().apply { moveTo(x(x0), y(s0)); lineTo(x(x1), y(hi)); lineTo(x(x1), y(lo)); close() }, Band)
             }
-            val s = j.stop
-            if (s != null) {
-                band(0.0, j.soc0, s.atKm, s.arrive.first, s.arrive.third)
-                band(s.atKm, s.chargeTo, j.totalKm, j.dest.first, j.dest.third)
-                val bw = 14.dp.toPx()
+            // 구간마다: 출발(또는 충전 후) → 다음 충전소 도착(또는 목적지)
+            var km0 = 0.0
+            var soc0 = j.soc0
+            for (s in j.stops) {
+                band(km0, soc0, s.atKm, s.arrive.first, s.arrive.third)
+                drawLine(Line, Offset(x(km0), y(soc0)), Offset(x(s.atKm), y(s.arrive.second)), 8f, StrokeCap.Round)
+                km0 = s.atKm
+                soc0 = s.chargeTo
+            }
+            band(km0, soc0, j.totalKm, j.dest.first, j.dest.third)
+            drawLine(Line, Offset(x(km0), y(soc0)), Offset(x(j.totalKm), y(j.dest.second)), 8f, StrokeCap.Round)
+            val bw = 14.dp.toPx()
+            for (s in j.stops) {
                 drawRoundRect(
-                    ChargeGreen, Offset(x(s.atKm) - bw / 2, y(s.chargeTo)), Size(bw, y(s.arrive.second) - y(s.chargeTo)),
+                    if (s.meal != null) MealAmber else ChargeGreen,
+                    Offset(x(s.atKm) - bw / 2, y(s.chargeTo)), Size(bw, y(s.arrive.second) - y(s.chargeTo)),
                     CornerRadius(4.dp.toPx()),
                 )
-                drawLine(Line, Offset(x(0.0), y(j.soc0)), Offset(x(s.atKm), y(s.arrive.second)), 8f, StrokeCap.Round)
-                drawLine(Line, Offset(x(s.atKm), y(s.chargeTo)), Offset(x(j.totalKm), y(j.dest.second)), 8f, StrokeCap.Round)
                 drawCircle(levelColor(s.arrive.second), 10f, Offset(x(s.atKm), y(s.arrive.second)))
                 drawCircle(levelColor(s.chargeTo), 10f, Offset(x(s.atKm), y(s.chargeTo)))
-            } else {
-                band(0.0, j.soc0, j.totalKm, j.dest.first, j.dest.third)
-                drawLine(Line, Offset(x(0.0), y(j.soc0)), Offset(x(j.totalKm), y(j.dest.second)), 8f, StrokeCap.Round)
             }
             drawCircle(levelColor(j.soc0), 10f, Offset(x(0.0), y(j.soc0)))
             drawCircle(levelColor(j.dest.second), 10f, Offset(x(j.totalKm), y(j.dest.second)))
@@ -152,9 +171,10 @@ fun BatteryJourney(j: Journey, modifier: Modifier = Modifier) {
         Row(Modifier.fillMaxWidth()) {
             Text("출발", fontSize = 12.sp, color = muted)
             Spacer(Modifier.weight(1f))
-            j.stop?.let {
-                Text("${it.name.take(12)} · ${it.atKm.roundToInt()}km · +${((it.chargeTo - it.arrive.second) * 100).roundToInt()}%",
-                    fontSize = 12.sp, color = ChargeGreen)
+            for ((k, s) in j.stops.withIndex()) {
+                val label = (if (j.stops.size > 1) NUM[k] + " " else "") + s.name.take(if (j.stops.size > 1) 8 else 12)
+                Text("$label · ${s.atKm.roundToInt()}km · +${((s.chargeTo - s.arrive.second) * 100).roundToInt()}%" + (s.meal?.let { " · $it" } ?: ""),
+                    fontSize = 12.sp, color = if (s.meal != null) MealAmber else ChargeGreen)
                 Spacer(Modifier.weight(1f))
             }
             Text("${j.destName} · ${j.totalKm.roundToInt()}km", fontSize = 12.sp, color = muted)

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -33,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sssoft.hk.model.ChargePlanResult
+import com.sssoft.hk.model.EvMonteCarlo
 import com.sssoft.hk.model.VehicleProfile
 import com.sssoft.hk.model.Weather
 import com.sssoft.hk.trip.ChargingRecommendation
@@ -131,9 +133,10 @@ private fun RecommendationCard(ui: RangeUiState, onAddWaypoint: () -> Unit) {
                     Text("목적지 도착 시 배터리 약 ${pct(rec.direct.socP50)} (적게 남으면 ${pct(rec.direct.socP10)})", fontSize = 20.sp)
                 }
                 is ChargePlanResult.Infeasible -> {
-                    Text("한 번 충전으로는 어려워요", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Bad)
+                    Text("경로상 충전소로는 어려워요", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Bad)
                     Text(
-                        "경로상 충전소 ${rec.checkedStations}곳을 확인했지만 도착 시 ${pct(rec.conditions.arrivalReserveSoc)} 이상 남기는 계획이 없습니다. " +
+                        "경로상 충전소 ${rec.checkedStations}곳을 최대 ${EvMonteCarlo.MAX_STOPS}번 들르는 조합까지 확인했지만 " +
+                            "도착 시 ${pct(rec.conditions.arrivalReserveSoc)} 이상 남기는 계획이 없습니다. " +
                             "출발 전 더 충전하거나 도착 최소 배터리를 낮춰 보세요.",
                         fontSize = 18.sp,
                     )
@@ -148,7 +151,8 @@ private fun RecommendationCard(ui: RangeUiState, onAddWaypoint: () -> Unit) {
 private fun PlanBody(rec: ChargingRecommendation, plan: ChargePlanResult.Plan, ui: RangeUiState, onAddWaypoint: () -> Unit) {
     val best = rec.best ?: return
     val s = best.station
-    Text("추천 충전소", style = MaterialTheme.typography.labelLarge)
+    val stops = rec.stopsOf(plan)
+    Text(if (stops.size > 1) "추천 충전 계획 · ${stops.size}곳 나눠 충전" else "추천 충전소", style = MaterialTheme.typography.labelLarge)
     Text(s.name, fontSize = 30.sp, fontWeight = FontWeight.Bold)
     Spacer(Modifier.height(12.dp))
     Row(verticalAlignment = Alignment.Bottom) {
@@ -159,6 +163,20 @@ private fun PlanBody(rec: ChargingRecommendation, plan: ChargePlanResult.Plan, u
         "지금 빈 충전기 ${s.available}/${s.inService} · 최대 ${s.maxKw.roundToInt()}kW · ${pct(plan.chargeToSoc)}까지 충전 (약 ${plan.chargeMinutesP50.roundToInt()}분)",
         fontSize = 18.sp,
     )
+    if (stops.first().meal) Text("여기서 ${plan.mealLabel ?: "식사"}을 먹는 동안 충전합니다", fontSize = 18.sp, color = MealAmber)
+    // 두 번째부터: 어디서 얼마나 (밥 먹는 곳 표시)
+    for ((k, st) in stops.withIndex().drop(1)) {
+        val v = rec.stationOf(st)
+        val meal = if (st.meal) " · 🍚 ${plan.mealLabel ?: "식사"}하며 충전" else ""
+        Text(
+            "${k + 1}번째 · ${v?.name ?: st.charger} (${st.atKm.roundToInt()}km) · 도착 약 ${pct(st.socAtP50)} → ${pct(st.chargeToSoc)}까지 " +
+                "약 ${st.chargeMinutesP50.roundToInt()}분$meal",
+            fontSize = 18.sp, color = if (st.meal) MealAmber else Color.Unspecified,
+        )
+    }
+    if (plan.mealSeparateMin > 0) {
+        Text("${plan.mealLabel ?: "식사"} 시간은 충전과 따로 약 ${plan.mealSeparateMin.roundToInt()}분 잡았어요", fontSize = 16.sp)
+    }
     Spacer(Modifier.height(16.dp))
 
     val saved = rec.savedMin?.roundToInt()
@@ -212,12 +230,13 @@ private fun JourneyCard(ui: RangeUiState) {
         dest = Triple(rec.direct.socP10, rec.direct.socP50, rec.direct.socP90),
     )
     val plan = rec.plan
-    val best = rec.best
-    val j = if (plan is ChargePlanResult.Plan && best != null) base.copy(
-        stop = Journey.Stop(
-            best.atKm, best.station.name, plan.chargeToSoc, plan.chargeMinutesP50,
-            Triple(plan.socAtChargerP10, plan.socAtChargerP50, plan.socAtChargerP90),
-        ),
+    val j = if (plan is ChargePlanResult.Plan && rec.best != null) base.copy(
+        stops = rec.stopsOf(plan).map { st ->
+            Journey.Stop(
+                st.atKm, rec.stationOf(st)?.name ?: st.charger, st.chargeToSoc, st.chargeMinutesP50,
+                Triple(st.socAtP10, st.socAtP50, st.socAtP90), plan.mealLabel.takeIf { st.meal },
+            )
+        },
         dest = Triple(plan.destSocP10, plan.destSocP50, plan.destSocP90),
     ) else base
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
@@ -270,6 +289,10 @@ private fun ReserveSelector(ui: RangeUiState, onInput: (TripInput) -> Unit) {
             if (kotlin.math.abs(r - i.arrivalReserve) < 1e-6) Button(onClick = {}) { Text(pct(r)) }
             else OutlinedButton(onClick = { onInput(i.copy(arrivalReserve = r)) }) { Text(pct(r)) }
         }
+        Spacer(Modifier.width(12.dp))
+        // 점심·저녁 시간이 걸리면 식당 있는 휴게소에서 밥 먹는 동안 충전
+        if (i.meal) Button(onClick = { onInput(i.copy(meal = false)) }) { Text("가는 길 식사 켬") }
+        else OutlinedButton(onClick = { onInput(i.copy(meal = true)) }) { Text("가는 길 식사 끔") }
     }
 }
 
@@ -284,6 +307,8 @@ private fun OptionRow(o: StopOption, isBest: Boolean, isBaseline: Boolean) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(o.station.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1)
                 if (o.restArea) Tag("휴게소", Color.Gray)
+                if (o.plan.stopCount > 1) Tag("${o.plan.stopCount}곳 충전", ChargeGreen)
+                if (o.plan.stops.any { it.meal }) Tag(o.plan.mealLabel ?: "식사", MealAmber)
                 if (isBest) Tag("추천", Good)
                 if (isBaseline) Tag(if (o.naviPick) "내비 추천" else "최대 출력", MaterialTheme.colorScheme.primary)
             }

@@ -46,6 +46,51 @@ class EvMonteCarloTest {
         assertTrue(plan.chargeMinutesP50 > 5)
     }
 
+    /** 50km 마다 휴게소 (100kW, 대기 3분). [mealFrom] 이후 휴게소에는 식당이 있다 */
+    private fun everyFifty(totalKm: Double) = (1 until (totalKm / 50).toInt()).map {
+        Charger("R${it * 50}", it * 50.0, 100.0, 3.0, detourMin = 1.0, detourSigma = 0.2, mealOk = true)
+    }
+
+    @Test
+    fun `배터리 작은 차의 장거리는 한 번으로 안 되고 여러 번 나눠 충전한다`() {
+        val small = profile.copy(capacityKwh = 40.0)
+        val chargers = everyFifty(350.0)
+        val mc = EvMonteCarlo(small)
+        val one = mc.planCharging(0.9, 350.0, 230.0, env(tempC = 15.0), chargers, arrivalReserve = 0.3, maxStops = 1)
+        assertTrue("한 곳만으로는 불가", one is ChargePlanResult.Infeasible)
+        val multi = EvMonteCarlo(small).planCharging(0.9, 350.0, 230.0, env(tempC = 15.0), chargers, arrivalReserve = 0.3)
+        assertTrue(multi is ChargePlanResult.Plan)
+        multi as ChargePlanResult.Plan
+        assertTrue("2곳 이상", multi.stops.size >= 2)
+        assertTrue(multi.probability >= 0.95)
+        assertTrue("순서대로", multi.stops.zipWithNext().all { (a, b) -> a.atKm < b.atKm })
+        assertTrue("운 나빠도 각 충전소에 10% 근처 이상", multi.stops.all { it.socAtP10 > 0.08 })
+        assertTrue("도착 30% 이상", multi.destSocP10 >= 0.28)
+    }
+
+    @Test
+    fun `여러 번 나눠 짧게 충전하는 게 빠르면 그렇게 고른다 (80% 이후 느린 충전 회피)`() {
+        val chargers = everyFifty(450.0)
+        val mc = EvMonteCarlo(profile)
+        val one = mc.bestStopPerCharger(0.8, 450.0, 300.0, env(tempC = 0.0), chargers, arrivalReserve = 0.3)
+            .minByOrNull(EvMonteCarlo::score)
+        val best = EvMonteCarlo(profile).planCharging(0.8, 450.0, 300.0, env(tempC = 0.0), chargers, arrivalReserve = 0.3)
+        best as ChargePlanResult.Plan
+        if (one != null) assertTrue("한 번 충전보다 느리지 않다", EvMonteCarlo.score(best) <= EvMonteCarlo.score(one) + 3)
+    }
+
+    @Test
+    fun `점심때 식당 있는 휴게소에서 밥 먹으며 더 채운다`() {
+        val chargers = everyFifty(450.0)
+        val lunch = MealWindow(110.0, 190.0, "점심")
+        val plan = EvMonteCarlo(profile).planCharging(0.7, 450.0, 300.0, env(tempC = 0.0), chargers, arrivalReserve = 0.3, meal = lunch)
+        plan as ChargePlanResult.Plan
+        val m = plan.stops.firstOrNull { it.meal }
+        assertTrue("점심 정차가 있다: ${plan.stops}", m != null)
+        assertEquals(0.0, plan.mealSeparateMin, 1e-9)
+        assertTrue("식사 시간만큼 머문다", m!!.dwellMinutesP50 >= MealWindow.MEAL_MIN)
+    }
+
     @Test
     fun `충전 곡선 - 80% 넘으면 느려진다`() {
         val to80 = ChargeCurve.minutes(0.1, 0.8, 200.0, 74.0, 200.0, 20.0, k = 1.0)

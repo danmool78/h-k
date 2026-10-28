@@ -125,7 +125,7 @@ class ChargeWatchService : Service() {
         val reading = BatteryReader.read(this) ?: return
         val dest = navi.destination() ?: return
         val trip = navi.trip(dest)
-        val cond = TripConditions.from(reading, ProfileStore.load(this), TripPrefs.tempC(this), TripPrefs.weather(this), arrivalReserveSoc = TripPrefs.arrivalReserve(this))
+        val cond = TripConditions.from(reading, ProfileStore.load(this), TripPrefs.tempC(this), TripPrefs.weather(this), arrivalReserveSoc = TripPrefs.arrivalReserve(this), meal = TripPrefs.meal(this))
         val rec = planner.recommend(cond, here, dest, trip, forecast = true)
 
         when (val d = ReplanPolicy.decide(target.stationId, rec)) {

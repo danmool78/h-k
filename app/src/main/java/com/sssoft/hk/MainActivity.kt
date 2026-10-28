@@ -32,6 +32,9 @@ class MainActivity : ComponentActivity() {
             battery.state.collect(viewModel::onBattery)
         }
         lifecycleScope.launch {
+            viewModel.ui.map { it.input.meal }.distinctUntilChanged().collect { TripPrefs.setMeal(this@MainActivity, it) }
+        }
+        lifecycleScope.launch {
             // Gleo 음성 호출에서 쓸 기온 (차량 SDK에 외부 기온 없음)
             viewModel.ui.map { Triple(it.input.tempC, it.input.weather, it.input.arrivalReserve) }.distinctUntilChanged().collect { (t, w, r) ->
                 TripPrefs.setTempC(this@MainActivity, t)

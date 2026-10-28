@@ -28,6 +28,13 @@ object TripPrefs {
         prefs(context).edit().putFloat("arrivalReserve", value.toFloat()).apply()
     }
 
+    /** 가는 길에 식사 시간이 걸리면 밥 먹으며 충전하는 계획 (기본 켬) */
+    fun meal(context: Context): Boolean = prefs(context).getBoolean("meal", true)
+
+    fun setMeal(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean("meal", value).apply()
+    }
+
     fun weather(context: Context): Weather =
         runCatching { Weather.valueOf(prefs(context).getString(KEY_WEATHER, null)!!) }.getOrDefault(Weather.CLEAR)
 

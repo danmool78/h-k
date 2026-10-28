@@ -118,6 +118,24 @@ export function expectedWaitMin(v, etaMin) {
 const pct = (sorted, q) => { const pos = (sorted.length - 1) * q / 100, lo = Math.floor(pos), hi = Math.min(lo + 1, sorted.length - 1); return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo); };
 export const score = (p) => 0.6 * p.minutesP50 + 0.4 * p.minutesP90;
 
+// ---- 여러 곳 충전 + 식사 (EvMonteCarlo.bestPlanPerFirstStop) ----
+export const MAX_STOPS = 3;
+const MIN_TARGET = 0.20, MAX_TARGET = 0.95, SCREEN_Z = 1.75, KEEP_PER_FIRST = 3, MAX_BUMPS = 8;
+export const MEAL_MIN = 35, MEAL_SEPARATE_EXTRA = 5;
+const ceil05 = (x) => Math.ceil(x / 0.05 - 1e-6) * 0.05;
+const r2 = (x) => Math.round(x * 100) / 100;
+
+/** 출발부터 [totalMin] 분 동안 걸리는 점심(11:30~13:30)·저녁(17:30~19:30). 2시간 미만이거나 출발 직후·도착 직전만 걸리면 없음 */
+export function mealWindow(departMs, totalMin) {
+  if (totalMin < 120) return null;
+  const d = new Date(departMs), now = d.getHours() * 60 + d.getMinutes();
+  for (const day of [0, 1]) for (const [label, from, to] of [["점심", 690, 810], ["저녁", 1050, 1170]]) {
+    const a = Math.max(from + day * 1440 - now, 45), b = Math.min(to + day * 1440 - now, totalMin - 30);
+    if (a < b) return { fromMin: a, toMin: b, label, minutes: MEAL_MIN };
+  }
+  return null;
+}
+
 // ---- 몬테카를로 (EvMonteCarlo) ----
 export class MonteCarlo {
   constructor(env, samples = 1500, seed = 42, learnedTrips = 0) {
@@ -143,7 +161,7 @@ export class MonteCarlo {
   }
 
   /** 시나리오 i: [kWh, 실제 주행 분] */
-  leg(i, distKm, navMin, noise) {
+  leg(i, distKm, navMin, noise, minSeg = 1) {
     if (distKm <= 0) return [0, 0];
     const e = this.env, minutes = navMin * this.pace[i];
     const input = {
@@ -152,7 +170,8 @@ export class MonteCarlo {
       accelWh: this.accel * distKm * this.mass / 1000 * this.accelMul[i], ascentM: e.ascentPerKm * distKm, descentM: e.ascentPerKm * distKm,
     };
     const pred = dot(this.theta[i], features(input)) + climbWh(input);
-    const nSeg = Math.max(distKm / SEGMENT_KM, 1);
+    // 경로를 잘게 나눠 더할 때는 minSeg 를 작게: 구간별 노이즈가 무작위 걸음처럼 쌓임
+    const nSeg = Math.max(distKm / SEGMENT_KM, minSeg);
     const wh = pred + noise[i] * noiseStdWh(pred / nSeg) * Math.sqrt(nSeg);
     return [Math.max(wh, 0) / 1000, minutes];
   }
@@ -180,7 +199,150 @@ export class MonteCarlo {
     };
   }
 
-  /** 충전소 하나의 최선 충전 목표. 목표 확률 미달이면 null */
+  /**
+   * 첫 충전소마다, 목표 확률을 지키는 가장 빠른 계획 (그 뒤 충전소 [maxStops]−1 곳·충전량·식사 포함).
+   * 경로 위 모든 지점까지 누적 소모를 시나리오마다 한 번 계산 → 평균·운 나쁜 쪽 소모로 조합을 거르고 → 남은 것만 정밀 계산.
+   */
+  planPerFirstStop(soc0, totalKm, totalMin, chargers, arrivalReserve = 0.30, targetP = 0.95, meal = null, maxStops = MAX_STOPS) {
+    const n = this.n, r = rng(7);
+    const cs = chargers.filter((c) => c.atKm > 0 && c.atKm < totalKm).sort((a, b) => a.atKm - b.atKm);
+    const N = cs.length, dest = N + 1;
+    if (!N) return [];
+    const km = [0, ...cs.map((c) => c.atKm), totalKm], nav = km.map((k) => totalMin * k / totalKm);
+    const kwh = [new Float64Array(n)], mins = [new Float64Array(n)];
+    for (let p = 1; p <= dest; p++) {
+      const noise = Float64Array.from({ length: n }, () => r.gauss());
+      const K = new Float64Array(n), M = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const [k, m] = this.leg(i, km[p] - km[p - 1], nav[p] - nav[p - 1], noise, 0.01);
+        K[i] = kwh[p - 1][i] + k; M[i] = mins[p - 1][i] + m;
+      }
+      kwh.push(K); mins.push(M);
+    }
+    const fixed = cs.map((c) => { const wl = Math.log(Math.max(c.waitMeanMin, 0.5)); return Float64Array.from({ length: n }, () => Math.exp(wl + r.gauss() * 0.6) + 3 * Math.exp(r.gauss() * 0.3)); });
+    const detour = cs.map((c) => Float64Array.from({ length: n }, () => c.detourMin * Math.exp(r.gauss() * (c.detourSigma ?? 0.4))));
+    const tables = cs.map((c) => chargeTable(c.powerKw));
+    const avg = (a) => a.reduce((s, x) => s + x, 0) / a.length;
+    const paceMean = avg(this.pace), capMean = avg(this.cap), kMean = avg(this.k);
+    const stats = [];
+    const use = (p) => {
+      if (stats[p]) return stats[p];
+      const m = new Float64Array(dest + 1), s = new Float64Array(dest + 1);
+      for (let q = p + 1; q <= dest; q++) {
+        let sum = 0, sq = 0;
+        for (let i = 0; i < n; i++) { const u = (kwh[q][i] - kwh[p][i]) / this.cap[i]; sum += u; sq += u * u; }
+        m[q] = sum / n; s[q] = Math.sqrt(Math.max(sq / n - m[q] ** 2, 0));
+      }
+      return (stats[p] = { m, s });
+    };
+    const meanUse = (p, q) => use(p).m[q], needUse = (p, q) => use(p).m[q] + SCREEN_Z * use(p).s[q];
+    const meanDwell = (c, from, to, eat) => {
+      const active = cs[c].waitMeanMin * Math.exp(0.18) + 3 + lookup(tables[c], Math.max(from, 0), to) * capMean / kMean;
+      return cs[c].detourMin + (eat ? Math.max(active, meal.minutes) : active);
+    };
+    const separateMin = meal ? meal.minutes + MEAL_SEPARATE_EXTRA : 0;
+
+    // 1) 거르기: 첫 충전소별로 유망한 계획 몇 개
+    const keep = new Map(), drive = nav[dest] * paceMean, pts = [], tgts = [];
+    const worst = (f) => { const l = keep.get(f); return l && l.length >= KEEP_PER_FIRST ? Math.max(...l.map((d) => d.est)) : Infinity; };
+    const record = (depth, mealAt, dwell) => {
+      const est = drive + dwell + (meal && mealAt < 0 ? separateMin : 0);
+      const l = keep.get(pts[0]) ?? []; keep.set(pts[0], l);
+      if (l.length >= KEEP_PER_FIRST) {
+        const w = l.reduce((a, b) => (b.est > a.est ? b : a));
+        if (w.est <= est) return;
+        l.splice(l.indexOf(w), 1);
+      }
+      l.push({ points: pts.slice(0, depth), targets: tgts.slice(0, depth), mealAt, est });
+    };
+    const extend = (prev, soc, depth, dwell, mealAt) => {
+      if (depth > 0 && drive + dwell >= worst(pts[0])) return;
+      for (let q = prev + 1; q <= N; q++) {
+        if (soc - needUse(prev, q) < PROFILE.reserveSoc) break;
+        const arr = soc - meanUse(prev, q), c = q - 1, eta = nav[q] * paceMean + dwell;
+        const eat = !!meal && mealAt < 0 && cs[c].mealOk && eta >= meal.fromMin && eta <= meal.toMin;
+        const toDest = Math.max(ceil05(needUse(q, dest) + arrivalReserve), MIN_TARGET);
+        const m = eat ? depth : mealAt;
+        pts[depth] = q;
+        for (let t = ceil05(Math.max(arr + 0.05, MIN_TARGET)); t <= MAX_TARGET + 1e-9; t += 0.05) {
+          const last = t >= toDest - 1e-9;
+          const tgt = last ? Math.max(toDest, ceil05(arr + 0.05)) : t;
+          if (tgt > MAX_TARGET + 1e-9) break;
+          tgts[depth] = tgt;
+          const dw = dwell + meanDwell(c, arr, tgt, eat);
+          if (last) { record(depth + 1, m, dw); break; }
+          if (depth + 1 < maxStops) extend(q, tgt, depth + 1, dw, m);
+        }
+      }
+    };
+    extend(0, soc0, 0, 0, -1);
+
+    // 2) 정밀 계산: 확률 모자라면 가장 자주 실패하는 구간 앞 정차에서 더 채움
+    const evaluate = (dr) => {
+      const k = dr.points.length, targets = dr.targets.slice();
+      const socAt = dr.points.map(() => new Float64Array(n)), charge = dr.points.map(() => new Float64Array(n)), dwell = dr.points.map(() => new Float64Array(n));
+      const total = new Float64Array(n), destSoc = new Float64Array(n);
+      const sep = meal && dr.mealAt < 0 ? separateMin : 0;
+      for (let bump = 0; bump <= MAX_BUMPS; bump++) {
+        const fails = new Array(k + 1).fill(0);
+        let ok = 0;
+        for (let i = 0; i < n; i++) {
+          const cap = this.cap[i];
+          let soc = soc0, prev = 0, t = mins[dest][i] + sep, failed = -1;
+          for (let s = 0; s < k; s++) {
+            const q = dr.points[s], c = q - 1;
+            const arr = soc - (kwh[q][i] - kwh[prev][i]) / cap;
+            socAt[s][i] = arr;
+            if (arr < PROFILE.reserveSoc && failed < 0) failed = s;
+            const from = Math.max(arr, 0), to = Math.max(targets[s], from);
+            charge[s][i] = lookup(tables[c], from, to) * cap / this.k[i];
+            const active = fixed[c][i] + charge[s][i];
+            dwell[s][i] = detour[c][i] + (s === dr.mealAt ? Math.max(active, meal.minutes) : active);
+            t += dwell[s][i]; soc = to; prev = q;
+          }
+          destSoc[i] = soc - (kwh[dest][i] - kwh[prev][i]) / cap;
+          if (destSoc[i] < arrivalReserve && failed < 0) failed = k;
+          total[i] = t;
+          if (failed < 0) ok++; else fails[failed]++;
+        }
+        const p = ok / n;
+        if (p >= targetP) {
+          const sorted = (a) => Float64Array.from(a).sort();
+          const stops = dr.points.map((q, s) => {
+            const sa = sorted(socAt[s]);
+            return {
+              charger: cs[q - 1].id, atKm: km[q], chargeToSoc: r2(targets[s]),
+              socAtP10: pct(sa, 10), socAtP50: pct(sa, 50), socAtP90: pct(sa, 90),
+              chargeMinutesP50: pct(sorted(charge[s]), 50), dwellMinutesP50: pct(sorted(dwell[s]), 50), meal: s === dr.mealAt,
+            };
+          });
+          const ts = sorted(total), ds = sorted(destSoc), f = stops[0];
+          return {
+            n, charger: f.charger, chargeToSoc: f.chargeToSoc, probability: p,
+            minutesP10: pct(ts, 10), minutesP50: pct(ts, 50), minutesP90: pct(ts, 90), chargeMinutesP50: f.chargeMinutesP50,
+            socAtChargerP10: f.socAtP10, socAtChargerP50: f.socAtP50, socAtChargerP90: f.socAtP90,
+            destSocP10: pct(ds, 10), destSocP50: pct(ds, 50), destSocP90: pct(ds, 90),
+            stops, mealSeparateMin: sep, mealLabel: meal?.label ?? null,
+            // 시각화용 시뮬레이션 결과 (정렬 전 원본: 같은 i 가 같은 시나리오)
+            samples: { socAt: socAt.map((a) => Float64Array.from(a)), dest: Float64Array.from(destSoc), total: Float64Array.from(total), arrivalReserve },
+          };
+        }
+        const w = fails.indexOf(Math.max(...fails));
+        if (w === 0) return null;
+        targets[w - 1] += 0.05;
+        if (targets[w - 1] > MAX_TARGET + 1e-9) return null;
+      }
+      return null;
+    };
+    const out = [];
+    for (const drafts of keep.values()) {
+      const plans = drafts.map(evaluate).filter(Boolean);
+      if (plans.length) out.push(plans.reduce((a, b) => (score(b) < score(a) ? b : a)));
+    }
+    return out;
+  }
+
+  /** (한 곳만 들르는 이전 방식) 충전소 하나의 최선 충전 목표. 목표 확률 미달이면 null */
   /** [arrivalReserve]: 목적지 도착 시 최소 배터리 (95% 확률로 이 이상 남게) */
   bestForCharger(soc0, totalKm, totalMin, c, arrivalReserve = 0.30, targetP = 0.95) {
     const d1 = Math.min(Math.max(c.atKm, 0), totalKm), nav1 = totalMin * d1 / totalKm;
@@ -269,17 +431,21 @@ export async function recommend(api, inp) {
   const directOk = direct.socP10 >= arrivalReserve && mc.arrivalShare(soc0, totalKm, totalMin, arrivalReserve) >= 0.95;
   if (directOk) return { ...base, plan: { kind: "none", probability: direct.probability }, options: [], baseline: null, savedMin: null };
 
-  const options = [];
-  for (const v of cands) {
-    const waitMin = expectedWaitMin(v, v.etaMin);
-    // 우회 흔들림: 휴게소 진출입은 일정, 시내는 신호·정체로 들쭉날쭉 → 시내는 확실히 빠를 때만 뽑힘
-    const c = { id: v.id, atKm: v.atKm, powerKw: Math.min(Math.max(v.maxKw, 30), 350), waitMeanMin: waitMin, detourMin: v.detourMin, detourSigma: v.restArea ? 0.2 : 0.6 };
-    const p = mc.bestForCharger(soc0, totalKm, totalMin, c, arrivalReserve);
-    if (p) options.push({ station: v, atKm: v.atKm, waitMin, plan: p });
-  }
+  // 가는 길에 점심·저녁 시간이 걸리면 식당 있는 휴게소에서 밥 먹으며 충전하는 계획도 비교
+  const meal = inp.meal === false ? null : mealWindow(departMs, totalMin);
+  const byId = new Map(cands.map((v) => [v.id, v]));
+  const waits = new Map(cands.map((v) => [v.id, expectedWaitMin(v, v.etaMin)]));
+  // 우회 흔들림: 휴게소 진출입은 일정, 시내는 신호·정체로 들쭉날쭉 → 시내는 확실히 빠를 때만 뽑힘
+  const chargers = cands.map((v) => ({
+    id: v.id, atKm: v.atKm, powerKw: Math.min(Math.max(v.maxKw, 30), 350), waitMeanMin: waits.get(v.id), detourMin: v.detourMin,
+    detourSigma: v.restArea ? 0.2 : 0.6, mealOk: v.restArea && v.name.includes("휴게소"),
+  }));
+  // 첫 충전소마다 그 뒤 충전소(최대 3곳)·충전량·식사까지 포함한 가장 빠른 계획
+  const options = mc.planPerFirstStop(soc0, totalKm, totalMin, chargers, arrivalReserve, 0.95, meal)
+    .map((p) => { const v = byId.get(p.charger); return { station: v, atKm: v.atKm, waitMin: waits.get(v.id), plan: p }; });
   options.sort((a, b) => score(a.plan) - score(b.plan));
   const baseline = options.reduce((m, o) => (!m || o.station.maxKw > m.station.maxKw ? o : m), null);
   const best = options[0];
   const savedMin = best && baseline && baseline.station.id !== best.station.id ? baseline.plan.minutesP50 - best.plan.minutesP50 : null;
-  return { ...base, plan: best ? { kind: "plan", ...best.plan } : { kind: "infeasible", probability: direct.probability }, options, baseline, savedMin };
+  return { ...base, meal, stations: byId, plan: best ? { kind: "plan", ...best.plan } : { kind: "infeasible", probability: direct.probability }, options, baseline, savedMin };
 }

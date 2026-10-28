@@ -152,12 +152,12 @@ class DriveLearningService : Service() {
         val r = BatteryReader.read(vehicle) ?: return
         val cond = TripConditions.from(
             r, ProfileStore.load(this), TripPrefs.tempC(this), TripPrefs.weather(this),
-            arrivalReserveSoc = TripPrefs.arrivalReserve(this),
+            arrivalReserveSoc = TripPrefs.arrivalReserve(this), meal = TripPrefs.meal(this),
         )
         val rec = planner.recommend(cond, here, dest, trip, forecast = true)
         val line1 = when (val p = rec.plan) {
             is ChargePlanResult.NoChargeNeeded -> "충전 없이 도착 · 도착 배터리 약 ${pct(rec.direct.socP50)}"
-            is ChargePlanResult.Infeasible -> "한 번 충전으로는 어려워요 · 출발 전 충전을 권합니다"
+            is ChargePlanResult.Infeasible -> "경로상 충전소로는 어려워요 · 출발 전 충전을 권합니다"
             is ChargePlanResult.Plan -> {
                 val b = rec.best!!
                 val base = rec.baseline
@@ -165,7 +165,8 @@ class DriveLearningService : Service() {
                     if (base?.naviPick == true) " · 내비 추천 ${base.station.name} 대신 가면 ${it.roundToInt()}분 빠름"
                     else " · ${it.roundToInt()}분 빠름"
                 } ?: ""
-                "${b.station.name}에서 ${p.chargeMinutesP50.roundToInt()}분 충전 → ${clock(now, p.minutesP50)} 도착$saved"
+                val stops = if (p.stopCount > 1) rec.stopsText(p) else "${b.station.name}에서 ${p.chargeMinutesP50.roundToInt()}분 충전"
+                "$stops → ${clock(now, p.minutesP50)} 도착$saved"
             }
         }
         var line2: String? = null

@@ -36,6 +36,8 @@ data class TripInput(
     val manualOccupants: Int = 1,
     /** 목적지 도착 시 최소 배터리 (0~1) */
     val arrivalReserve: Double = 0.30,
+    /** 가는 길에 식사 시간이 걸리면 밥 먹으며 충전 */
+    val meal: Boolean = true,
     /** 데모 경로에서도 실제 예보를 쓸지 (끄면 기온·날씨를 직접 바꿔 효과 확인). 내비 경로는 항상 예보 사용 */
     val useForecast: Boolean = true,
 )
@@ -110,7 +112,7 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
                     Triple(RouteSource.DEMO, DEMO_DEST, DEMO_ORIGIN)
                 }
                 val trip = if (source == RouteSource.NAVI) navi.trip(dest) else null
-                val rec = planner.recommend(base.copy(arrivalReserveSoc = s.input.arrivalReserve), origin, dest, trip, forecast = source == RouteSource.NAVI || s.input.useForecast)
+                val rec = planner.recommend(base.copy(arrivalReserveSoc = s.input.arrivalReserve, meal = s.input.meal), origin, dest, trip, forecast = source == RouteSource.NAVI || s.input.useForecast)
                 val cond = rec.conditions
                 _ui.update {
                     it.copy(

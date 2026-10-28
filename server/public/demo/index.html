@@ -94,6 +94,9 @@
       <label>목적지 도착 시 최소 배터리</label>
       <div class="seg" id="reserve"></div>
 
+      <label>가는 길 식사 (점심 11:30~13:30 · 저녁 17:30~19:30)</label>
+      <div class="seg" id="meal"></div>
+
       <label>탑승 인원 <span id="occV"></span></label>
       <input id="occ" type="range" min="1" max="5" step="1" value="1">
 
@@ -193,7 +196,7 @@ const api = {
 };
 
 const $ = (id) => document.getElementById(id);
-const state = { mode: "NORMAL", hvac: "on", tire: 250, wsrc: "forecast", weather: "CLEAR", reserve: 30 };
+const state = { mode: "NORMAL", hvac: "on", tire: 250, wsrc: "forecast", weather: "CLEAR", reserve: 30, meal: "on" };
 
 function seg(id, items, key) {
   const el = $(id);
@@ -208,6 +211,7 @@ function seg(id, items, key) {
 
 $("dest").innerHTML = DESTS.map((d, i) => `<option value="${i}">${d.name}</option>`).join("");
 seg("reserve", [[10, "10%"], [20, "20%"], [30, "30%"], [50, "50%"]], "reserve");
+seg("meal", [["on", "밥 먹으며 충전"], ["off", "식사 안 함"]], "meal");
 seg("mode", [["ECO", "에코"], ["NORMAL", "일반"], ["SPORT", "스포츠"]], "mode");
 seg("hvac", [["on", "켜짐 22°C"], ["off", "꺼짐"]], "hvac");
 seg("tire", [[250, "정상"], [225, "10% 부족"], [200, "20% 부족"]], "tire");
@@ -264,7 +268,7 @@ async function run() {
     const res = await recommend(api, {
       origin: { lat: ORIGIN.lat, lng: ORIGIN.lng }, dest: { lat: dest.lat, lng: dest.lng }, departMs: dep,
       soc: +$("soc").value, occupants: +$("occ").value, mode: state.mode, arrivalReserve: state.reserve / 100,
-      learnedTrips: +$("learn").value,
+      meal: state.meal === "on", learnedTrips: +$("learn").value,
       hvacOn: state.hvac === "on", cabinSetC: 22, tireKpa: state.tire,
       useForecast: state.wsrc === "forecast", tempC: +$("temp").value, weather: state.weather,
     });
@@ -293,21 +297,32 @@ function render(dest, dep, res) {
     rec.innerHTML = `<div class="name" style="color:var(--good)">충전 없이 도착할 수 있어요</div>` +
       luckRow(dep, res.direct.samples.total, res.direct.samples.dest);
   } else if (res.plan.kind === "infeasible") {
-    rec.innerHTML = `<div class="name" style="color:var(--bad)">한 번 충전으로는 어려워요</div>` +
-      `<div class="muted">경로상 충전소 ${res.checked}곳을 확인했지만, 도착 시 ${state.reserve}% 이상 남기는 계획이 없습니다. 출발 전 더 충전하거나 도착 시 최소 배터리를 낮춰 보세요.</div>`;
+    rec.innerHTML = `<div class="name" style="color:var(--bad)">경로상 충전소로는 어려워요</div>` +
+      `<div class="muted">경로상 충전소 ${res.checked}곳을 최대 3번 들르는 조합까지 확인했지만, 도착 시 ${state.reserve}% 이상 남기는 계획이 없습니다. 출발 전 더 충전하거나 도착 시 최소 배터리를 낮춰 보세요.</div>`;
   } else {
     const best = res.options[0], s = best.station, p = res.plan;
     const saved = res.savedMin != null ? Math.round(res.savedMin) : null;
     const badge = saved && saved > 0
       ? `<span class="badge" style="background:rgba(76,175,80,.15);color:var(--good)">출력이 가장 큰 ${res.baseline.station.name}보다 ${saved}분 빨라요</span>`
       : `<span class="badge" style="background:rgba(79,140,255,.15);color:var(--accent)">출력이 가장 큰 충전소가 지금 가장 빨라요</span>`;
+    const stops = p.stops ?? [];
+    const mealName = p.mealLabel ?? "식사";
+    // 두 번째 충전소부터: 어디서 얼마나, 밥 먹는 곳
+    const later = stops.slice(1).map((st, k) => {
+      const v = res.stations.get(st.charger);
+      return `<div style="${st.meal ? "color:var(--warn)" : ""}">${"①②③④"[k + 1]} ${v?.name ?? st.charger} · ${Math.round(st.atKm)}km · 도착 약 ${P(st.socAtP50)} → ${P(st.chargeToSoc)}까지 약 ${Math.round(st.chargeMinutesP50)}분` +
+        `${st.meal ? ` · 🍚 ${mealName} 먹는 동안 충전` : ""}</div>`;
+    }).join("");
+    const mealNote = stops[0]?.meal ? `<div style="color:var(--warn)">🍚 여기서 ${mealName}을 먹는 동안 충전합니다</div>` : "";
+    const sepNote = p.mealSeparateMin > 0 ? `<div class="muted small">${mealName} 시간은 충전과 따로 약 ${Math.round(p.mealSeparateMin)}분 잡았어요</div>` : "";
     rec.innerHTML = `
-      <div class="muted small">추천 충전소 · 출발 후 약 ${Math.round(best.atKm)}km${s.restArea ? " · 고속도로 휴게소" : ` · 경로에서 ${s.offRouteKm}km`}</div>
+      <div class="muted small">${stops.length > 1 ? `추천 충전 계획 · ${stops.length}곳 나눠 충전 · ① ` : "추천 충전소 · "}출발 후 약 ${Math.round(best.atKm)}km${s.restArea ? " · 고속도로 휴게소" : ` · 경로에서 ${s.offRouteKm}km`}</div>
       <div class="name">${s.name}</div>
       ${luckRow(dep, p.samples.total, p.samples.dest)}
       <div class="wait">도착 시 대기 <b style="color:${waitColor(best.waitMin)}">약 ${Math.round(best.waitMin)}분</b></div>
       <div>지금 빈 충전기 ${s.available}/${s.total - s.outOfService} · 최대 ${Math.round(s.maxKw)}kW</div>
-      <div class="muted">${P(p.chargeToSoc)}까지 충전 · 약 ${Math.round(p.chargeMinutesP50)}분 · 목적지 도착 약 ${P(p.destSocP50)}</div>
+      <div class="muted">${P(p.chargeToSoc)}까지 충전 · 약 ${Math.round(p.chargeMinutesP50)}분${stops.length > 1 ? "" : ` · 목적지 도착 약 ${P(p.destSocP50)}`}</div>
+      ${mealNote}${later}${stops.length > 1 ? `<div class="muted">목적지 도착 약 ${P(p.destSocP50)}</div>` : ""}${sepNote}
       ${badge}
       <div class="muted">총 소요 약 ${Math.round(p.minutesP50)}분 (늦어지면 ${Math.round(p.minutesP90)}분) · 도착 확률 ${P(p.probability)}</div>`;
   }
@@ -315,7 +330,9 @@ function render(dest, dep, res) {
   const rows = res.options.map((o, i) => {
     const s = o.station;
     const tags = (s.restArea ? `<span class="tag" style="background:rgba(154,163,181,.2);color:var(--muted)">휴게소</span>` : "") + (i === 0 ? `<span class="tag" style="background:rgba(76,175,80,.2);color:var(--good)">추천</span>` : "") +
-      (o === res.baseline ? `<span class="tag" style="background:rgba(79,140,255,.2);color:var(--accent)">최대 출력</span>` : "");
+      (o === res.baseline ? `<span class="tag" style="background:rgba(79,140,255,.2);color:var(--accent)">최대 출력</span>` : "") +
+      ((o.plan.stops?.length ?? 1) > 1 ? `<span class="tag" style="background:rgba(76,175,80,.2);color:var(--good)">${o.plan.stops.length}곳 충전</span>` : "") +
+      (o.plan.stops?.some((st) => st.meal) ? `<span class="tag" style="background:rgba(255,179,0,.2);color:var(--warn)">${o.plan.mealLabel}</span>` : "");
     return `<tr><td>${s.name}${tags}</td><td>${Math.round(o.atKm)}km</td><td style="color:${waitColor(o.waitMin)}">${Math.round(o.waitMin)}분</td>` +
       `<td>${Math.round(o.plan.chargeMinutesP50)}분 → ${P(o.plan.chargeToSoc)}</td><td>${P(o.plan.destSocP50)}</td><td>${Math.round(o.plan.minutesP50)}분</td><td>${s.available}/${s.total - s.outOfService}</td><td>${Math.round(s.maxKw)}kW</td></tr>`;
   }).join("");
@@ -363,10 +380,10 @@ function drawJourney(dest, res) {
     const best = res.options[0], p = best.plan;
     sim = { total: p.samples.total, dest: p.samples.dest, n: p.n };
     j.samples = { socAt: p.samples.socAt, dest: p.samples.dest };
-    j.stop = {
-      atKm: best.atKm, name: best.station.name, chargeTo: p.chargeToSoc, chargeMin: p.chargeMinutesP50,
-      arriveP10: p.socAtChargerP10, arriveP50: p.socAtChargerP50, arriveP90: p.socAtChargerP90,
-    };
+    j.stops = p.stops.map((st) => ({
+      atKm: st.atKm, name: res.stations.get(st.charger)?.name ?? st.charger, chargeTo: st.chargeToSoc, chargeMin: st.chargeMinutesP50,
+      arriveP10: st.socAtP10, arriveP50: st.socAtP50, arriveP90: st.socAtP90, meal: st.meal ? p.mealLabel : null,
+    }));
     j.dest = { p10: p.destSocP10, p50: p.destSocP50, p90: p.destSocP90 };
   } else if (res.plan.kind === "infeasible") {
     $("journeyCard").hidden = false;

@@ -5,6 +5,8 @@ import com.sssoft.hk.model.ChargePlanResult
 import com.sssoft.hk.model.Charger
 import com.sssoft.hk.model.DriveMode
 import com.sssoft.hk.model.EvMonteCarlo
+import com.sssoft.hk.model.MealWindow
+import com.sssoft.hk.model.PlannedStop
 import com.sssoft.hk.model.TripContext
 import com.sssoft.hk.model.TripEnv
 import com.sssoft.hk.model.VehicleProfile
@@ -39,6 +41,8 @@ data class TripConditions(
     val weatherFromForecast: Boolean = false,
     /** 목적지 도착 시 최소 배터리. 겨우 도착하면 다음 날이 힘드므로 기본 30% */
     val arrivalReserveSoc: Double = 0.30,
+    /** 가는 길에 식사 시간이 걸리면 밥도 먹는다 (식당 있는 휴게소에서 먹으며 충전) */
+    val meal: Boolean = true,
 ) {
     fun env(plannedKm: Double, origin: LatLng?, dest: Destination): TripEnv {
         val here = origin ?: dest.location
@@ -52,10 +56,10 @@ data class TripConditions(
     companion object {
         fun from(
             r: VehicleReading, profile: VehicleProfile, tempC: Double, weather: Weather,
-            luggageKg: Double = 30.0, arrivalReserveSoc: Double = 0.30,
+            luggageKg: Double = 30.0, arrivalReserveSoc: Double = 0.30, meal: Boolean = true,
         ) =
             TripConditions(
-                arrivalReserveSoc = arrivalReserveSoc,
+                arrivalReserveSoc = arrivalReserveSoc, meal = meal,
                 socPercent = r.socPercent, profile = profile.withNominalCapacity(r.capacityKwh),
                 tempC = tempC, weather = weather, occupants = r.occupants, luggageKg = luggageKg,
                 hvacOn = r.hvacOn, cabinSetC = r.cabinSetC, tirePressureKpa = r.tirePressureKpa, mode = r.mode,
@@ -63,7 +67,7 @@ data class TripConditions(
     }
 }
 
-/** 충전소 하나에 들렀을 때의 최선안. */
+/** 첫 충전소를 여기로 했을 때의 최선안 ([plan] 에 그 뒤 충전소까지 들어 있음). */
 data class StopOption(
     val station: StationView,
     val atKm: Double,
@@ -93,7 +97,30 @@ data class ChargingRecommendation(
     val route: RouteChargers? = null,
     /** 소모 예측의 중심을 차량 내비의 도착 예상 배터리에 맞췄는지, 그 값(%) */
     val navSocAtDest: Int? = null,
+    /** 계산에 쓴 충전소 (id → 상태). 두 번째 이후 충전소 이름 표시용 */
+    val stations: Map<String, StationView> = emptyMap(),
+    /** 가는 길에 걸린 식사 시간대 */
+    val meal: MealWindow? = null,
 ) {
+    fun stationOf(stop: PlannedStop): StationView? = stations[stop.charger]
+
+    /** 계획의 충전소 목록. 예전 형식(한 곳)도 같은 모양으로 */
+    fun stopsOf(plan: ChargePlanResult.Plan): List<PlannedStop> = plan.stops.ifEmpty {
+        listOf(
+            PlannedStop(
+                plan.charger, best?.atKm ?: 0.0, plan.chargeToSoc, plan.socAtChargerP10, plan.socAtChargerP50, plan.socAtChargerP90,
+                plan.chargeMinutesP50, plan.chargeMinutesP50,
+            ),
+        )
+    }
+
+    /** "A휴게소 72%까지 → B휴게소(점심) 65%까지" */
+    fun stopsText(plan: ChargePlanResult.Plan): String = stopsOf(plan).joinToString(" → ") { s ->
+        val name = stationOf(s)?.name ?: s.charger
+        val meal = if (s.meal) "(${plan.mealLabel ?: "식사"})" else ""
+        "$name$meal ${(s.chargeToSoc * 100).toInt()}%까지"
+    }
+
     val best: StopOption? get() = options.firstOrNull()
     val station: StationView? get() = best?.station
 
@@ -205,16 +232,19 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
         if (direct.probability >= 0.95) {
             return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env, c, route, navSoc)
         }
+        val meal = if (c.meal) mealWindow(c.departMs, totalMin) else null
 
         val waits = cands.associate { it.view.id to expectedWaitMin(it.view, departOffsetMin + it.ratio * totalMin) }
         val chargers = cands.map { cd ->
             Charger(
                 cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.detourMin,
                 detourSigma = if (cd.restArea) DETOUR_SIGMA_REST else DETOUR_SIGMA_CITY,
+                mealOk = cd.restArea && "휴게소" in cd.view.name,
             )
         }
         val byId = cands.associateBy { it.view.id }
-        val options = mc.bestStopPerCharger(soc0, totalKm, totalMin, env, chargers, c.arrivalReserveSoc)
+        // 첫 충전소마다, 그 뒤 충전소(최대 3곳)·충전량·식사까지 포함한 가장 빠른 계획
+        val options = mc.bestPlanPerFirstStop(soc0, totalKm, totalMin, env, chargers, c.arrivalReserveSoc, meal = meal)
             .map { p ->
                 val cd = byId.getValue(p.charger)
                 StopOption(cd.view, cd.ratio * totalKm, cd.ratio * totalMin, waits.getValue(p.charger), p, cd.naviPick, cd.restArea)
@@ -222,7 +252,9 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
             .sortedBy { EvMonteCarlo.score(it.plan) }
         val baseline = options.firstOrNull { it.naviPick } ?: options.maxByOrNull { it.station.maxKw }
         val plan = options.firstOrNull()?.plan ?: ChargePlanResult.Infeasible(direct.probability)
-        return ChargingRecommendation(plan, options, baseline, cands.size, direct, env, c, route, navSoc)
+        return ChargingRecommendation(
+            plan, options, baseline, cands.size, direct, env, c, route, navSoc, cands.associate { it.view.id to it.view }, meal,
+        )
     }
 
     /**
@@ -249,6 +281,25 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
     }
 
     companion object {
+        /** 점심·저녁 시간대 (시, 분) */
+        private val MEALS = listOf(Triple("점심", 11 * 60 + 30, 13 * 60 + 30), Triple("저녁", 17 * 60 + 30, 19 * 60 + 30))
+
+        /**
+         * 출발 [departMs] 부터 [totalMin] 분 가는 동안 걸리는 식사 시간대 (출발 기준 분). 2시간 미만이면 없음.
+         * 출발 직후(45분 이내)나 도착 직전(30분 이내)에만 걸리면 출발 전·도착 후에 먹는다고 본다.
+         */
+        fun mealWindow(departMs: Long, totalMin: Double, zone: java.util.TimeZone = java.util.TimeZone.getDefault()): MealWindow? {
+            if (totalMin < 120) return null
+            val cal = java.util.Calendar.getInstance(zone).apply { timeInMillis = departMs }
+            val nowMin = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+            for (day in 0..1) for ((label, from, to) in MEALS) {
+                val a = (from + day * 1440 - nowMin).toDouble().coerceAtLeast(45.0)
+                val b = (to + day * 1440 - nowMin).toDouble().coerceAtMost(totalMin - 30)
+                if (a < b) return MealWindow(a, b, label)
+            }
+            return null
+        }
+
         /** 우회 시간 흔들림: 휴게소 진출입은 거의 일정, 시내는 신호·정체로 크게 흔들림 */
         const val DETOUR_SIGMA_REST = 0.2
         const val DETOUR_SIGMA_CITY = 0.6

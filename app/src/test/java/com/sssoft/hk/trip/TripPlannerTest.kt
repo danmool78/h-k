@@ -24,4 +24,18 @@ class TripPlannerTest {
         // 기록이 없으면 현재 값(최소 2분)
         assertEquals(2.0, TripPlanner.expectedWaitMin(station(0.0, null), etaMin = 90.0), 1e-9)
     }
+
+    @Test
+    fun `식사 시간대 - 10시 출발 4시간이면 점심, 짧거나 밤이면 없음`() {
+        val kst = java.util.TimeZone.getTimeZone("Asia/Seoul")
+        fun at(h: Int, m: Int) = java.util.Calendar.getInstance(kst).apply { set(2026, 9, 31, h, m, 0) }.timeInMillis
+        val lunch = TripPlanner.mealWindow(at(10, 0), 240.0, kst)!!
+        assertEquals("점심", lunch.label)
+        assertEquals(90.0, lunch.fromMin, 1.0)
+        assertEquals(210.0, lunch.toMin, 1.0)
+        assertEquals(null, TripPlanner.mealWindow(at(10, 0), 100.0, kst))
+        assertEquals(null, TripPlanner.mealWindow(at(20, 0), 240.0, kst))
+        // 12시 출발: 점심 시간대 안이지만 45분 이후부터
+        assertEquals(45.0, TripPlanner.mealWindow(at(12, 0), 300.0, kst)!!.fromMin, 1.0)
+    }
 }

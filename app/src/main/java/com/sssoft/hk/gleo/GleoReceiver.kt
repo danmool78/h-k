@@ -51,7 +51,7 @@ class GleoReceiver : BroadcastReceiver() {
     private suspend fun handle(context: Context, fn: String, params: JSONObject): GleoResult {
         val reading = BatteryReader.read(context)
             ?: return GleoResult.fail(fn, "Could not read the battery level from the vehicle.")
-        val cond = TripConditions.from(reading, ProfileStore.load(context), TripPrefs.tempC(context), TripPrefs.weather(context), arrivalReserveSoc = TripPrefs.arrivalReserve(context))
+        val cond = TripConditions.from(reading, ProfileStore.load(context), TripPrefs.tempC(context), TripPrefs.weather(context), arrivalReserveSoc = TripPrefs.arrivalReserve(context), meal = TripPrefs.meal(context))
 
         val navi = NaviSource(context)
         try {
@@ -107,7 +107,7 @@ class GleoReceiver : BroadcastReceiver() {
             )
             is ChargePlanResult.Infeasible -> GleoResult.success(
                 RECOMMEND_CHARGING_STOP,
-                "No single charging stop on this route gives a safe arrival. ${r.checkedStations} charging stations were checked.",
+                "Even with up to three charging stops on this route, a safe arrival is not possible. ${r.checkedStations} charging stations were checked.",
                 "checkedStations" to r.checkedStations,
             )
             is ChargePlanResult.Plan -> {
@@ -122,14 +122,21 @@ class GleoReceiver : BroadcastReceiver() {
                 val saved = r.savedMin?.roundToInt()?.takeIf { it > 0 }
                 val savedText = saved?.let { " This saves about $it minutes compared with the navigation's suggestion." } ?: ""
                 val added = if (addAsWaypoint) " It has been added as a waypoint." else ""
+                val later = r.stopsOf(plan).drop(1)
+                val laterText = if (later.isEmpty()) "" else " After that, " + later.joinToString(", then ") { st ->
+                    "stop at ${r.stationOf(st)?.name ?: st.charger} and charge to ${pct(st.chargeToSoc)} percent" +
+                        if (st.meal) " while having ${if (plan.mealLabel == "저녁") "dinner" else "lunch"}" else ""
+                } + "."
+                val mealFirst = if (r.stopsOf(plan).first().meal) " You can have ${if (plan.mealLabel == "저녁") "dinner" else "lunch"} there while charging." else ""
                 GleoResult.success(
                     RECOMMEND_CHARGING_STOP,
-                    "Stop at ${s.name} and charge to ${pct(plan.chargeToSoc)} percent. " +
+                    "Stop at ${s.name} and charge to ${pct(plan.chargeToSoc)} percent.$mealFirst$laterText " +
                         "Expected waiting time on arrival is about $wait minutes, and the trip takes about ${plan.minutesP50.roundToInt()} minutes.$savedText$added",
                     "charger" to s.name, "chargeToPercent" to pct(plan.chargeToSoc),
                     "freeChargersNow" to s.available, "totalChargers" to s.inService, "maxPowerKw" to s.maxKw.roundToInt(),
                     "expectedWaitMin" to wait, "savedMinutes" to (saved ?: 0), "arrivalChancePercent" to pct(plan.probability),
                     "tripMinutes" to plan.minutesP50.roundToInt(), "addedAsWaypoint" to addAsWaypoint,
+                    "chargingStops" to plan.stopCount,
                 )
             }
         }
