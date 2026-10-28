@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.sssoft.hk.learn.ProfileStore
 import com.sssoft.hk.model.ChargePlanResult
 import com.sssoft.hk.navi.NaviSource
 import com.sssoft.hk.server.ChargerApi
@@ -47,9 +48,9 @@ class GleoReceiver : BroadcastReceiver() {
     }
 
     private suspend fun handle(context: Context, fn: String, params: JSONObject): GleoResult {
-        val battery = BatteryReader.read(context)
+        val reading = BatteryReader.read(context)
             ?: return GleoResult.fail(fn, "Could not read the battery level from the vehicle.")
-        val cond = TripConditions(battery.socPercent, battery.capacityKwh, TripPrefs.tempC(context))
+        val cond = TripConditions.from(reading, ProfileStore.load(context), TripPrefs.tempC(context), TripPrefs.weather(context))
 
         val navi = NaviSource(context)
         try {
@@ -67,7 +68,7 @@ class GleoReceiver : BroadcastReceiver() {
     private suspend fun checkArrival(navi: NaviSource, c: TripConditions): GleoResult {
         val dest = navi.destination()
             ?: return GleoResult.asking(CHECK_ARRIVAL_CHANCE, "No destination is set. Please set a destination in the navigation first.")
-        val a = planner.arrival(c, dest.remainKm)
+        val a = planner.arrival(c, navi.currentLocation(), dest)
         val p = pct(a.probability)
         val socAtArrival = pct(a.socP50.coerceAtLeast(0.0))
         val advice = when {

@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.sssoft.hk.MainActivity
 import com.sssoft.hk.R
+import com.sssoft.hk.learn.ProfileStore
 import com.sssoft.hk.navi.LatLng
 import com.sssoft.hk.navi.NaviSource
 import com.sssoft.hk.server.ChargerApi
@@ -107,10 +108,10 @@ class ChargeWatchService : Service() {
             return
         }
 
-        val battery = BatteryReader.read(this) ?: return
+        val reading = BatteryReader.read(this) ?: return
         val dest = navi.destination() ?: return
         val trip = navi.trip(dest)
-        val cond = TripConditions(battery.socPercent, battery.capacityKwh, TripPrefs.tempC(this))
+        val cond = TripConditions.from(reading, ProfileStore.load(this), TripPrefs.tempC(this), TripPrefs.weather(this))
         val rec = planner.recommend(cond, here, dest, trip)
 
         when (val d = ReplanPolicy.decide(target.stationId, rec)) {

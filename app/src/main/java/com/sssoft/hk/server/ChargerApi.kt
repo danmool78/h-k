@@ -23,6 +23,8 @@ data class StationView(
     val waitMin: Double?,
     /** 도착 시각 기준 과거 평균 사용률 (0~1). 표본 부족이면 null. */
     val forecastBusy: Double?,
+    /** 고속도로 휴게소 등 경로에서 바로 들어가는 곳 (우회 시간 짧음) */
+    val highway: Boolean = false,
 ) {
     val inService: Int get() = total - outOfService
 }
@@ -63,6 +65,7 @@ class ChargerApi(
         outOfService = o.getInt("outOfService"),
         waitMin = if (o.isNull("waitMin")) null else o.getDouble("waitMin"),
         forecastBusy = o.optJSONObject("forecast")?.getDouble("busyRatio"),
+        highway = o.optBoolean("highway", false),
     )
 
     private suspend fun request(method: String, path: String, json: JSONObject?): JSONObject = withContext(Dispatchers.IO) {

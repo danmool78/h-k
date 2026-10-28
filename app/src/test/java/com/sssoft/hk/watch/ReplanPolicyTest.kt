@@ -1,6 +1,11 @@
 package com.sssoft.hk.watch
 
+import com.sssoft.hk.model.ArrivalResult
 import com.sssoft.hk.model.ChargePlanResult
+import com.sssoft.hk.model.TripContext
+import com.sssoft.hk.model.TripEnv
+import com.sssoft.hk.model.TripType
+import com.sssoft.hk.model.Weather
 import com.sssoft.hk.navi.LatLng
 import com.sssoft.hk.server.StationView
 import com.sssoft.hk.trip.ChargingRecommendation
@@ -21,8 +26,11 @@ class ReplanPolicyTest {
     private fun option(id: String, minutes: Double) =
         StopOption(station(id, 1), 100.0, 60.0, 2.0, ChargePlanResult.Plan(id, 0.8, 0.97, minutes, minutes + 10), false)
 
-    private fun rec(vararg o: StopOption) =
-        ChargingRecommendation(o.first().plan, o.toList(), null, o.size)
+    private fun rec(vararg o: StopOption) = ChargingRecommendation(
+        o.first().plan, o.toList(), null, o.size,
+        direct = ArrivalResult(0.2, -0.1, 0.0, 0.1, 270.0, 290.0),
+        env = TripEnv(TripContext(TripType.LONG, false, Weather.CLEAR, false), tempC = 10.0),
+    )
 
     @Test
     fun `빈자리가 있으면 유지, 다 차서 대기가 길거나 고장이면 재계획`() {

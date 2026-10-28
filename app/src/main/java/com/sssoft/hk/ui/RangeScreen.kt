@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sssoft.hk.model.ChargePlanResult
+import com.sssoft.hk.model.VehicleProfile
+import com.sssoft.hk.model.Weather
 import com.sssoft.hk.trip.ChargingRecommendation
 import com.sssoft.hk.trip.StopOption
 import kotlin.math.roundToInt
@@ -91,7 +93,13 @@ private fun Header(ui: RangeUiState, onRefresh: () -> Unit) {
             )
             val battery = if (ui.battery.connected) "차량 배터리 ${ui.socPercent}%" else "배터리 ${ui.socPercent}% (수동)"
             val src = if (ui.source == RouteSource.DEMO) " · 내비 목적지 없음, 데모 경로" else ""
-            Text("$battery · 기온 ${ui.input.tempC.roundToInt()}°C$src", color = onBg.copy(alpha = 0.7f))
+            Text("$battery · 기온 ${ui.input.tempC.roundToInt()}°C · ${ui.input.weather.label}$src", color = onBg.copy(alpha = 0.7f))
+        }
+        ui.recommendation?.totalMinutes?.let { (p50, p90) ->
+            Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(end = 16.dp)) {
+                Text("도착 예정 ${clock(p50)}", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = onBg)
+                Text("늦어도 ${clock(p90)} · 충전·대기 포함", color = onBg.copy(alpha = 0.7f))
+            }
         }
         OutlinedButton(onClick = onRefresh, enabled = !ui.loading) { Text("새로고침") }
     }
@@ -160,11 +168,30 @@ private fun PlanBody(rec: ChargingRecommendation, plan: ChargePlanResult.Plan, u
 @Composable
 private fun ArrivalLine(ui: RangeUiState) {
     val a = ui.arrival ?: return
+    val muted = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+    Text("충전 없이 갈 확률 ${pct(a.probability)} · 도착 시 배터리 약 ${pct(a.socP50.coerceAtLeast(0.0))}", color = muted, fontSize = 16.sp)
+
+    val c = ui.conditions ?: return
+    val ctx = ui.recommendation?.env?.context
+    val hvac = if (c.hvacOn) "공조 ${c.cabinSetC.roundToInt()}°C" else "공조 꺼짐"
+    val tire = c.tirePressureKpa?.let { " · 타이어 ${it.roundToInt()}kPa" } ?: ""
+    val when_ = ctx?.let { listOfNotNull(it.type.label, if (it.night) "밤" else "낮", if (it.weekend) "주말" else null).joinToString("·") } ?: ""
+    Text("예측 조건: 탑승 ${c.occupants}명 · $hvac · ${c.mode.label} 모드$tire · $when_", color = muted, fontSize = 14.sp)
+
+    val p = ui.profile ?: return
+    val (paceMean, _) = ctx?.let(p::paceLog) ?: (0.0 to 0.0)
+    val pace = (kotlin.math.exp(paceMean) - 1) * 100
+    val style = ctx?.let { p.accelWhPerKmTon(it) / VehicleProfile.DEFAULT_ACCEL_WH_PER_KM_TON } ?: 1.0
     Text(
-        "충전 없이 갈 확률 ${pct(a.probability)} · 도착 시 배터리 약 ${pct(a.socP50.coerceAtLeast(0.0))}",
-        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), fontSize = 16.sp,
+        "학습: 주행 ${p.segments}구간 · ${p.trips}회 · 충전 ${p.sessions}회 · " +
+            "운전 습관 내비 대비 ${"%+.0f".format(pace)}% · 가속 지수 ${"%.2f".format(style)}",
+        color = muted, fontSize = 14.sp,
     )
 }
+
+private fun clock(minutesFromNow: Double): String =
+    java.text.SimpleDateFormat("HH:mm", java.util.Locale.KOREA)
+        .format(java.util.Date(System.currentTimeMillis() + (minutesFromNow * 60_000).toLong()))
 
 @Composable
 private fun OptionRow(o: StopOption, isBest: Boolean, isBaseline: Boolean) {
@@ -203,9 +230,21 @@ private fun DemoInputs(ui: RangeUiState, onInput: (TripInput) -> Unit) {
     Column(Modifier.padding(top = 12.dp)) {
         Text("데모 조건", style = MaterialTheme.typography.labelLarge, color = onBg)
         LabeledSlider("외부 기온", "${i.tempC.roundToInt()} °C", i.tempC, -20f..40f) { onInput(i.copy(tempC = it)) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("날씨", Modifier.weight(0.3f), color = onBg)
+            Row(Modifier.weight(0.7f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Weather.entries.forEach { w ->
+                    if (w == i.weather) Button(onClick = {}) { Text(w.label) }
+                    else OutlinedButton(onClick = { onInput(i.copy(weather = w)) }) { Text(w.label) }
+                }
+            }
+        }
         if (!ui.battery.connected) {
             LabeledSlider("배터리", "${i.manualSocPercent.roundToInt()} %", i.manualSocPercent, 10f..100f) {
                 onInput(i.copy(manualSocPercent = it))
+            }
+            LabeledSlider("탑승 인원", "${i.manualOccupants}명", i.manualOccupants.toFloat(), 1f..5f) {
+                onInput(i.copy(manualOccupants = it.roundToInt()))
             }
         }
     }

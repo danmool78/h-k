@@ -3,21 +3,52 @@ package com.sssoft.hk.trip
 import com.sssoft.hk.model.ArrivalResult
 import com.sssoft.hk.model.ChargePlanResult
 import com.sssoft.hk.model.Charger
+import com.sssoft.hk.model.DriveMode
 import com.sssoft.hk.model.EvMonteCarlo
-import com.sssoft.hk.model.EvSpec
+import com.sssoft.hk.model.TripContext
+import com.sssoft.hk.model.TripEnv
+import com.sssoft.hk.model.VehicleProfile
+import com.sssoft.hk.model.Weather
 import com.sssoft.hk.navi.Destination
 import com.sssoft.hk.navi.LatLng
 import com.sssoft.hk.navi.Trip
 import com.sssoft.hk.server.ChargerApi
 import com.sssoft.hk.server.StationView
+import com.sssoft.hk.vehicle.VehicleReading
 import kotlin.math.pow
 
+/** 예측에 필요한 현재 조건: 학습 프로필 + 차량 상태 + 날씨. */
 data class TripConditions(
     val socPercent: Int,
-    val capacityKwh: Double?,
+    val profile: VehicleProfile,
     val tempC: Double,
-    val ascentPerKm: Double = 3.0,
-)
+    val weather: Weather = Weather.CLEAR,
+    val occupants: Int = 1,
+    val luggageKg: Double = 30.0,
+    val hvacOn: Boolean = true,
+    val cabinSetC: Double = 22.0,
+    val tirePressureKpa: Double? = null,
+    val mode: DriveMode = DriveMode.NORMAL,
+    val departMs: Long = System.currentTimeMillis(),
+) {
+    fun env(plannedKm: Double, origin: LatLng?, dest: Destination): TripEnv {
+        val here = origin ?: dest.location
+        return TripEnv(
+            context = TripContext.of(plannedKm, departMs, here.lat, here.lng, weather, dest.location.lat, dest.location.lng, mode),
+            tempC = tempC, occupants = occupants, luggageKg = luggageKg,
+            hvacOn = hvacOn, cabinSetC = cabinSetC, tirePressureKpa = tirePressureKpa,
+        )
+    }
+
+    companion object {
+        fun from(r: VehicleReading, profile: VehicleProfile, tempC: Double, weather: Weather, luggageKg: Double = 30.0) =
+            TripConditions(
+                socPercent = r.socPercent, profile = profile.withNominalCapacity(r.capacityKwh),
+                tempC = tempC, weather = weather, occupants = r.occupants, luggageKg = luggageKg,
+                hvacOn = r.hvacOn, cabinSetC = r.cabinSetC, tirePressureKpa = r.tirePressureKpa, mode = r.mode,
+            )
+    }
+}
 
 /** 충전소 하나에 들렀을 때의 최선안. */
 data class StopOption(
@@ -38,6 +69,9 @@ data class ChargingRecommendation(
     /** 비교 기준: 내비 추천, 없으면 대기 무시하고 출력이 가장 큰 곳 */
     val baseline: StopOption?,
     val checkedStations: Int,
+    /** 충전 없이 갈 때 (도착 확률, 주행시간) */
+    val direct: ArrivalResult,
+    val env: TripEnv,
 ) {
     val best: StopOption? get() = options.firstOrNull()
     val station: StationView? get() = best?.station
@@ -48,25 +82,31 @@ data class ChargingRecommendation(
         val base = baseline ?: return null
         return (base.plan.minutesP50 - b.plan.minutesP50).takeIf { base.station.id != b.station.id }
     }
+
+    /** 충전·대기 포함 총 소요 (중앙값, 늦어질 때) 분 */
+    val totalMinutes: Pair<Double, Double>? get() = when (val p = plan) {
+        is ChargePlanResult.Plan -> p.minutesP50 to p.minutesP90
+        is ChargePlanResult.NoChargeNeeded -> direct.minutesP50 to direct.minutesP90
+        is ChargePlanResult.Infeasible -> null
+    }
 }
 
 /**
- * 내비 경로 + 차량 배터리 + 서버 충전소 실시간 상태를 몬테카를로 모델에 넣는다.
- * UI와 Gleo 음성 호출이 같이 쓴다.
+ * 내비 경로 + 차량 상태 + 학습 프로필 + 서버 충전소 실시간 상태를 몬테카를로에 넣는다.
+ * UI, Gleo 음성 호출, 주행 중 감시가 같이 쓴다.
  */
 class TripPlanner(private val api: ChargerApi = ChargerApi()) {
 
-    private fun spec(c: TripConditions) = c.capacityKwh?.let { EvSpec(batteryKwh = it) } ?: EvSpec()
+    fun arrival(c: TripConditions, origin: LatLng?, dest: Destination): ArrivalResult =
+        EvMonteCarlo(c.profile).arrivalProbability(c.socPercent / 100.0, dest.remainKm, dest.remainMin, c.env(dest.remainKm, origin, dest))
 
-    fun arrival(c: TripConditions, remainKm: Double): ArrivalResult =
-        EvMonteCarlo().arrivalProbability(spec(c), c.socPercent / 100.0, remainKm, c.tempC, c.ascentPerKm * remainKm)
-
-    suspend fun recommend(
-        c: TripConditions, origin: LatLng?, dest: Destination, trip: Trip?,
-    ): ChargingRecommendation {
+    suspend fun recommend(c: TripConditions, origin: LatLng?, dest: Destination, trip: Trip?): ChargingRecommendation {
         val totalKm = trip?.distanceKm ?: dest.remainKm
         val totalMin = trip?.etaMin ?: dest.remainMin
-        val speedKmh = if (totalMin > 0) (totalKm / (totalMin / 60.0)).coerceIn(30.0, 120.0) else 90.0
+        val env = c.env(totalKm, origin, dest)
+        val soc0 = c.socPercent / 100.0
+        val mc = EvMonteCarlo(c.profile)
+        val direct = mc.arrivalProbability(soc0, totalKm, totalMin, env)
 
         // 1) 내비가 경로상에 둔 충전소를 실제 충전소와 매칭
         data class Cand(val view: StationView, val ratio: Double, val naviPick: Boolean)
@@ -87,28 +127,24 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
         }
         cands = cands.filter { it.view.inService > 0 }.distinctBy { it.view.id }
 
-        val waits = cands.associate { it.view.id to expectedWaitMin(it.view, it.ratio * totalMin) }
-        val chargers = cands.map { cd ->
-            Charger(cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 250.0), waits.getValue(cd.view.id))
-        }
-        val mc = EvMonteCarlo()
-        val v = spec(c)
-        val soc0 = c.socPercent / 100.0
-        val p0 = mc.arrivalProbability(v, soc0, totalKm, c.tempC, c.ascentPerKm * totalKm).probability
-        if (p0 >= 0.95) {
-            return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(p0), emptyList(), null, cands.size)
+        if (direct.probability >= 0.95) {
+            return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env)
         }
 
+        val waits = cands.associate { it.view.id to expectedWaitMin(it.view, it.ratio * totalMin) }
+        val chargers = cands.map { cd ->
+            Charger(cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.view.highway)
+        }
         val byId = cands.associateBy { it.view.id }
-        val options = mc.bestStopPerCharger(v, soc0, totalKm, c.tempC, c.ascentPerKm, speedKmh, chargers)
+        val options = mc.bestStopPerCharger(soc0, totalKm, totalMin, env, chargers)
             .map { p ->
                 val cd = byId.getValue(p.charger)
                 StopOption(cd.view, cd.ratio * totalKm, cd.ratio * totalMin, waits.getValue(p.charger), p, cd.naviPick)
             }
             .sortedBy { EvMonteCarlo.score(it.plan) }
         val baseline = options.firstOrNull { it.naviPick } ?: options.maxByOrNull { it.station.maxKw }
-        val plan = options.firstOrNull()?.plan ?: ChargePlanResult.Infeasible(p0)
-        return ChargingRecommendation(plan, options, baseline, cands.size)
+        val plan = options.firstOrNull()?.plan ?: ChargePlanResult.Infeasible(direct.probability)
+        return ChargingRecommendation(plan, options, baseline, cands.size, direct, env)
     }
 
     companion object {

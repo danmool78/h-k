@@ -13,7 +13,7 @@ class LiveDemoTest {
     @Test
     fun `서울-부산 데모 경로 추천`() = runBlocking {
         assumeTrue(System.getenv("LIVE") == "1")
-        val cond = TripConditions(socPercent = 80, capacityKwh = null, tempC = 10.0)
+        val cond = TripConditions(socPercent = 80, profile = com.sssoft.hk.model.VehicleProfile(), tempC = 10.0)
         val rec = TripPlanner(ChargerApi(readTimeoutMs = 15_000)).recommend(cond, RangeViewModel.DEMO_ORIGIN, RangeViewModel.DEMO_DEST, trip = null)
         println("plan=${rec.plan::class.simpleName} checked=${rec.checkedStations} saved=${rec.savedMin?.roundToInt()}")
         println("baseline=${rec.baseline?.station?.name}")

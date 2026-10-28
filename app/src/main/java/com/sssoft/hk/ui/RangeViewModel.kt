@@ -3,7 +3,11 @@ package com.sssoft.hk.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.sssoft.hk.learn.ProfileStore
 import com.sssoft.hk.model.ArrivalResult
+import com.sssoft.hk.model.VehicleProfile
+import com.sssoft.hk.model.Weather
+import com.sssoft.hk.vehicle.BatteryReader
 import com.sssoft.hk.navi.Destination
 import com.sssoft.hk.navi.LatLng
 import com.sssoft.hk.navi.NaviSource
@@ -23,8 +27,11 @@ import kotlinx.coroutines.launch
 
 data class TripInput(
     val tempC: Float = 10f,
+    val weather: Weather = Weather.CLEAR,
     /** 차량 배터리를 못 읽을 때 쓰는 값 */
     val manualSocPercent: Float = 80f,
+    /** 차량에서 못 읽을 때 쓰는 탑승 인원 */
+    val manualOccupants: Int = 1,
 )
 
 enum class RouteSource { NAVI, DEMO }
@@ -39,6 +46,9 @@ data class RangeUiState(
     val loading: Boolean = false,
     val error: String? = null,
     val waypointAdded: Boolean = false,
+    /** 예측에 쓴 조건 (차량에서 읽은 탑승 인원·공조·주행 모드 등) */
+    val conditions: TripConditions? = null,
+    val profile: VehicleProfile? = null,
 ) {
     val socPercent: Int get() = battery.socPercent ?: input.manualSocPercent.toInt()
 }
@@ -75,7 +85,14 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { it.copy(loading = true, error = null) }
             try {
                 val s = _ui.value
-                val cond = TripConditions(s.socPercent, s.battery.capacityKwh, s.input.tempC.toDouble())
+                val profile = ProfileStore.load(getApplication())
+                val temp = s.input.tempC.toDouble()
+                val reading = BatteryReader.read(getApplication())
+                val cond = reading?.let { TripConditions.from(it, profile, temp, s.input.weather) }
+                    ?: TripConditions(
+                        socPercent = s.socPercent, profile = profile.withNominalCapacity(s.battery.capacityKwh),
+                        tempC = temp, weather = s.input.weather, occupants = s.input.manualOccupants,
+                    )
 
                 if (naviConnected == null) naviConnected = navi.connect()
                 val naviDest = if (naviConnected == true) navi.destination() else null
@@ -86,12 +103,11 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val trip = if (source == RouteSource.NAVI) navi.trip(dest) else null
 
-                val arrival = planner.arrival(cond, dest.remainKm)
                 val rec = planner.recommend(cond, origin, dest, trip)
                 _ui.update {
                     it.copy(
-                        source = source, destination = dest, arrival = arrival, recommendation = rec,
-                        loading = false, waypointAdded = false,
+                        source = source, destination = dest, arrival = rec.direct, recommendation = rec,
+                        loading = false, waypointAdded = false, conditions = cond, profile = profile,
                     )
                 }
             } catch (e: Exception) {

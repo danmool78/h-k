@@ -14,9 +14,13 @@
         android:name="android.hardware.screen.landscape"
         android:required="false" />
 
-    <!-- Vehicle SDK: EvBattery (CAR_ENERGY), Odometer (CAR_DRIVE) -->
+    <!-- Vehicle SDK: EvBattery (CAR_ENERGY), Odometer·DrivingMode (CAR_DRIVE),
+         좌석 탑승 감지 (CAR_SEATS), 공조 상태 (CAR_CLIMATE), 타이어 공기압 (CAR_INFO) -->
     <uses-permission android:name="pleos.car.permission.CAR_ENERGY" />
     <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />
+    <uses-permission android:name="pleos.car.permission.CAR_SEATS" />
+    <uses-permission android:name="pleos.car.permission.CAR_CLIMATE" />
+    <uses-permission android:name="pleos.car.permission.CAR_INFO" />
     <!-- H-Y Server 충전소 조회 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 주행 중 충전 경유지 감시 -->
