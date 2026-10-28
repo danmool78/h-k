@@ -141,10 +141,13 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
      * [forecast] 면 기온·날씨를 실제 경로 위 지점의 도착 시각 예보로 바꾼다.
      */
     suspend fun recommend(
-        c0: TripConditions, origin: LatLng?, dest: Destination, trip: Trip?, forecast: Boolean = false,
+        c00: TripConditions, origin: LatLng?, dest: Destination, trip: Trip?, forecast: Boolean = false,
+        /** 지금부터 몇 분 뒤 출발 기준으로 계산할지 (출발 시각 비교용) */
+        departOffsetMin: Double = 0.0,
     ): ChargingRecommendation {
+        val c0 = if (departOffsetMin > 0) c00.copy(departMs = c00.departMs + (departOffsetMin * 60_000).toLong()) else c00
         // 실제 도로 경로 + 경로상 충전소 (차량 내비는 경로 좌표를 주지 않으므로 서버 경로를 쓴다)
-        val route = origin?.let { o -> runCatching { api.routeChargers(o, dest.location) }.getOrNull() }
+        val route = origin?.let { o -> runCatching { api.routeChargers(o, dest.location, departOffsetMin) }.getOrNull() }
         // 거리·시간은 실시간 교통이 반영된 내비 값을 우선
         val totalKm = trip?.distanceKm ?: route?.distanceKm ?: dest.remainKm
         val totalMin = trip?.etaMin ?: route?.durationMin ?: dest.remainMin
@@ -152,7 +155,7 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
         val c = when {
             !forecast -> c0
             route != null -> runCatching {
-                withTimeout(3_000) { api.routeWeather((0..4).map { i -> route.pointAt(i / 4.0) to i / 4.0 * totalMin }) }
+                withTimeout(3_000) { api.routeWeather((0..4).map { i -> route.pointAt(i / 4.0) to departOffsetMin + i / 4.0 * totalMin }) }
             }.map { c0.copy(tempC = it.tempC, weather = it.weather, weatherFromForecast = true) }.getOrDefault(c0)
             else -> withRouteWeather(c0, origin, dest, totalMin)
         }
@@ -203,7 +206,7 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
             return ChargingRecommendation(ChargePlanResult.NoChargeNeeded(direct.probability), emptyList(), null, cands.size, direct, env, c, route, navSoc)
         }
 
-        val waits = cands.associate { it.view.id to expectedWaitMin(it.view, it.ratio * totalMin) }
+        val waits = cands.associate { it.view.id to expectedWaitMin(it.view, departOffsetMin + it.ratio * totalMin) }
         val chargers = cands.map { cd ->
             Charger(cd.view.id, cd.ratio * totalKm, cd.view.maxKw.coerceIn(30.0, 350.0), waits.getValue(cd.view.id), cd.detourMin)
         }
@@ -217,6 +220,17 @@ class TripPlanner(private val api: ChargerApi = ChargerApi()) {
         val baseline = options.firstOrNull { it.naviPick } ?: options.maxByOrNull { it.station.maxKw }
         val plan = options.firstOrNull()?.plan ?: ChargePlanResult.Infeasible(direct.probability)
         return ChargingRecommendation(plan, options, baseline, cands.size, direct, env, c, route, navSoc)
+    }
+
+    /**
+     * 출발 시각 비교: 지금, 그리고 [offsets] 분 뒤 출발했을 때의 총 소요 (요일·시간대별 혼잡 이력 기반).
+     * 반환: (몇 분 뒤 출발, 추천) — 계산 실패한 시각은 빠진다.
+     */
+    suspend fun departureOptions(
+        c: TripConditions, origin: LatLng?, dest: Destination, trip: Trip?,
+        offsets: List<Int> = listOf(0, 30, 60, 90, 120),
+    ): List<Pair<Int, ChargingRecommendation>> = offsets.mapNotNull { off ->
+        runCatching { off to recommend(c, origin, dest, trip.takeIf { off == 0 }, forecast = true, departOffsetMin = off.toDouble()) }.getOrNull()
     }
 
     /** 내비 충전 계획(시간)과 우리 충전 곡선의 비율로 충전 효율 계수를 맞춘다. 범위 0.6~1.6배. */

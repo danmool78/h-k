@@ -53,6 +53,12 @@ class ChargeWatchService : Service() {
     private val planner = TripPlanner(api)
     private var tts: TextToSpeech? = null
     @Volatile private var keepRequested = false
+    private var lastFullCheck = 0L
+    private var lastAsked: Pair<String, Long>? = null
+    /** (지금 목표, 바꿀 후보) */
+    private var pendingOffer: Pair<ChargeTarget, ChargeTarget>?
+        get() = pendingOfferStatic
+        set(v) { pendingOfferStatic = v }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,6 +81,11 @@ class ChargeWatchService : Service() {
             ACTION_STOP -> {
                 stopWatching()
                 return START_NOT_STICKY
+            }
+            ACTION_SWITCH -> {
+                val to = pendingOffer
+                if (to != null) scope.launch { applySwitch(to.first, to.second) }
+                return START_STICKY
             }
         }
         val target = ChargeTargetStore.get(this) ?: run { stopSelf(); return START_NOT_STICKY }
@@ -102,11 +113,14 @@ class ChargeWatchService : Service() {
         val etaMin = here?.let { distanceKm(it, target.location) / AVG_SPEED_KMH * 60 } ?: 30.0
         val view = api.match(listOf(target.location to etaMin), radiusKm = 0.3).firstOrNull()
 
-        if (!ReplanPolicy.targetDegraded(view, etaMin)) {
+        val degraded = ReplanPolicy.targetDegraded(view, etaMin)
+        val now = System.currentTimeMillis()
+        if (!degraded) {
             val wait = TripPlanner.expectedWaitMin(view!!, etaMin).roundToInt()
-            update("${target.name} · 빈 충전기 ${view.available}/${view.inService} · 도착 시 대기 약 ${wait}분")
-            return
+            if (pendingOffer == null) update("${target.name} · 빈 충전기 ${view.available}/${view.inService} · 도착 시 대기 약 ${wait}분")
+            if (now - lastFullCheck < FULL_CHECK_MS) return
         }
+        lastFullCheck = now
 
         val reading = BatteryReader.read(this) ?: return
         val dest = navi.destination() ?: return
@@ -116,9 +130,33 @@ class ChargeWatchService : Service() {
 
         when (val d = ReplanPolicy.decide(target.stationId, rec)) {
             ReplanPolicy.Decision.Keep ->
-                update("${target.name} 혼잡 예상 · 더 나은 충전소가 없어 유지합니다")
-            is ReplanPolicy.Decision.Switch -> switchTo(target, d, view)
+                if (degraded) update("${target.name} 혼잡 예상 · 더 나은 충전소가 없어 유지합니다")
+            is ReplanPolicy.Decision.Switch ->
+                // 가던 곳이 막혔으면 알리고 자동으로 바꾸고(취소 가능), 괜찮은데 더 빠른 곳이 생긴 거면 물어본다
+                if (degraded) switchTo(target, d, view) else askSwitch(target, d)
         }
+    }
+
+    /** 더 빠른 곳이 생겼을 때: 바꿀지 묻는다. 대답이 없으면 그대로. 같은 제안은 [REASK_MS] 안에 다시 묻지 않음 */
+    private fun askSwitch(old: ChargeTarget, d: ReplanPolicy.Decision.Switch) {
+        val to = d.to.station
+        val saved = d.savedMin?.roundToInt() ?: return
+        val now = System.currentTimeMillis()
+        if (lastAsked?.first == to.id && now - lastAsked!!.second < REASK_MS) return
+        lastAsked = to.id to now
+        pendingOffer = old to ChargeTarget(to.id, to.name, to.location, now, to.maxKw)
+        val text = "${to.name}로 바꾸면 ${saved}분 빨라집니다. 바꿀까요?"
+        speak("$text 바꾸시려면 '안기다려, 바꿔줘'라고 말씀하세요.")
+        update(text, offer = true)
+    }
+
+    private suspend fun applySwitch(old: ChargeTarget, to: ChargeTarget) {
+        pendingOffer = null
+        navi.removeWaypointNear(old.location)
+        navi.addChargingWaypoint(to.name, to.location)
+        ChargeTargetStore.set(this, to.copy(setAt = System.currentTimeMillis()))
+        speak("경유지를 ${to.name}로 변경했습니다.")
+        update("${to.name}로 경유지를 변경했어요")
     }
 
     private suspend fun switchTo(old: ChargeTarget, d: ReplanPolicy.Decision.Switch, oldView: StationView?) {
@@ -170,11 +208,11 @@ class ChargeWatchService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
     }
 
-    private fun update(text: String, keepAction: Boolean = false) {
-        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(text, keepAction))
+    private fun update(text: String, keepAction: Boolean = false, offer: Boolean = false) {
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(text, keepAction, offer))
     }
 
-    private fun notification(text: String, keepAction: Boolean?): Notification {
+    private fun notification(text: String, keepAction: Boolean?, offer: Boolean = false): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
@@ -185,8 +223,9 @@ class ChargeWatchService : Service() {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setOngoing(true)
-            .setOnlyAlertOnce(keepAction != true)
+            .setOnlyAlertOnce(keepAction != true && !offer)
             .apply {
+                if (offer) addAction(0, "바꾸기", serviceIntent(ACTION_SWITCH, 3))
                 if (keepAction == true) addAction(0, "지금 경유지 유지", serviceIntent(ACTION_KEEP, 1))
                 addAction(0, "감시 끄기", serviceIntent(ACTION_STOP, 2))
             }
@@ -203,6 +242,19 @@ class ChargeWatchService : Service() {
         private const val NOTIF_ID = 1001
         private const val ACTION_KEEP = "com.sssoft.hk.watch.KEEP"
         private const val ACTION_STOP = "com.sssoft.hk.watch.STOP"
+        private const val ACTION_SWITCH = "com.sssoft.hk.watch.SWITCH"
+        /** 막히지 않았을 때도 이 간격으로 전체를 다시 계산해 더 빠른 곳을 찾는다 */
+        private const val FULL_CHECK_MS = 6 * 60_000L
+        private const val REASK_MS = 15 * 60_000L
+
+        /** 음성 "바꿔줘"(Gleo) 등 밖에서 제안을 수락할 때 */
+        fun acceptOffer(context: Context) {
+            runCatching { context.startService(Intent(context, ChargeWatchService::class.java).setAction(ACTION_SWITCH)) }
+        }
+
+        /** 지금 바꿀지 묻고 있는 제안이 있는지 */
+        fun hasPendingOffer(): Boolean = pendingOfferStatic != null
+        @Volatile private var pendingOfferStatic: Pair<ChargeTarget, ChargeTarget>? = null
         private const val INTERVAL_MS = 2 * 60_000L
         private const val SWITCH_DELAY_MS = 10_000L
         private const val MAX_WATCH_MS = 6 * 3600_000L

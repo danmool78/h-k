@@ -61,6 +61,9 @@ class DriveRecorder(
     private var lastMoveMs: Long = 0
     private var tripDriveMs: Long = 0
     private var tripActive = false
+
+    /** 지금 주행 중인지 (출발 시각 제안은 정차 중에만) */
+    val isDriving: Boolean get() = tripActive
     private var chargedDuringTrip = false
 
     // 진행 중인 구간

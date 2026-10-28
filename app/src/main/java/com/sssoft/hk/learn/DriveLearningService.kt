@@ -15,7 +15,11 @@ import androidx.core.app.ServiceCompat
 import com.sssoft.hk.R
 import com.sssoft.hk.model.TripContext
 import com.sssoft.hk.navi.NaviSource
+import com.sssoft.hk.model.ChargePlanResult
 import com.sssoft.hk.server.ChargerApi
+import com.sssoft.hk.trip.TripConditions
+import com.sssoft.hk.trip.TripPlanner
+import kotlin.math.roundToInt
 import com.sssoft.hk.trip.TripPrefs
 import com.sssoft.hk.vehicle.BatteryReader
 import com.sssoft.hk.watch.ChargeTargetStore
@@ -39,6 +43,7 @@ class DriveLearningService : Service() {
     private lateinit var navi: NaviSource
     private lateinit var recorder: DriveRecorder
     private val api = ChargerApi(readTimeoutMs = 10_000)
+    private val planner = TripPlanner(ChargerApi(readTimeoutMs = 15_000))
     private var lastWeatherMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -69,6 +74,7 @@ class DriveLearningService : Service() {
 
     private suspend fun loop() {
         val naviOk = navi.connect()
+        navi.onDestinationChanged = { scope.launch { runCatching { suggestForDestination() }.onFailure { Log.w(TAG, "목적지 추천 실패", it) } } }
         var lastPlanCheck = 0L
         while (scope.isActive) {
             runCatching { tick(naviOk, System.currentTimeMillis() - lastPlanCheck > PLAN_CHECK_MS) }
@@ -129,6 +135,75 @@ class DriveLearningService : Service() {
         return checkPlan
     }
 
+    private var lastSuggestAt = 0L
+
+    /**
+     * 내비에 목적지가 들어오면 충전 추천을 알림으로 띄운다 (내비 플러그인 동작).
+     * 정차 중이면 출발 시각 비교도 해서 15분 이상 줄어들 때만 한 줄 덧붙인다.
+     */
+    private suspend fun suggestForDestination() {
+        val now = System.currentTimeMillis()
+        if (now - lastSuggestAt < 20_000) return
+        lastSuggestAt = now
+        delay(2_000) // 내비가 경로를 계산할 시간
+        val dest = navi.destination() ?: return
+        val here = navi.currentLocation()
+        val trip = navi.trip(dest)
+        val r = BatteryReader.read(vehicle) ?: return
+        val cond = TripConditions.from(
+            r, ProfileStore.load(this), TripPrefs.tempC(this), TripPrefs.weather(this),
+            arrivalReserveSoc = TripPrefs.arrivalReserve(this),
+        )
+        val rec = planner.recommend(cond, here, dest, trip, forecast = true)
+        val line1 = when (val p = rec.plan) {
+            is ChargePlanResult.NoChargeNeeded -> "충전 없이 도착 · 도착 배터리 약 ${pct(rec.direct.socP50)}"
+            is ChargePlanResult.Infeasible -> "한 번 충전으로는 어려워요 · 출발 전 충전을 권합니다"
+            is ChargePlanResult.Plan -> {
+                val b = rec.best!!
+                val base = rec.baseline
+                val saved = rec.savedMin?.takeIf { it >= 3 }?.let {
+                    if (base?.naviPick == true) " · 내비 추천 ${base.station.name} 대신 가면 ${it.roundToInt()}분 빠름"
+                    else " · ${it.roundToInt()}분 빠름"
+                } ?: ""
+                "${b.station.name}에서 ${p.chargeMinutesP50.roundToInt()}분 충전 → ${clock(now, p.minutesP50)} 도착$saved"
+            }
+        }
+        var line2: String? = null
+        if (!recorder.isDriving) {
+            val opts = planner.departureOptions(cond, here, dest, trip, listOf(30, 60, 90, 120))
+            val base = rec.totalMinutes?.first
+            val best = opts.mapNotNull { (off, rc) -> rc.totalMinutes?.first?.let { off to it } }.minByOrNull { it.second }
+            if (base != null && best != null && base - best.second >= 15) {
+                line2 = "${best.first}분 뒤 출발하면 휴게소가 덜 붐벼 총 ${(base - best.second).roundToInt()}분 단축 " +
+                    "(${clock(now + best.first * 60_000L, best.second)} 도착)"
+            }
+        }
+        notifySuggestion("${dest.name} 가는 길", listOfNotNull(line1, line2).joinToString("\n"))
+    }
+
+    private fun notifySuggestion(title: String, text: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(SUGGEST_CHANNEL, "충전 추천", NotificationManager.IMPORTANCE_HIGH))
+        val open = android.app.PendingIntent.getActivity(
+            this, 0, Intent(this, com.sssoft.hk.MainActivity::class.java), android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
+        nm.notify(
+            SUGGEST_ID,
+            NotificationCompat.Builder(this, SUGGEST_CHANNEL)
+                .setSmallIcon(R.drawable.ic_charge)
+                .setContentTitle(title)
+                .setContentText(text.lineSequence().first())
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    private fun pct(x: Double) = "${(x.coerceAtLeast(0.0) * 100).roundToInt()}%"
+    private fun clock(fromMs: Long, minutes: Double) =
+        java.text.SimpleDateFormat("HH:mm", java.util.Locale.KOREA).format(java.util.Date(fromMs + (minutes * 60_000).toLong()))
+
     private fun apply(e: DriveRecorder.Event) {
         val record = JSONObject().put("t", System.currentTimeMillis())
         when (e) {
@@ -187,6 +262,8 @@ class DriveLearningService : Service() {
         private const val INTERVAL_MS = 10_000L
         private const val PLAN_CHECK_MS = 60_000L
         private const val WEATHER_MS = 10 * 60_000L
+        private const val SUGGEST_CHANNEL = "trip_suggest"
+        private const val SUGGEST_ID = 1003
         @Volatile private var running = false
 
         fun start(context: Context) {

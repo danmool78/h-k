@@ -12,6 +12,7 @@ import com.sssoft.hk.trip.TripConditions
 import com.sssoft.hk.trip.TripPlanner
 import com.sssoft.hk.trip.TripPrefs
 import com.sssoft.hk.vehicle.BatteryReader
+import com.sssoft.hk.watch.ChargeTargetStore
 import com.sssoft.hk.watch.ChargeWatchService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +88,11 @@ class GleoReceiver : BroadcastReceiver() {
     }
 
     private suspend fun recommend(context: Context, navi: NaviSource, c: TripConditions, addAsWaypoint: Boolean): GleoResult {
+        // 주행 중 "바꿀까요?" 제안에 "바꿔줘"로 답한 경우
+        if (addAsWaypoint && ChargeWatchService.hasPendingOffer()) {
+            ChargeWatchService.acceptOffer(context)
+            return GleoResult.success(RECOMMEND_CHARGING_STOP, "Switched the charging stop to the suggested station.", "switched" to true)
+        }
         val dest = navi.destination()
             ?: return GleoResult.asking(RECOMMEND_CHARGING_STOP, "No destination is set. Please set a destination in the navigation first.")
         val origin = navi.currentLocation()
@@ -108,6 +114,7 @@ class GleoReceiver : BroadcastReceiver() {
                 val best = r.best!!
                 val s = best.station
                 if (addAsWaypoint) {
+                    ChargeTargetStore.get(context)?.let { old -> navi.removeWaypointNear(old.location) }
                     navi.addChargingWaypoint(s.name, s.location)
                     ChargeWatchService.start(context, s.id, s.name, s.location, s.maxKw)
                 }

@@ -130,6 +130,9 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
         val s = _ui.value
         val best = s.recommendation?.best ?: return
         if (s.source != RouteSource.NAVI) return
+        // 내비가 스스로 넣은 충전 경유지가 있으면 우리 추천으로 교체
+        val navPick = s.recommendation.baseline?.takeIf { it.naviPick && it.station.id != best.station.id }
+        if (navPick != null) viewModelScope.launch { navi.removeWaypointNear(navPick.station.location) }
         navi.addChargingWaypoint(best.station.name, best.station.location)
         ChargeWatchService.start(getApplication(), best.station.id, best.station.name, best.station.location, best.station.maxKw)
         _ui.update { it.copy(waypointAdded = true) }

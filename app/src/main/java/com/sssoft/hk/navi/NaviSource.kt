@@ -60,6 +60,9 @@ class NaviSource(context: Context) {
 
     @Volatile private var lastDrivingInfo: DrivingInfo? = null
 
+    /** 내비에서 목적지가 바뀜 (학습 서비스가 구독해 출발 전 추천 알림을 띄움) */
+    var onDestinationChanged: (() -> Unit)? = null
+
     /** 경유지 도착 이벤트 (감시 서비스가 구독). */
     var onWaypointArrived: (() -> Unit)? = null
 
@@ -82,6 +85,10 @@ class NaviSource(context: Context) {
 
         override fun onWayPointInfo(info: List<WaypointInfo>) {
             (pending as? Pending.Waypoints)?.d?.complete(info)
+        }
+
+        override fun onDestinationChanged() {
+            onDestinationChanged?.invoke()
         }
 
         override fun onWayPointArrived(info: WaypointArrivedInfo) {
