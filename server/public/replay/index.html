@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>안기다려 실데이터 재현</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --muted:#9aa3b5; --accent:#4f8cff; --good:#4caf50; --warn:#ffb300; --bad:#e53935; --navi:#9aa3b5; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI","Noto Sans KR",sans-serif; }
+  main { max-width:1280px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:22px; margin:0 0 4px; } .muted { color:var(--muted); } .small { font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:18px; margin-top:16px; }
+  .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+  .controls label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--muted); }
+  select, input { background:#11141a; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font-size:14px; }
+  button { padding:10px 16px; border-radius:10px; border:0; background:var(--accent); color:#fff; font-size:14px; cursor:pointer; }
+  button.secondary { background:#11141a; border:1px solid var(--line); color:var(--text); }
+  button:disabled { opacity:.5; }
+  .lanes { display:grid; gap:14px; }
+  .lane { display:grid; grid-template-columns:110px 1fr 120px; gap:12px; align-items:center; }
+  .lane .who { font-weight:700; } .lane .who small { display:block; color:var(--muted); font-weight:400; font-size:12px; }
+  .road { position:relative; height:46px; background:#11141a; border-radius:10px; overflow:hidden; }
+  .road .tick { position:absolute; top:0; bottom:0; width:2px; background:#2a2f3a; }
+  .road .stop { position:absolute; top:6px; bottom:6px; width:4px; border-radius:2px; }
+  .road .car { position:absolute; top:7px; width:32px; height:32px; margin-left:-16px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:18px; transition:left .08s linear; }
+  .road .flag { position:absolute; right:6px; top:12px; font-size:16px; }
+  .gauge { height:22px; border:2px solid #3a4150; border-radius:6px; position:relative; overflow:hidden; background:#11141a; }
+  .gauge div { height:100%; transition:width .1s; }
+  .gauge span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; text-shadow:0 1px 2px #000; }
+  .clock { font-size:28px; font-weight:700; }
+  .compare { display:grid; gap:10px; }
+  .cbar { display:grid; grid-template-columns:110px 1fr 90px; gap:12px; align-items:center; }
+  .stack { display:flex; height:26px; border-radius:6px; overflow:hidden; background:#11141a; }
+  .stack div { height:100%; display:flex; align-items:center; justify-content:center; font-size:11px; color:#000; font-weight:700; overflow:hidden; white-space:nowrap; }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-top:8px; flex-wrap:wrap; }
+  .legend i { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:4px; vertical-align:-2px; }
+  .saved { font-size:40px; font-weight:800; color:var(--good); }
+  .events { display:grid; grid-template-columns:1fr 1fr; gap:16px; } @media (max-width:800px){ .events{grid-template-columns:1fr} .lane{grid-template-columns:80px 1fr 90px} }
+  .ev { font-size:14px; padding:8px 10px; border-left:3px solid var(--line); margin:6px 0; background:#11141a; border-radius:0 8px 8px 0; opacity:.35; transition:opacity .3s; }
+  .ev.on { opacity:1; } .ev.replan { border-color:var(--warn); } .ev.wait { border-color:var(--bad); } .ev.ok, .ev.arrive { border-color:var(--good); }
+  .flash { animation: flash 1.2s 2; } @keyframes flash { 50% { box-shadow:0 0 0 4px var(--warn); } }
+  #map { height:260px; border-radius:12px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; } td, th { padding:6px; border-bottom:1px solid var(--line); text-align:right; } td:first-child, th:first-child { text-align:left; }
+</style>
+</head>
+<body>
+<main>
+  <h1>실데이터 재현: 내비 방식 vs 안기다려</h1>
+  <div class="muted small">H-Y Server가 5분마다 기록한 <b>실제 고속도로 휴게소 충전기 상태</b>로 같은 경로를 두 방식으로 달려 봅니다. 대기 시간은 예측이 아니라 기록에서 판정합니다.</div>
+
+  <section class="card">
+    <div class="controls">
+      <label>날짜 <select id="day"></select></label>
+      <label>출발 <select id="time"></select></label>
+      <label>목적지 <select id="dest"></select></label>
+      <label>출발 배터리 <select id="soc"><option>50</option><option>60</option><option selected>70</option><option>80</option><option>90</option></select></label>
+      <label>도착 최소 <select id="reserve"><option value="0.1">10%</option><option value="0.2">20%</option><option value="0.3" selected>30%</option></select></label>
+      <button id="run">재현</button>
+      <button id="all" class="secondary">이 날 전체 시간대 비교</button>
+      <label style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" id="voice" checked> 음성 안내</label>
+    </div>
+    <div class="muted small" id="status" style="margin-top:10px"></div>
+  </section>
+
+  <section class="card" id="stage" hidden>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div><div class="muted small" id="title"></div><div class="clock" id="clock">--:--</div></div>
+      <div><button id="play" class="secondary">▶ 다시 재생</button></div>
+    </div>
+    <div class="lanes">
+      <div class="lane"><div class="who">내비 방식<small>빈자리 모름</small></div><div class="road" id="roadNavi"></div><div class="gauge" id="gNavi"><div></div><span></span></div></div>
+      <div class="lane"><div class="who" style="color:var(--accent)">안기다려<small>실시간 + 재계획</small></div><div class="road" id="roadOurs"></div><div class="gauge" id="gOurs"><div></div><span></span></div></div>
+    </div>
+  </section>
+
+  <section class="card" id="result" hidden>
+    <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
+      <div><div class="muted small">안기다려가 더 빨리 도착</div><div class="saved" id="saved"></div></div>
+      <div class="compare" style="flex:1;min-width:300px" id="compare"></div>
+    </div>
+    <div class="legend"><span><i style="background:#4f8cff"></i>주행</span><span><i style="background:#9aa3b5"></i>우회·결제</span><span><i style="background:#e53935"></i>대기</span><span><i style="background:#4caf50"></i>충전</span></div>
+  </section>
+
+  <section class="card" id="evCard" hidden>
+    <div class="events"><div><b>내비 방식</b><div id="evNavi"></div></div><div><b style="color:var(--accent)">안기다려</b><div id="evOurs"></div></div></div>
+  </section>
+
+  <section class="card" id="mapCard" hidden><div id="map"></div></section>
+
+  <section class="card" id="batch" hidden>
+    <h3 style="margin:0 0 8px">이 날 전체 시간대 비교</h3>
+    <div id="batchSummary" class="muted"></div>
+    <div style="overflow-x:auto"><table id="batchTable"></table></div>
+  </section>
+  <p class="muted small">경로 © OpenStreetMap contributors, OSRM · 충전소: 한국환경공단 실시간 데이터 · <a style="color:var(--accent)" href="../map/">실시간 혼잡 지도</a> · <a style="color:var(--accent)" href="../demo/">경로 추천 데모</a></p>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+import { API, replay } from "./replay.js";
+
+const ORIGIN = { name: "서울시청", lat: 37.5665, lng: 126.978 };
+const DESTS = [
+  { name: "부산", lat: 35.1796, lng: 129.0756 }, { name: "대구", lat: 35.8714, lng: 128.6014 },
+  { name: "광주", lat: 35.1595, lng: 126.8526 }, { name: "강릉", lat: 37.7519, lng: 128.8761 },
+  { name: "여수", lat: 34.7604, lng: 127.6622 },
+];
+const $ = (id) => document.getElementById(id);
+$("dest").innerHTML = DESTS.map((d, i) => `<option value="${i}">${d.name}</option>`).join("");
+let days = {};
+
+async function loadDays() {
+  const r = await fetch(`${API}/history/days`);
+  days = (await r.json()).days;
+  const list = Object.keys(days).sort().reverse();
+  $("day").innerHTML = list.map((d) => `<option value="${d}">${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)} (${days[d].length}개 기록)</option>`).join("");
+  fillTimes();
+  $("status").textContent = list.length ? `기록이 있는 날 ${list.length}일 · 5분 간격` : "아직 기록이 없습니다";
+}
+function fillTimes() {
+  const t = days[$("day").value] ?? [];
+  $("time").innerHTML = t.map((x) => `<option>${x.slice(0, 2)}:${x.slice(2)}</option>`).join("");
+}
+$("day").onchange = fillTimes;
+
+const fmt = (ms) => new Date(ms).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Seoul" });
+const P = (x) => `${Math.round(Math.max(x, 0) * 100)}%`;
+const lvl = (s) => (s >= 0.5 ? "#4caf50" : s >= 0.2 ? "#ffb300" : "#e53935");
+function speak(text) {
+  if (!$("voice").checked || !("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(text); u.lang = "ko-KR"; u.rate = 1.05;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
+
+let last = null, raf = null;
+
+function road(el, r, totalKm) {
+  el.innerHTML = [0.25, 0.5, 0.75].map((f) => `<div class="tick" style="left:${f * 100}%"></div>`).join("") +
+    (r.stop ? `<div class="stop" style="left:${r.stop.atKm / totalKm * 100}%;background:#4caf50" title="${r.stop.name}"></div>` : "") +
+    `<div class="flag">🏁</div><div class="car">🚗</div>`;
+}
+
+/** 시뮬레이션 분 [t] 에서 위치(0~1)·배터리·상태 */
+function stateAt(r, t, totalMin) {
+  if (!r.legs) return { pos: 0, soc: 0, label: "" };
+  const L = r.legs, s = r.socs;
+  const t1 = L.driveMin1, t2 = t1 + L.detourMin + L.waitMin, t3 = t2 + L.chargeMin, t4 = t3 + L.driveMin2;
+  const f1 = L.driveMin1 / totalMin;
+  if (t <= t1) return { pos: f1 * t / t1, soc: s.start + (s.atCharger - s.start) * t / t1, label: "주행" };
+  if (t <= t2) return { pos: f1, soc: s.atCharger, label: L.waitMin > 3 ? "대기" : "진입" };
+  if (t <= t3) return { pos: f1, soc: s.atCharger + (s.after - s.atCharger) * (t - t2) / L.chargeMin, label: "충전" };
+  if (t <= t4) return { pos: f1 + (1 - f1) * (t - t3) / L.driveMin2, soc: s.after + (s.dest - s.after) * (t - t3) / L.driveMin2, label: "주행" };
+  return { pos: 1, soc: s.dest, label: "도착" };
+}
+
+function animate(res) {
+  cancelAnimationFrame(raf);
+  const totalMin = res.route.durationMin;
+  const end = Math.max(res.navi.totalMin ?? 0, res.ours.totalMin ?? 0) + 2;
+  road($("roadNavi"), res.navi, res.route.distanceKm);
+  road($("roadOurs"), res.ours, res.route.distanceKm);
+  const evN = res.navi.events, evO = res.ours.events;
+  $("evNavi").innerHTML = evN.map((e, i) => `<div class="ev ${e.kind ?? ""}" id="n${i}">${Math.round(e.t)}분 · ${e.text}</div>`).join("");
+  $("evOurs").innerHTML = evO.map((e, i) => `<div class="ev ${e.kind ?? ""}" id="o${i}">${Math.round(e.t)}분 · ${e.text}</div>`).join("");
+  const spoken = new Set();
+  const speedMs = 9000 / end; // 전체를 약 9초에
+  const t0 = performance.now();
+  const step = (now) => {
+    const t = Math.min(end, (now - t0) / speedMs);
+    $("clock").textContent = fmt(res.departAt + t * 60_000);
+    for (const [r, roadEl, gEl] of [[res.navi, "roadNavi", "gNavi"], [res.ours, "roadOurs", "gOurs"]]) {
+      const st = stateAt(r, t, totalMin);
+      $(roadEl).querySelector(".car").style.left = `calc(${st.pos * 100}% * 0.93 + 16px)`;
+      $(roadEl).querySelector(".car").textContent = st.label === "대기" ? "⏳" : st.label === "충전" ? "⚡" : st.label === "도착" ? "✅" : "🚗";
+      const g = $(gEl); g.firstElementChild.style.width = P(st.soc); g.firstElementChild.style.background = lvl(st.soc); g.lastElementChild.textContent = P(st.soc);
+    }
+    evN.forEach((e, i) => $(`n${i}`).classList.toggle("on", e.t <= t));
+    evO.forEach((e, i) => {
+      const on = e.t <= t;
+      $(`o${i}`).classList.toggle("on", on);
+      if (on && !spoken.has(i) && (e.kind === "replan")) {
+        spoken.add(i); $("stage").classList.remove("flash"); void $("stage").offsetWidth; $("stage").classList.add("flash");
+        speak(e.text.replace("→", ".").replace(/\(.*?\)/g, ""));
+      }
+    });
+    if (t < end) raf = requestAnimationFrame(step);
+    else if (res.ours.totalMin && res.navi.totalMin) {
+      const d = Math.round(res.navi.totalMin - res.ours.totalMin);
+      speak(d > 0 ? `안기다려가 ${d}분 빨리 도착했습니다.` : "두 방식의 도착 시간이 같습니다.");
+    }
+  };
+  raf = requestAnimationFrame(step);
+}
+
+function compare(res) {
+  const max = Math.max(res.navi.totalMin ?? 0, res.ours.totalMin ?? 0);
+  const bar = (r, label, color) => {
+    if (!r.legs) return `<div class="cbar"><div>${label}</div><div class="muted">계획 없음</div><div></div></div>`;
+    const L = r.legs, w = (m) => `${m / max * 100}%`;
+    return `<div class="cbar"><div style="color:${color};font-weight:700">${label}</div><div class="stack">
+      <div style="width:${w(L.driveMin1 + L.driveMin2)};background:#4f8cff">주행 ${Math.round(L.driveMin1 + L.driveMin2)}</div>
+      <div style="width:${w(L.detourMin)};background:#9aa3b5"></div>
+      <div style="width:${w(L.waitMin)};background:#e53935">${L.waitMin >= 4 ? `대기 ${Math.round(L.waitMin)}` : ""}</div>
+      <div style="width:${w(L.chargeMin)};background:#4caf50">${L.chargeMin >= 6 ? `충전 ${Math.round(L.chargeMin)}` : ""}</div>
+    </div><div>${Math.floor(r.totalMin / 60)}시간 ${Math.round(r.totalMin % 60)}분</div></div>`;
+  };
+  $("compare").innerHTML = bar(res.navi, "내비 방식", "#9aa3b5") + bar(res.ours, "안기다려", "#4f8cff");
+  const d = res.navi.totalMin && res.ours.totalMin ? res.navi.totalMin - res.ours.totalMin : null;
+  $("saved").textContent = d == null ? "–" : d >= 1 ? `${Math.round(d)}분` : "같음";
+}
+
+let map, mapLayer;
+function drawMap(res) {
+  $("mapCard").hidden = false;
+  if (!map) {
+    map = L.map("map");
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { maxZoom: 18, attribution: "© OpenStreetMap contributors © CARTO" }).addTo(map);
+    mapLayer = L.layerGroup().addTo(map);
+  }
+  mapLayer.clearLayers();
+  const line = L.polyline(res.route.path, { color: "#4f8cff", weight: 4 }).addTo(mapLayer);
+  for (const c of res.cands) {
+    const isN = res.navi.stop?.id === c.id, isO = res.ours.stop?.id === c.id;
+    const color = isO ? "#4caf50" : isN ? "#e53935" : "#555";
+    L.circleMarker([c.lat, c.lng], { radius: isO || isN ? 9 : 5, color, fillColor: color, fillOpacity: .9 })
+      .bindTooltip(`${c.name}${isO ? " · 안기다려 선택" : ""}${isN ? " · 내비 방식 선택" : ""}`).addTo(mapLayer);
+  }
+  map.fitBounds(line.getBounds(), { padding: [20, 20] });
+}
+
+async function run() {
+  $("run").disabled = true;
+  $("status").textContent = "기록을 불러와 계산 중…";
+  try {
+    const dest = DESTS[+$("dest").value];
+    const res = await replay({
+      origin: ORIGIN, dest, day: $("day").value, departTime: $("time").value.replace(":", ""),
+      soc: +$("soc").value, arrivalReserve: +$("reserve").value,
+    });
+    last = res;
+    for (const id of ["stage", "result", "evCard"]) $(id).hidden = false;
+    $("title").textContent = `${ORIGIN.name} → ${dest.name} · ${Math.round(res.route.distanceKm)}km · ${$("day").value.slice(4, 6)}/${$("day").value.slice(6)} ${$("time").value} 출발 · 출발 배터리 ${$("soc").value}%`;
+    const cover = res.lastTick < res.departAt + res.route.durationMin * 60_000;
+    $("status").textContent = `휴게소 후보 ${res.cands.length}곳 · 기록 ${res.series.length}개 사용` + (cover ? " · 기록이 주행 끝까지 없어 마지막 기록 상태로 판정한 구간이 있습니다" : "");
+    compare(res); drawMap(res); animate(res);
+  } catch (e) {
+    $("status").textContent = "재현 실패: " + e.message;
+  } finally {
+    $("run").disabled = false;
+  }
+}
+
+async function runAll() {
+  $("all").disabled = true;
+  const day = $("day").value, dest = DESTS[+$("dest").value];
+  const times = (days[day] ?? []).filter((t) => t.endsWith("00") || t.endsWith("30"));
+  $("batch").hidden = false;
+  const rows = [];
+  for (const [i, t] of times.entries()) {
+    $("batchSummary").textContent = `계산 중… ${i + 1}/${times.length}`;
+    try {
+      const r = await replay({ origin: ORIGIN, dest, day, departTime: t, soc: +$("soc").value, arrivalReserve: +$("reserve").value, samples: 500 });
+      if (r.navi.totalMin && r.ours.totalMin) rows.push({ t, r });
+    } catch { /* 기록 없는 시각 건너뜀 */ }
+  }
+  const saves = rows.map(({ r }) => r.navi.totalMin - r.ours.totalMin);
+  const avg = saves.reduce((a, b) => a + b, 0) / Math.max(saves.length, 1);
+  const waitsN = rows.map(({ r }) => r.navi.legs.waitMin), waitsO = rows.map(({ r }) => r.ours.legs.waitMin);
+  $("batchSummary").innerHTML = rows.length
+    ? `출발 ${rows.length}회 비교 · 평균 <b style="color:var(--good);font-size:20px">${avg.toFixed(1)}분</b> 절약 · 최대 ${Math.round(Math.max(...saves))}분 · ` +
+      `내비 방식 대기 발생 ${waitsN.filter((w) => w > 3).length}회, 안기다려 ${waitsO.filter((w) => w > 3).length}회`
+    : "비교할 기록이 부족합니다";
+  $("batchTable").innerHTML = `<tr><th>출발</th><th>내비 방식 충전소</th><th>대기</th><th>안기다려 충전소</th><th>대기</th><th>절약</th></tr>` +
+    rows.map(({ t, r }) => `<tr><td>${t.slice(0, 2)}:${t.slice(2)}</td><td>${r.navi.stop.name}</td><td>${Math.round(r.navi.legs.waitMin)}분</td>` +
+      `<td>${r.ours.stop.name}</td><td>${Math.round(r.ours.legs.waitMin)}분</td><td style="color:var(--good)">${Math.round(r.navi.totalMin - r.ours.totalMin)}분</td></tr>`).join("");
+  $("all").disabled = false;
+}
+
+$("run").onclick = run;
+$("all").onclick = runAll;
+$("play").onclick = () => last && animate(last);
+loadDays();
+</script>
+</body>
+</html>
