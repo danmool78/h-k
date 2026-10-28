@@ -1,8 +1,9 @@
 /**
  * 관리자 페이지용 callable 함수. Google 로그인 + 이메일 허용 목록으로 보호.
  */
+import { logger } from "firebase-functions";
 import { defineString } from "firebase-functions/params";
-import { CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
+import { CallableOptions, CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 import {
   addUsage, daysUntil, getApiKeyConfig, getSyncState, getUsage, maskKey, saveApiKeyConfig,
 } from "./config";
@@ -22,7 +23,20 @@ function requireAdmin(req: CallableRequest): string {
   return email;
 }
 
-export const adminGetStatus = onCall(async (req) => {
+/** 예상 못 한 오류도 화면에 이유가 보이도록 HttpsError 로 감싼다. */
+function adminCall<T>(opts: CallableOptions, handler: (req: CallableRequest) => Promise<T>) {
+  return onCall(opts, async (req: CallableRequest) => {
+    try {
+      return await handler(req);
+    } catch (e) {
+      if (e instanceof HttpsError) throw e;
+      logger.error(e);
+      throw new HttpsError("internal", `서버 오류: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300));
+    }
+  });
+}
+
+export const adminGetStatus = adminCall({}, async (req) => {
   requireAdmin(req);
   const [key, sync, usageToday] = await Promise.all([getApiKeyConfig(), getSyncState(), getUsage()]);
   return {
@@ -39,7 +53,7 @@ export const adminGetStatus = onCall(async (req) => {
   };
 });
 
-export const adminSetKey = onCall(async (req) => {
+export const adminSetKey = adminCall({}, async (req) => {
   const email = requireAdmin(req);
   const key = String(req.data?.key ?? "").trim();
   const expiresAt = String(req.data?.expiresAt ?? "").trim();
@@ -58,7 +72,7 @@ export const adminSetKey = onCall(async (req) => {
   return { masked: maskKey(key), expiresAt, daysLeft: daysUntil(expiresAt) };
 });
 
-export const adminRunSync = onCall({ timeoutSeconds: 540, memory: "2GiB" }, async (req) => {
+export const adminRunSync = adminCall({ timeoutSeconds: 540, memory: "2GiB" }, async (req) => {
   requireAdmin(req);
   const which = req.data?.which;
   if (which === "stations") return syncStationsNow();
