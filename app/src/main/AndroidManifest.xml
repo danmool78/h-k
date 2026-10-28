@@ -19,6 +19,10 @@
     <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />
     <!-- H-Y Server 충전소 조회 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 주행 중 충전 경유지 감시 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"
@@ -36,6 +40,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".watch.ChargeWatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Gleo AI 음성 호출 (assets/schema.json, component = service). action = 함수 이름 -->
         <receiver

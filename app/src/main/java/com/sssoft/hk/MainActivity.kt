@@ -1,5 +1,7 @@
 package com.sssoft.hk
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,6 +13,7 @@ import com.sssoft.hk.ui.RangeScreen
 import com.sssoft.hk.trip.TripPrefs
 import com.sssoft.hk.ui.RangeViewModel
 import com.sssoft.hk.vehicle.BatterySource
+import com.sssoft.hk.watch.ChargeWatchService
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -36,6 +39,11 @@ class MainActivity : ComponentActivity() {
                 RangeScreen(viewModel)
             }
         }
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        }
+        // 백그라운드(Gleo)에서 시작이 막혔던 경유지 감시를 이어서 시작
+        ChargeWatchService.resumeIfNeeded(this)
     }
 
     override fun onDestroy() {

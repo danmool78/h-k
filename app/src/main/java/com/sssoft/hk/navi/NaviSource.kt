@@ -9,6 +9,8 @@ import ai.pleos.playground.navi.data.DestinationInfo
 import ai.pleos.playground.navi.data.RequestWaypointInfo
 import ai.pleos.playground.navi.data.TripInfo
 import ai.pleos.playground.navi.data.TripRequest
+import ai.pleos.playground.navi.data.WaypointArrivedInfo
+import ai.pleos.playground.navi.data.WaypointInfo
 import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
 import android.content.Context
@@ -47,7 +49,11 @@ class NaviSource(context: Context) {
         class Dest(val d: CompletableDeferred<DestinationInfo?>) : Pending
         class Loc(val d: CompletableDeferred<CurrentLocationInfo?>) : Pending
         class TripP(val d: CompletableDeferred<TripInfo?>) : Pending
+        class Waypoints(val d: CompletableDeferred<List<WaypointInfo>?>) : Pending
     }
+
+    /** 경유지 도착 이벤트 (감시 서비스가 구독). */
+    var onWaypointArrived: (() -> Unit)? = null
 
     private val listener = object : NaviHelperEventListener {
         override fun onDestinationInfo(info: DestinationInfo) {
@@ -62,11 +68,20 @@ class NaviSource(context: Context) {
             (pending as? Pending.TripP)?.d?.complete(info)
         }
 
+        override fun onWayPointInfo(info: List<WaypointInfo>) {
+            (pending as? Pending.Waypoints)?.d?.complete(info)
+        }
+
+        override fun onWayPointArrived(info: WaypointArrivedInfo) {
+            onWaypointArrived?.invoke()
+        }
+
         override fun onError(code: NaviErrorCode) {
             when (val p = pending) {
                 is Pending.Dest -> p.d.complete(null)
                 is Pending.Loc -> p.d.complete(null)
                 is Pending.TripP -> p.d.complete(null)
+                is Pending.Waypoints -> p.d.complete(null)
                 null -> Unit
             }
         }
@@ -125,6 +140,25 @@ class NaviSource(context: Context) {
                 )
             }
         return Trip(info.distance / 1000.0, info.eta / 60.0, info.estimatedSocAtDest, chargers)
+    }
+
+    /**
+     * [location] 근처(약 300m)의 경유지를 지운다. 내비 API는 순번(첫째/둘째)으로만 지울 수 있어
+     * 현재 경유지 목록에서 위치를 찾아 순번으로 바꾼다. 지웠으면 true.
+     */
+    suspend fun removeWaypointNear(location: LatLng, timeoutMs: Long = 1_500): Boolean {
+        val d = CompletableDeferred<List<WaypointInfo>?>()
+        val list = await(Pending.Waypoints(d), d, timeoutMs) { navi.getWaypointInfo() } ?: return false
+        val idx = list.indexOfFirst {
+            kotlin.math.abs(it.latitude - location.lat) < 0.003 && kotlin.math.abs(it.longitude - location.lng) < 0.003
+        }
+        val which = when (idx) {
+            0 -> WaypointIndex.FIRST
+            1 -> WaypointIndex.SECOND
+            else -> return false
+        }
+        navi.removeWaypoint(which)
+        return true
     }
 
     fun addChargingWaypoint(name: String, location: LatLng) {

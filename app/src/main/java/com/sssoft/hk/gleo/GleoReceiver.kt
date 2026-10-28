@@ -11,6 +11,7 @@ import com.sssoft.hk.trip.TripConditions
 import com.sssoft.hk.trip.TripPlanner
 import com.sssoft.hk.trip.TripPrefs
 import com.sssoft.hk.vehicle.BatteryReader
+import com.sssoft.hk.watch.ChargeWatchService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -55,7 +56,7 @@ class GleoReceiver : BroadcastReceiver() {
             if (!navi.connect()) return GleoResult.fail(fn, "Could not connect to the navigation.")
             return when (fn) {
                 CHECK_ARRIVAL_CHANCE -> checkArrival(navi, cond)
-                RECOMMEND_CHARGING_STOP -> recommend(navi, cond, params.optBoolean("addAsWaypoint", false))
+                RECOMMEND_CHARGING_STOP -> recommend(context, navi, cond, params.optBoolean("addAsWaypoint", false))
                 else -> findNearby(navi, params.optDouble("minPowerKw", 0.0))
             }
         } finally {
@@ -83,7 +84,7 @@ class GleoReceiver : BroadcastReceiver() {
         )
     }
 
-    private suspend fun recommend(navi: NaviSource, c: TripConditions, addAsWaypoint: Boolean): GleoResult {
+    private suspend fun recommend(context: Context, navi: NaviSource, c: TripConditions, addAsWaypoint: Boolean): GleoResult {
         val dest = navi.destination()
             ?: return GleoResult.asking(RECOMMEND_CHARGING_STOP, "No destination is set. Please set a destination in the navigation first.")
         val origin = navi.currentLocation()
@@ -104,7 +105,10 @@ class GleoReceiver : BroadcastReceiver() {
             is ChargePlanResult.Plan -> {
                 val best = r.best!!
                 val s = best.station
-                if (addAsWaypoint) navi.addChargingWaypoint(s.name, s.location)
+                if (addAsWaypoint) {
+                    navi.addChargingWaypoint(s.name, s.location)
+                    ChargeWatchService.start(context, s.id, s.name, s.location)
+                }
                 val wait = best.waitMin.roundToInt()
                 val saved = r.savedMin?.roundToInt()?.takeIf { it > 0 }
                 val savedText = saved?.let { " This saves about $it minutes compared with the navigation's suggestion." } ?: ""

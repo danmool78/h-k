@@ -12,6 +12,7 @@ import com.sssoft.hk.trip.ChargingRecommendation
 import com.sssoft.hk.trip.TripConditions
 import com.sssoft.hk.trip.TripPlanner
 import com.sssoft.hk.vehicle.BatteryState
+import com.sssoft.hk.watch.ChargeWatchService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -105,6 +106,7 @@ class RangeViewModel(app: Application) : AndroidViewModel(app) {
         val best = s.recommendation?.best ?: return
         if (s.source != RouteSource.NAVI) return
         navi.addChargingWaypoint(best.station.name, best.station.location)
+        ChargeWatchService.start(getApplication(), best.station.id, best.station.name, best.station.location)
         _ui.update { it.copy(waypointAdded = true) }
     }
 
