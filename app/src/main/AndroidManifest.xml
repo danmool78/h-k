@@ -17,6 +17,8 @@
     <!-- Vehicle SDK: EvBattery (CAR_ENERGY), Odometer (CAR_DRIVE) -->
     <uses-permission android:name="pleos.car.permission.CAR_ENERGY" />
     <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />
+    <!-- H-Y Server 충전소 조회 -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="false"
@@ -34,6 +36,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Gleo AI 음성 호출 (assets/schema.json, component = service). action = 함수 이름 -->
+        <receiver
+            android:name=".gleo.GleoReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="CHECK_ARRIVAL_CHANCE" />
+                <action android:name="RECOMMEND_CHARGING_STOP" />
+                <action android:name="FIND_NEARBY_CHARGER" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

@@ -14,6 +14,8 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        buildConfigField("String", "SERVER_URL", "\"https://asia-northeast3-h-y-server.cloudfunctions.net/api\"")
     }
 
     buildTypes {
@@ -28,6 +30,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -49,6 +52,8 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(libs.pleos.vehicle)
+    implementation(libs.pleos.navihelper)
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)   // 단위 테스트에서 android org.json 스텁 대체
 }
