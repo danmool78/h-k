@@ -10,8 +10,11 @@ import { takeCallCount } from "./evApi";
 import { OccupancyMap, recordOccupancy } from "./occupancy";
 import { PROVIDERS } from "./providers";
 import { StationMap, StatusMap } from "./providers/types";
-import { LAG_FILE, OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson, writeJson } from "./storage";
+import {
+  LAG_FILE, OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, deletePrefix, listNames, readJson, writeBuffer, writeJson,
+} from "./storage";
 import { LagMap, ValidationMap, validateAndShift } from "./validation";
+import { KEEP_DAYS, encodeTick, orderVersion, restAreaOrder, tickName } from "./history";
 
 async function run(kind: "stations" | "status", job: () => Promise<{ message: string; count: number }>): Promise<SyncResult> {
   takeCallCount();
@@ -83,7 +86,29 @@ async function syncStationsJob(): Promise<{ message: string; count: number }> {
   }
   await writeJson(STATIONS_FILE, stations);
   await writeJson(STATUS_FILE, statuses);
+  const removed = await cleanupHistory().catch((e) => { logger.warn("이력 정리 실패", e); return 0; });
+  if (removed) parts.push(`오래된 이력 ${removed}개 삭제`);
   return { count: Object.keys(stations).length, message: `급속 충전소 ${Object.keys(stations).length}곳 / ${Object.keys(statuses).length}대 · ${parts.join(" · ")}` };
+}
+
+/** 휴게소 충전기 상태를 이력으로 저장 (실데이터 재현용). 반환: 기록한 충전기 수 */
+async function recordHistory(stations: StationMap, statuses: StatusMap, now: number): Promise<number> {
+  const order = restAreaOrder(stations);
+  const ver = orderVersion(order);
+  const indexName = `history/index/${ver}.json`;
+  if (!(await readJson<string[]>(indexName))) await writeJson(indexName, order);
+  const { day, time } = tickName(now);
+  await writeBuffer(`history/${day}/${time}-${ver}.bin`, encodeTick(order, statuses, now));
+  return order.length;
+}
+
+/** [KEEP_DAYS] 보다 오래된 이력 삭제 */
+async function cleanupHistory(): Promise<number> {
+  const cutoff = tickName(Date.now() - KEEP_DAYS * 86_400_000).day;
+  const days = new Set((await listNames("history/2")).map((n) => n.split("/")[1]));
+  let n = 0;
+  for (const d of days) if (d < cutoff) n += await deletePrefix(`history/${d}/`);
+  return n;
 }
 
 /** 모든 출처의 상태 변경분 반영 + 혼잡도 통계 갱신 + 예측 검증. */
@@ -115,6 +140,8 @@ export function syncStatusNow(): Promise<SyncResult> {
 
     const m = recordOccupancy(occ, stations, statuses, now);
     await writeJson(OCCUPANCY_FILE, occ);
-    return { count: applied, message: `변경 ${total}건 중 급속 ${applied}건 반영, 혼잡도 ${m}곳 갱신, 예측 검증 ${v}곳` };
+
+    const h = await recordHistory(stations, statuses, now);
+    return { count: applied, message: `변경 ${total}건 중 급속 ${applied}건 반영, 혼잡도 ${m}곳 갱신, 예측 검증 ${v}곳, 이력 ${h}대` };
   });
 }

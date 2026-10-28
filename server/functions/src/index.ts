@@ -10,6 +10,9 @@
  *                   GET  /health
  *                   POST /route/chargers { origin, dest, departOffsetMin? }  도로 경로(OSRM) + 경로를 따라 있는 충전소 후보
  *                   POST /weather/route { points: [{lat, lng, etaMin?}] }  지점별 도착 시각 날씨 + 경로 대표값 (Open-Meteo)
+ *                   GET  /restareas      전국 휴게소 충전소 실시간 상태 (혼잡 지도)
+ *                   GET  /history/days   휴게소 충전기 상태 이력이 있는 날짜·시각
+ *                   POST /history/series { day, from, to, stationIds }  기록된 상태 변화 (실데이터 재현)
  *                   GET  /validation  혼잡 예측 검증 (이력 예측 vs 1시간 전 상태 유지 예측, 만차 예측 정밀도·재현율)
  *  - admin*       : 관리자 페이지(public/admin)용. API 키 관리, 수집 상태, 수동 실행
  *
@@ -21,11 +24,12 @@ import { setGlobalOptions } from "firebase-functions/v2";
 import { onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { StationMap, StationView, StatusMap, migrateStationKeys, nearby, stationView, upgradeLegacy } from "./chargers";
-import { detourMin, osrm, pickCandidates, routeCached, simplifyShape, stationsAlongRoute } from "./routing";
+import { detourMin, isRestArea, osrm, pickCandidates, routeCached, simplifyShape, stationsAlongRoute } from "./routing";
 import { daysUntil, getApiKeyConfig, getSyncState } from "./config";
 import { OccupancyMap, forecast } from "./occupancy";
-import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, readJson } from "./storage";
+import { OCCUPANCY_FILE, STATIONS_FILE, STATUS_FILE, VALIDATION_FILE, listNames, readBuffer, readJson } from "./storage";
 import { ValidationMap, summarize } from "./validation";
+import { decodeTick, tickEpoch } from "./history";
 import { summarizeRoute, weatherAt } from "./weather";
 import { syncStationsNow, syncStatusNow } from "./sync";
 
@@ -76,6 +80,16 @@ async function snapshot() {
   if (occ) migrateStationKeys(occ);
   cache = { at: Date.now(), stations: stations ?? {}, statuses: statuses ?? {}, occ: occ ?? {} };
   return cache;
+}
+
+const indexCache = new Map<string, string[]>();
+async function historyIndex(ver: string): Promise<string[] | null> {
+  if (!indexCache.has(ver)) {
+    const order = await readJson<string[]>(`history/index/${ver}.json`);
+    if (!order) return null;
+    indexCache.set(ver, order);
+  }
+  return indexCache.get(ver)!;
 }
 
 function withForecast(v: StationView, occ: OccupancyMap, now: number, etaMin: number | undefined) {
@@ -171,6 +185,79 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
       }
       const ws = await weatherAt(points.map((p) => ({ lat: p.lat, lng: p.lng, at: now + (num(p.etaMin, 0)! * 60_000) })));
       res.json({ points: ws, route: summarizeRoute(ws), attribution: "Weather data by Open-Meteo.com" });
+      return;
+    }
+
+    if (req.method === "GET" && path === "/restareas") {
+      const s = await snapshot();
+      const list = Object.values(s.stations).filter((st) => isRestArea(st.name)).map((st) => {
+        const v = stationView(st, s.statuses, now, 0);
+        return {
+          id: v.id, name: v.name, lat: v.lat, lng: v.lng, maxKw: v.maxKw, total: v.total,
+          available: v.available, charging: v.charging, outOfService: v.outOfService, waitMin: v.waitMin,
+          forecast: forecast(s.occ, v.id, now),
+        };
+      });
+      const inService = list.filter((r) => r.total - r.outOfService > 0);
+      res.json({
+        at: now,
+        summary: {
+          restAreas: list.length, inService: inService.length,
+          full: inService.filter((r) => r.available === 0).length,
+          chargers: inService.reduce((a, r) => a + r.total - r.outOfService, 0),
+          availableChargers: inService.reduce((a, r) => a + r.available, 0),
+        },
+        stations: list,
+      });
+      return;
+    }
+
+    if (req.method === "GET" && path === "/history/days") {
+      const names = await listNames("history/2");
+      const days: Record<string, string[]> = {};
+      for (const n of names) {
+        const [, day, file] = n.split("/");
+        (days[day] ??= []).push(file.slice(0, 4));
+      }
+      for (const d of Object.keys(days)) days[d] = [...new Set(days[d])].sort();
+      res.json({ days });
+      return;
+    }
+
+    if (req.method === "POST" && path === "/history/series") {
+      const day = String(req.body?.day ?? "");
+      const from = String(req.body?.from ?? "0000");
+      const to = String(req.body?.to ?? "2359");
+      const ids: string[] = req.body?.stationIds ?? [];
+      if (!/^\d{8}$/.test(day) || !Array.isArray(ids) || ids.length === 0 || ids.length > 80) {
+        res.status(400).json({ error: "day(yyyyMMdd), stationIds(1~80) 필요" });
+        return;
+      }
+      const s = await snapshot();
+      const files = (await listNames(`history/${day}/`)).filter((n) => {
+        const t = n.split("/")[2].slice(0, 4);
+        return t >= from && t <= to;
+      }).sort();
+      const ticks = [];
+      for (const name of files) {
+        const [, , file] = name.split("/");
+        const time = file.slice(0, 4);
+        const ver = file.slice(5, -4);
+        const order = await historyIndex(ver);
+        const buf = await readBuffer(name);
+        if (!order || !buf) continue;
+        const at = tickEpoch(day, time);
+        const st = decodeTick(order, buf, at);
+        const stations: Record<string, { available: number; inService: number; waitMin: number | null }> = {};
+        for (const id of ids) {
+          const station = s.stations[id];
+          if (!station) continue;
+          const v = stationView(station, st, at, 0);
+          stations[id] = { available: v.available, inService: v.total - v.outOfService, waitMin: v.waitMin };
+        }
+        ticks.push({ time, at, stations });
+      }
+      res.json({ day, ticks });
       return;
     }
 
