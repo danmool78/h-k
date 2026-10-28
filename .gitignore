@@ -43,3 +43,8 @@ xcuserdata/
 
 # Kotlin
 .kotlin/
+
+# Firebase
+server/functions/lib/
+.firebase/
+firebase-debug.log
