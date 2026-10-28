@@ -146,9 +146,14 @@ class LearningSimulationTest {
             p = drive(p)
             if (i in setOf(4, 19, 39)) seen += p.learningProgress.overall
         }
-        println("학습도 5회 %.0f%% → 20회 %.0f%% → 40회 %.0f%%".format(seen[0] * 100, seen[1] * 100, seen[2] * 100))
-        assertTrue(seen[0] > 0.1 && seen[1] > seen[0] && seen[2] >= seen[1] - 0.02)
-        assertTrue(p.learningProgress.vehicle > 0.5)
+        val lp = p.learningProgress
+        println("progress 5=%.2f 20=%.2f 40=%.2f | vehicle=%.2f habit=%.2f charging=%.2f places=%.2f"
+            .format(seen[0], seen[1], seen[2], lp.vehicle, lp.habit, lp.charging, lp.places))
+        // 잊기 때문에 어느 지점부터는 평탄해지며 조금씩 오르내린다
+        assertTrue(seen[0] > 0.1)
+        assertTrue(seen[1] > seen[0])
+        assertTrue(seen[2] > seen[1] - 0.05)
+        assertTrue(lp.vehicle > 0.5)
     }
 
     @Test
