@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.update
 data class CarStatus(
     val connected: Boolean = false,
     val freshAir: Boolean = false,
+    /** 먼지 나는 길: 내부 순환 + 공기청정 */
+    val dustGuard: Boolean = false,
     /** 열어 둔 창문과 열린 정도 (%) */
     val openWindows: Map<Window, Int> = emptyMap(),
     /** 마지막으로 한 조치 (예: "외기 유입 · 에어컨 · 22→20℃") */
@@ -65,12 +67,14 @@ class CarLink(context: Context) {
     private var windowBounds: Map<Window, Pair<Int, Int>> = emptyMap()
     private var hvacRecircAreas: List<SeatArea> = emptyList()
     private var hvacAcAreas: List<SeatArea> = emptyList()
+    private var hvacCleanerAreas: List<SeatArea> = emptyList()
     private var hvacTempBounds: Map<SeatArea, Pair<Float, Float>> = emptyMap()
     private var hvacFanBounds: Map<SeatArea, Pair<Int, Int>> = emptyMap()
 
     // 되돌릴 값
     private val savedRecirc = mutableMapOf<SeatArea, Boolean>()
     private val savedAc = mutableMapOf<SeatArea, Boolean>()
+    private val savedCleaner = mutableMapOf<SeatArea, Boolean>()
     private val savedTemp = mutableMapOf<SeatArea, Float>()
     private val savedFan = mutableMapOf<SeatArea, Int>()
     private val savedWindow = mutableMapOf<Window, Int>()
@@ -197,6 +201,7 @@ class CarLink(context: Context) {
         val hvac = vehicle.getHVAC()
         hvac.checkHvacRecirculationCapabilities({ _, areas -> hvacRecircAreas = areas }, { e -> warn("내외기 전환 미지원", e) })
         hvac.checkHvacAcCapabilities({ _, areas -> hvacAcAreas = areas }, { e -> warn("에어컨 제어 미지원", e) })
+        hvac.checkHvacAirCleanerCapabilities({ _, areas -> hvacCleanerAreas = areas }, { e -> warn("공기청정 미지원", e) })
         hvac.checkHvacTemperatureCapabilities({ _, map ->
             hvacTempBounds = map.mapNotNull { (a, b) ->
                 val lo = b.minValue ?: return@mapNotNull null
@@ -230,7 +235,7 @@ class CarLink(context: Context) {
         } else {
             listOf("공조 원래대로")
         }
-        _status.update { it.copy(freshAir = on, lastAction = parts.joinToString(" · ").ifEmpty { null }) }
+        _status.update { it.copy(freshAir = on, dustGuard = false, lastAction = parts.joinToString(" · ").ifEmpty { null }) }
         if (on) {
             for (a in hvacRecircAreas) {
                 hvac.getHvacRecirculationState(a, { v -> if (v != null) savedRecirc[a] = v; hvac.setHvacRecirculation(a, false, { _, _ -> }, { e -> warn("외기 전환 실패", e) }) }, { e -> warn("내외기 조회 실패", e) })
@@ -259,10 +264,34 @@ class CarLink(context: Context) {
         } else {
             savedRecirc.forEach { (a, v) -> hvac.setHvacRecirculation(a, v, { _, _ -> }, { e -> warn("내외기 복원 실패", e) }) }
             savedAc.forEach { (a, v) -> hvac.setHvacAc(a, v, { _, _ -> }, { e -> warn("에어컨 복원 실패", e) }) }
+            savedCleaner.forEach { (a, v) -> hvac.setHvacAirCleaner(a, v, { _, _ -> }, { e -> warn("공기청정 복원 실패", e) }) }
             savedTemp.forEach { (a, v) -> hvac.setHvacTemperature(a, v, TemperatureUnit.CELSIUS, { _, _ -> }, { e -> warn("온도 복원 실패", e) }) }
             savedFan.forEach { (a, v) -> hvac.setHvacFanSpeed(a, v, { _, _ -> }, { e -> warn("풍량 복원 실패", e) }) }
-            savedRecirc.clear(); savedAc.clear(); savedTemp.clear(); savedFan.clear()
+            savedRecirc.clear(); savedAc.clear(); savedCleaner.clear(); savedTemp.clear(); savedFan.clear()
         }
+    }
+
+    /**
+     * 먼지 나는 길: 외기 유입을 내부 순환으로 되돌리고 공기청정을 켠다 (에어컨·온도는 그대로).
+     * 환기를 끌 때 [freshAir] (false) 가 처음 값으로 함께 되돌린다.
+     */
+    fun dustGuard() = safe("공조 제어") {
+        val hvac = vehicle.getHVAC()
+        for (a in hvacRecircAreas) {
+            if (a !in savedRecirc) hvac.getHvacRecirculationState(a, { v -> if (v != null) savedRecirc.putIfAbsent(a, v) }, { e -> warn("내외기 조회 실패", e) })
+            hvac.setHvacRecirculation(a, true, { _, _ -> }, { e -> warn("내부 순환 실패", e) })
+        }
+        for (a in hvacCleanerAreas) {
+            hvac.getHvacAirCleanerState(a, { v ->
+                if (v != null) savedCleaner.putIfAbsent(a, v)
+                hvac.setHvacAirCleaner(a, true, { _, _ -> }, { e -> warn("공기청정 실패", e) })
+            }, { e -> warn("공기청정 조회 실패", e) })
+        }
+        val parts = listOfNotNull(
+            "내부 순환".takeIf { hvacRecircAreas.isNotEmpty() },
+            "공기청정".takeIf { hvacCleanerAreas.isNotEmpty() },
+        )
+        _status.update { it.copy(dustGuard = true, lastAction = parts.joinToString(" · ").ifEmpty { "공조 제어를 지원하지 않는 차량" }) }
     }
 
     // ---- 창문 ----

@@ -50,6 +50,8 @@ data class UiState(
     /** 마지막 음성 안내 */
     val lastSaid: String? = null,
     val raining: Boolean = false,
+    /** 창문을 열지 묻는 중이면 그 창문들 */
+    val askWindows: List<com.sssoft.chalrang.core.Window>? = null,
 )
 
 /**
@@ -74,6 +76,7 @@ class ChalrangViewModel(app: Application) : AndroidViewModel(app) {
 
     private var demo: Demo? = null
     private var sickPending = false
+    private var windowAnswer: Boolean? = null
 
     private class Demo(val scenario: DriveScenario, val frames: Iterator<Frame>) {
         var frame: Frame? = null
@@ -135,7 +138,7 @@ class ChalrangViewModel(app: Application) : AndroidViewModel(app) {
             input = CareInput(
                 nowSec = frame.t, setup = setup, dose = cup.dose, spillStarted = spillStarted,
                 speedKmh = frame.speedKmh, raining = frame.raining || car.raining.value,
-                next = frame.next, restAreaKm = frame.restAreaKm, sickNow = takeSick(),
+                next = frame.next, restAreaKm = frame.restAreaKm, sickNow = takeSick(), windowAnswer = takeAnswer(),
             )
             if (!d.frames.hasNext()) {
                 stopDemo()
@@ -151,7 +154,7 @@ class ChalrangViewModel(app: Application) : AndroidViewModel(app) {
             input = CareInput(
                 nowSec = now, setup = setup, dose = cup.dose, spillStarted = cup.spillCount > before,
                 speedKmh = motion.speedKmh, raining = car.raining.value,
-                next = ahead.next, restAreaKm = ahead.restAreaKm, sickNow = takeSick(),
+                next = ahead.next, restAreaKm = ahead.restAreaKm, sickNow = takeSick(), windowAnswer = takeAnswer(),
             )
         }
         perform(policy.decide(input))
@@ -173,6 +176,8 @@ class ChalrangViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun takeSick(): Boolean = sickPending.also { sickPending = false }
 
+    private fun takeAnswer(): Boolean? = windowAnswer.also { windowAnswer = null }
+
     private fun perform(actions: List<CareAction>) {
         for (a in actions) {
             when (a) {
@@ -184,6 +189,9 @@ class ChalrangViewModel(app: Application) : AndroidViewModel(app) {
                 is CareAction.FreshAir -> car.freshAir(a.on)
                 is CareAction.OpenWindows -> car.openWindows(a.windows, a.percent)
                 CareAction.CloseWindows -> car.closeWindows()
+                is CareAction.AskWindow -> _ui.update { it.copy(askWindows = a.windows) }
+                CareAction.AskDone -> _ui.update { it.copy(askWindows = null) }
+                CareAction.DustGuard -> car.dustGuard()
             }
         }
     }
@@ -206,6 +214,11 @@ class ChalrangViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { it.copy(lastSaid = text) }
         }
         sickPending = true
+    }
+
+    /** 창문 질문에 답: true = 열기, false = 열지 않기 (먼지 나는 길) */
+    fun answerWindow(open: Boolean) {
+        windowAnswer = open
     }
 
     fun addChild(name: String, seat: Seat) {
@@ -240,6 +253,8 @@ class ChalrangViewModel(app: Application) : AndroidViewModel(app) {
         if (policy.windowsOpen) car.closeWindows()
         if (policy.ventilating) car.freshAir(false)
         policy = CarePolicy()
+        windowAnswer = null
+        _ui.update { it.copy(askWindows = null) }
         cup.reset()
         log.clear()
     }

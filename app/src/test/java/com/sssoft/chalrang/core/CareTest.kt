@@ -48,18 +48,25 @@ class CarePolicyTest {
     private val minji = Child("1", "민지", Seat.REAR_LEFT, level = 0.7)
     private val setup = CupSetup.choose(mapOf(Seat.REAR_LEFT to SeatState(true, true)), listOf(minji))
 
-    private fun input(t: Double, dose: Double, spill: Boolean = false, kmh: Double? = 50.0, raining: Boolean = false, rest: Double? = null, next: Upcoming? = null) =
-        CareInput(t, setup, dose, spill, kmh, raining, next, rest)
+    private fun input(
+        t: Double, dose: Double, spill: Boolean = false, kmh: Double? = 50.0, raining: Boolean = false,
+        rest: Double? = null, next: Upcoming? = null, answer: Boolean? = null,
+    ) = CareInput(t, setup, dose, spill, kmh, raining, next, rest, windowAnswer = answer)
 
     @Test
-    fun `자주 넘치면 외기 유입과 아이 옆 창문, 회복되면 원래대로`() {
+    fun `자주 넘치면 외기 유입, 창문은 물어보고 연다, 회복되면 원래대로`() {
         val p = CarePolicy()
         var t = 0.0
         val acts = mutableListOf<CareAction>()
-        repeat(4) { acts += p.decide(input(t, 0.3, spill = true)); t += 20 }
+        repeat(4) { acts += p.decide(input(t, 0.3, spill = true)); t += 5 }
         assertTrue(acts.contains(CareAction.Chime))
         assertTrue(acts.contains(CareAction.FreshAir(true)))
-        assertTrue(acts.contains(CareAction.OpenWindows(listOf(Window.REAR_LEFT), CarePolicy.WINDOW_PERCENT)))
+        assertTrue(acts.contains(CareAction.AskWindow(listOf(Window.REAR_LEFT))))
+        assertTrue("묻기만 하고 아직 안 연다", acts.none { it is CareAction.OpenWindows })
+
+        val yes = p.decide(input(t, 0.3, answer = true))
+        assertTrue(yes.contains(CareAction.AskDone))
+        assertTrue(yes.contains(CareAction.OpenWindows(listOf(Window.REAR_LEFT), CarePolicy.WINDOW_PERCENT)))
         assertTrue(p.ventilating && p.windowsOpen)
 
         // 3분 넘게 안 넘치고 누적이 내려가면 되돌림
@@ -76,11 +83,32 @@ class CarePolicyTest {
         assertTrue(rain.none { it is CareAction.OpenWindows })
 
         val p = CarePolicy()
-        assertTrue(p.decide(input(0.0, 0.55, kmh = 110.0)).none { it is CareAction.OpenWindows })
-        // 속도가 내려가면 그때 연다
-        assertTrue(p.decide(input(10.0, 0.55, kmh = 60.0)).any { it is CareAction.OpenWindows })
-        // 다시 고속이면 닫는다
+        assertTrue(p.decide(input(0.0, 0.55, kmh = 110.0)).none { it is CareAction.OpenWindows || it is CareAction.AskWindow })
+        // 속도가 내려가면 그때 묻고, 허락하면 연다
+        assertTrue(p.decide(input(10.0, 0.55, kmh = 60.0)).any { it is CareAction.AskWindow })
+        assertTrue(p.decide(input(12.0, 0.55, kmh = 60.0, answer = true)).any { it is CareAction.OpenWindows })
+        // 다시 고속이면 닫고, 느려지면 (이미 허락했으니) 묻지 않고 다시 연다
         assertTrue(p.decide(input(20.0, 0.55, kmh = 100.0)).contains(CareAction.CloseWindows))
+        val again = p.decide(input(30.0, 0.55, kmh = 60.0))
+        assertTrue(again.any { it is CareAction.OpenWindows } && again.none { it is CareAction.AskWindow })
+    }
+
+    @Test
+    fun `먼지 나는 길이라 안 연다고 하면 내부 순환·공기청정, 다시 묻지 않는다`() {
+        val p = CarePolicy()
+        assertTrue(p.decide(input(0.0, 0.55)).any { it is CareAction.AskWindow })
+        val no = p.decide(input(3.0, 0.55, answer = false))
+        assertTrue(no.contains(CareAction.DustGuard) && no.contains(CareAction.AskDone))
+        assertTrue(no.none { it is CareAction.OpenWindows })
+        assertTrue(p.decide(input(60.0, 0.55)).none { it is CareAction.AskWindow || it is CareAction.OpenWindows })
+    }
+
+    @Test
+    fun `답이 없으면 열지 않는다`() {
+        val p = CarePolicy()
+        p.decide(input(0.0, 0.55))
+        assertTrue(p.decide(input(CarePolicy.ASK_TIMEOUT + 1, 0.55)).contains(CareAction.AskDone))
+        assertFalse(p.windowsOpen)
     }
 
     @Test
@@ -108,7 +136,8 @@ class CarePolicyTest {
         p.decide(input(0.0, 0.6))
         val alone = CupSetup.choose(emptyMap(), emptyList())
         val a = p.decide(CareInput(5.0, alone, 0.6, false, 50.0))
-        assertTrue(a.contains(CareAction.CloseWindows) && a.contains(CareAction.FreshAir(false)))
+        // 묻던 질문도 내린다
+        assertTrue(a.contains(CareAction.AskDone) && a.contains(CareAction.FreshAir(false)))
     }
 
     @Test

@@ -72,6 +72,7 @@ fun MainScreen(vm: ChalrangViewModel) {
                 Text("“$it”", color = Dim, fontSize = 17.sp, lineHeight = 24.sp)
             }
             Spacer(Modifier.weight(1f))
+            s.askWindows?.let { AskWindowCard(it, vm) }
             Button(
                 onClick = vm::sickNow,
                 enabled = s.setup.active,
@@ -116,6 +117,7 @@ private fun CarCard(s: UiState) = Card {
     Text("차량", color = Dim, fontSize = 15.sp)
     val car = s.car
     when {
+        car.dustGuard -> Text("먼지 차단 중", color = Color(0xFFFFCC80), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         car.freshAir -> Text("환기 중", color = Color(0xFF81D4FA), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         else -> Text(if (car.connected) "평소대로" else "차량 연결 안 됨", color = Color.White, fontSize = 20.sp)
     }
@@ -124,6 +126,20 @@ private fun CarCard(s: UiState) = Card {
     }
     if (s.raining) Text("비 · 창문은 닫아 둬요", color = Dim, fontSize = 15.sp)
     car.lastAction?.let { Text(it, color = Dim, fontSize = 15.sp) }
+}
+
+/** 창문을 열지 묻기. 운전 중에도 누르기 쉽게 크게, 동승자가 눌러도 된다 */
+@Composable
+private fun AskWindowCard(windows: List<com.sssoft.chalrang.core.Window>, vm: ChalrangViewModel) = Card {
+    Text(windows.joinToString { CarLink.windowLabel(it) } + " 창문을 조금 열까요?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Button(onClick = { vm.answerWindow(true) }, modifier = Modifier.weight(1f).height(64.dp)) {
+            Text("열기", fontSize = 22.sp)
+        }
+        OutlinedButton(onClick = { vm.answerWindow(false) }, modifier = Modifier.weight(1f).height(64.dp)) {
+            Text("먼지 · 닫아 두기", fontSize = 18.sp)
+        }
+    }
 }
 
 @Composable
