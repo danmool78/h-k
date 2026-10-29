@@ -38,7 +38,7 @@ private val GlassEdge = Color(0xE6FFFFFF)
  *
  * 컵은 원뿔대(아래 반지름 [RB], 위 [RT], 높이 [H]), 물은 기울어진 평면 수면으로 자른 부피다.
  * 수면 기울기 = 물컵 모델의 기울기(g) × [k], k 는 모델에서 넘치는 순간 수면이 정확히 컵 가장자리에 닿도록 정한다
- * (WaterCup: 여유 = (1-물 높이)×0.5g, 여기: 가장자리 높이 차 = 반지름×기울기×k → k = 2H/RT).
+ * (WaterCup: 넘치는 기울기 = (1-물 높이)×MAX_FREEBOARD, 여기: 가장자리 높이 차 = 반지름×기울기×k → k = H/(RT×MAX_FREEBOARD)).
  * 수면과 컵 벽이 만나는 선은 원뿔 벽 위에서 정확히 풀고, 넘친 물방울은 포물선으로 떨어진다.
  *
  * 앞뒤 기울기: 브레이크를 밟으면(+) 물이 앞(화면 안쪽)으로, 좌우 기울기: 왼쪽으로 돌면(-) 물이 오른쪽으로 쏠린다.
@@ -126,7 +126,8 @@ private const val CONE = (RT - RB) / H
 
 /** 모델 기울기(g) → 수면 경사 (dz/dx, dz/dy). x 오른쪽, y 앞(화면 안쪽) */
 private fun slope(tiltX: Double, tiltY: Double): Pair<Double, Double> {
-    val k = 2.0 * H / RT * (WaterCup.MAX_FREEBOARD / 0.5)
+    // 넘치는 기울기 (1-물 높이)×여유 에서 가장자리 높이 차 (1-물 높이)×H 가 되도록
+    val k = H / (RT * WaterCup.MAX_FREEBOARD)
     return (-tiltY * k) to (tiltX * k)
 }
 

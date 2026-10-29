@@ -32,16 +32,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sssoft.chalrang.core.DriveTrace
+import com.sssoft.chalrang.core.ShakeAnalysis
+import com.sssoft.chalrang.core.ShakeReport
 import com.sssoft.chalrang.core.TraceEvent
 import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TraceSample
@@ -50,6 +56,7 @@ import com.sssoft.chalrang.engine.ChalrangEngine
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -61,6 +68,7 @@ private val LongColor = Color(0xFFFFB74D)   // 앞뒤
 private val LatColor = Color(0xFF4DD0E1)    // 좌우
 private val SpillColor = Color(0xFFFF7043)
 private val DoseColor = Color(0xFFE1BEE7)
+private val BandColor = Color(0x33B39DDB)
 
 /**
  * 흔들림 기록: 차 흔들림(원인)과 물 출렁임(결과)을 같은 시간축에 겹쳐 지연을 보고,
@@ -97,6 +105,8 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
         val t1 = remember(version) { trace.endTime }
         val t0 = remember(version, windowSec) { windowSec?.let { max(trace.startTime, t1 - it) } ?: trace.startTime }
         val lag = remember(version, windowSec) { trace.lag(t0, t1) }
+        // 주기 분석은 무거우니 기록이 2초 쌓일 때마다
+        val shake = remember(trace.size / 20, trace.startTime, windowSec) { ShakeAnalysis.analyze(trace, t0, t1) }
         val events = remember(version, windowSec) { trace.events.filter { it.t in t0..t1 } }
         val at = cursor?.coerceIn(t0, t1) ?: t1
         val sample = remember(version, at) { trace.indexAt(at).takeIf { it >= 0 }?.let { trace[it] } }
@@ -110,7 +120,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                     return@Column
                 }
                 val charts: @Composable (Modifier) -> Unit = { m ->
-                    Charts(trace, version, t0, t1, at, events, onCursor = { cursor = it }, modifier = m)
+                    Charts(trace, version, t0, t1, at, events, shake, onCursor = { cursor = it }, modifier = m)
                 }
                 if (wide) {
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -204,7 +214,7 @@ private fun EventList(events: List<TraceEvent>, start: Double, onPick: (Double) 
 @Composable
 private fun Charts(
     trace: DriveTrace, version: Long, t0: Double, t1: Double, at: Double,
-    events: List<TraceEvent>, onCursor: (Double) -> Unit, modifier: Modifier,
+    events: List<TraceEvent>, shake: ShakeReport?, onCursor: (Double) -> Unit, modifier: Modifier,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Legend("차 흔들림 (원인) m/s²", listOf("앞뒤" to LongColor, "좌우" to LatColor))
@@ -225,10 +235,55 @@ private fun Charts(
         )
         Legend("멀미 누적량", listOf("누적" to DoseColor))
         Chart(
-            trace, version, t0, t1, at, events, onCursor, Modifier.weight(0.7f),
+            trace, version, t0, t1, at, events, onCursor, Modifier.weight(0.55f),
             series = listOf(Series(DoseColor, width = 2.5f) { it.dose }),
             range = null, guides = listOf(0.6, 1.0),
         )
+        if (shake != null) {
+            Text(
+                "흔들림 주기 · 가장 센 흔들림 ${fmt(shake.peakPeriod, 1)}초 · 멀미에 가장 영향 ${fmt(shake.sicknessPeriod, 1)}초 · " +
+                    "멀미 주기(2~10초) ${(shake.bandShare * 100).roundToInt()}% · MSDV ${fmt(shake.msdv, 1)} m/s^1.5",
+                color = Dim, fontSize = 13.sp,
+            )
+            SpectrumChart(shake, Modifier.weight(0.9f))
+        } else {
+            Text("흔들림 주기 · 30초 넘게 기록되면 분석해요", color = Dim, fontSize = 13.sp)
+        }
+    }
+}
+
+/**
+ * 흔들림 주기 스펙트럼: 가로 = 주기 (왼쪽 50초 → 오른쪽 1초, 로그), 세로 = 흔들림 세기 (가장 센 것 = 1).
+ * 보라 띠 = 멀미 주기(2~10초), 흰 점선 = ISO 2631-1 Wf 가중, 빨간 선 = 멀미에 가장 영향을 준 주기.
+ */
+@Composable
+private fun SpectrumChart(r: ShakeReport, modifier: Modifier) {
+    val measurer = rememberTextMeasurer()
+    Canvas(modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))) {
+        val fLo = ShakeAnalysis.F_MIN
+        val fHi = ShakeAnalysis.F_MAX
+        val labelH = 18f
+        val h = size.height - labelH
+        fun x(f: Double) = (ln(f / fLo) / ln(fHi / fLo) * size.width).toFloat()
+        fun y(v: Double) = (h * (1 - v.coerceIn(0.0, 1.05) / 1.05)).toFloat()
+        drawRect(BandColor, topLeft = Offset(x(ShakeAnalysis.BAND_LO), 0f), size = Size(x(ShakeAnalysis.BAND_HI) - x(ShakeAnalysis.BAND_LO), h))
+        val top = max(1e-9, r.freqs.indices.maxOf { max(r.longAmp[it], r.latAmp[it]) })
+        fun line(values: DoubleArray, scale: Double, color: Color, width: Float, dash: Boolean = false) {
+            val p = Path()
+            values.forEachIndexed { k, v -> val o = Offset(x(r.freqs[k]), y(v / scale)); if (k == 0) p.moveTo(o.x, o.y) else p.lineTo(o.x, o.y) }
+            drawPath(p, color, style = Stroke(width, pathEffect = if (dash) PathEffect.dashPathEffect(floatArrayOf(8f, 6f)) else null))
+        }
+        line(r.wf, 1.0, Color.White.copy(alpha = 0.7f), 1.5f, dash = true)
+        line(r.longAmp, top, LongColor, 2f)
+        line(r.latAmp, top, LatColor, 2f)
+        val xs = x(1 / r.sicknessPeriod)
+        drawLine(SpillColor, Offset(xs, 0f), Offset(xs, h), strokeWidth = 2f)
+        for (period in listOf(50.0, 20.0, 10.0, 5.0, 2.0, 1.0)) {
+            val px = x(1 / period)
+            drawLine(Grid, Offset(px, h), Offset(px, h + 4), strokeWidth = 1f)
+            val text = measurer.measure("${period.roundToInt()}초", TextStyle(color = Dim, fontSize = 10.sp))
+            drawText(text, topLeft = Offset((px - text.size.width / 2f).coerceIn(0f, size.width - text.size.width), h + 3))
+        }
     }
 }
 
@@ -278,7 +333,7 @@ private fun Chart(
         // 넘친 구간
         if (shadeSpill) {
             for (s in samples) if (s.spilling) {
-                drawRect(SpillColor.copy(alpha = 0.22f), topLeft = Offset(x(s.t) - 1, 0f), size = androidx.compose.ui.geometry.Size(max(2f, size.width / samples.size + 1), size.height))
+                drawRect(SpillColor.copy(alpha = 0.22f), topLeft = Offset(x(s.t) - 1, 0f), size = Size(max(2f, size.width / samples.size + 1), size.height))
             }
         }
         // 기준선
