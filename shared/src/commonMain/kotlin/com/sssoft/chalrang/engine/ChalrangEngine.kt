@@ -7,6 +7,8 @@ import com.sssoft.chalrang.core.CarePolicy
 import com.sssoft.chalrang.core.Child
 import com.sssoft.chalrang.core.CupSetup
 import com.sssoft.chalrang.core.DriveScenario
+import com.sssoft.chalrang.core.DriveTrace
+import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.DriverStyle
 import com.sssoft.chalrang.core.Frame
 import com.sssoft.chalrang.core.MotionEstimator
@@ -67,6 +69,11 @@ class ChalrangEngine(
     private var policy = CarePolicy()
     private val log = TiltLog()
 
+    /** 상세 흔들림 기록 (차 흔들림 → 물 출렁임, 안내·조치). 화면의 "흔들림 기록" 에서 본다 */
+    val trace = DriveTrace()
+    /** 지금 시각 (시연은 시나리오 시각) — 기록에 쓴다 */
+    private var clock = 0.0
+
     private val _ui = MutableStateFlow(UiState(children = store.load()))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
@@ -118,7 +125,11 @@ class ChalrangEngine(
                 val before = cup.spillCount
                 if (f.resting) cup.rest(SCENARIO_DT) else cup.step(f.ax, f.ay, SCENARIO_DT)
                 log.add(cup.tilt, SCENARIO_DT)
-                if (cup.spillCount > before) spillStarted = true
+                if (cup.spillCount > before) {
+                    spillStarted = true
+                    trace.event(f.t, TraceKind.SPILL)
+                }
+                trace.record(f.t, f.ax, f.ay, cup.tiltX, cup.tiltY, f.speedKmh, cup.dose, cup.level, cup.spilling)
                 d.frame = f
             }
             if (seats.values.none { it.riding } && children.isNotEmpty()) {
@@ -128,6 +139,7 @@ class ChalrangEngine(
             }
             val setup = applySetup(CupSetup.choose(seats, children))
             val frame = d.frame ?: return
+            clock = frame.t
             input = CareInput(
                 nowSec = frame.t, setup = setup, dose = cup.dose, spillStarted = spillStarted,
                 speedKmh = frame.speedKmh, raining = frame.raining || car.raining.value,
@@ -139,9 +151,12 @@ class ChalrangEngine(
             }
         } else {
             motion.update(now)
+            clock = now
             val before = cup.spillCount
             cup.step(motion.ax, motion.ay, dt)
             log.add(cup.tilt, dt)
+            if (cup.spillCount > before) trace.event(now, TraceKind.SPILL)
+            trace.record(now, motion.ax, motion.ay, cup.tiltX, cup.tiltY, motion.speedKmh ?: 0.0, cup.dose, cup.level, cup.spilling)
             val setup = applySetup(CupSetup.choose(seats, children))
             val ahead = navi.ahead.value
             input = CareInput(
@@ -177,14 +192,27 @@ class ChalrangEngine(
                 CareAction.Chime -> voice.chime()
                 is CareAction.Say -> {
                     voice.say(a.text)
+                    trace.event(clock, TraceKind.SAY, a.text)
                     _ui.update { it.copy(lastSaid = a.text) }
                 }
-                is CareAction.FreshAir -> car.freshAir(a.on)
-                is CareAction.OpenWindows -> car.openWindows(a.windows, a.percent)
-                CareAction.CloseWindows -> car.closeWindows()
+                is CareAction.FreshAir -> {
+                    car.freshAir(a.on)
+                    trace.event(clock, TraceKind.CAR, if (a.on) "환기 시작: 외기 유입·에어컨·온도↓·풍량↑" else "공조 원래대로")
+                }
+                is CareAction.OpenWindows -> {
+                    car.openWindows(a.windows, a.percent)
+                    trace.event(clock, TraceKind.CAR, a.windows.joinToString { it.label } + " 창문 ${a.percent}%")
+                }
+                CareAction.CloseWindows -> {
+                    car.closeWindows()
+                    trace.event(clock, TraceKind.CAR, "창문 원래대로")
+                }
                 is CareAction.AskWindow -> _ui.update { it.copy(askWindows = a.windows) }
                 CareAction.AskDone -> _ui.update { it.copy(askWindows = null) }
-                CareAction.DustGuard -> car.dustGuard()
+                CareAction.DustGuard -> {
+                    car.dustGuard()
+                    trace.event(clock, TraceKind.CAR, "먼지 차단: 내부 순환·공기청정")
+                }
             }
         }
     }
@@ -206,6 +234,7 @@ class ChalrangEngine(
             voice.say(text)
             _ui.update { it.copy(lastSaid = text) }
         }
+        trace.event(clock, TraceKind.SICK, child?.let { "${it.name} 기준 맞춤" } ?: "")
         sickPending = true
     }
 
@@ -252,6 +281,7 @@ class ChalrangEngine(
         _ui.update { it.copy(askWindows = null) }
         cup.reset()
         log.clear()
+        trace.clear()
     }
 
     /** 끝낼 때: 하던 차량 조치를 되돌린다 */

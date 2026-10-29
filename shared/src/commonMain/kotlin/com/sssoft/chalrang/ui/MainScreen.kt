@@ -60,6 +60,7 @@ private val Sick = Color(0xFFE5533D)
 fun MainScreen(vm: ChalrangEngine) {
     val s by vm.ui.collectAsState()
     var editing by remember { mutableStateOf(false) }
+    var tracing by remember { mutableStateOf(false) }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Bg)) {
         val wide = maxWidth >= WIDE_MIN && maxWidth > maxHeight
@@ -69,7 +70,7 @@ fun MainScreen(vm: ChalrangEngine) {
                 Modifier.fillMaxSize().padding(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                Cup(s, Modifier.weight(1f).fillMaxHeight())
+                Cup(s, Modifier.weight(1f).fillMaxHeight(), onTrace = { tracing = true })
                 Column(
                     Modifier.width(sideWidth).fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -86,7 +87,7 @@ fun MainScreen(vm: ChalrangEngine) {
                 Modifier.fillMaxSize().padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Cup(s, Modifier.weight(1f).fillMaxWidth())
+                Cup(s, Modifier.weight(1f).fillMaxWidth(), onTrace = { tracing = true })
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.height(IntrinsicSize.Min)) {
                     RidersCard(s, Modifier.weight(1f).fillMaxHeight())
                     CarCard(s, Modifier.weight(1f).fillMaxHeight())
@@ -95,6 +96,8 @@ fun MainScreen(vm: ChalrangEngine) {
                 Controls(s, vm, onEdit = { editing = true })
             }
         }
+        // 기록 화면은 물컵 화면 위에 덮는다
+        if (tracing) TraceScreen(vm, onClose = { tracing = false })
     }
     if (editing) ChildrenDialog(s.children, vm, onDismiss = { editing = false })
 }
@@ -103,9 +106,10 @@ fun MainScreen(vm: ChalrangEngine) {
 private val WIDE_MIN = 900.dp
 
 @Composable
-private fun Cup(s: UiState, modifier: Modifier) = Box(modifier) {
+private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit) = Box(modifier) {
     CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize())
     Text("찰랑", color = Dim, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart))
+    TextButton(onClick = onTrace, modifier = Modifier.align(Alignment.TopEnd)) { Text("흔들림 기록", fontSize = 16.sp) }
 }
 
 @Composable
