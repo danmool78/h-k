@@ -1,0 +1,48 @@
+# 웹 페이지(server/public) 자동 배포
+#  - main 에 병합되면 h-y-server.web.app 에 배포
+#  - PR 이면 미리보기 주소에 배포하고 PR 에 댓글로 주소를 남김 (7일 뒤 만료)
+# 함수(server/functions)는 자동 배포하지 않는다: 예약 수집 함수가 다시 살아나 비용이 생기므로 손으로 배포.
+# 필요한 저장소 Secret: FIREBASE_SERVICE_ACCOUNT_H_Y_SERVER (Firebase 서비스 계정 키 JSON)
+name: Deploy hosting
+
+on:
+  push:
+    branches: [main]
+    paths: ["server/public/**", "server/firebase.json", ".github/workflows/deploy-hosting.yml"]
+  pull_request:
+    paths: ["server/public/**", "server/firebase.json", ".github/workflows/deploy-hosting.yml"]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_H_Y_SERVER }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secret 확인
+        if: env.SA == ''
+        run: echo "::warning::FIREBASE_SERVICE_ACCOUNT_H_Y_SERVER Secret 이 없어 배포를 건너뜁니다"
+      # 다른 저장소에서 온 PR 은 Secret 을 받지 못하므로 건너뜀
+      - name: 미리보기 배포 (PR)
+        if: env.SA != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_H_Y_SERVER }}
+          projectId: h-y-server
+          entryPoint: server
+          expires: 7d
+      - name: 실서비스 배포 (main)
+        if: env.SA != '' && github.event_name == 'push'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_H_Y_SERVER }}
+          projectId: h-y-server
+          entryPoint: server
+          channelId: live
