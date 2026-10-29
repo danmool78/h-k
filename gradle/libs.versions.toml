@@ -5,6 +5,8 @@ coreKtx = "1.16.0"
 lifecycle = "2.9.1"
 activityCompose = "1.10.1"
 composeBom = "2025.06.00"
+composeMultiplatform = "1.9.3"
+coroutines = "1.10.2"
 junit = "4.13.2"
 pleosVehicle = "2.3.2"
 pleosNaviHelper = "3.0.5"
@@ -26,7 +28,12 @@ pleos-vehicle = { group = "ai.pleos.playground", name = "Vehicle", version.ref =
 pleos-navihelper = { group = "ai.pleos.playground", name = "NaviHelper", version.ref = "pleosNaviHelper" }
 pleos-fusedlocation = { group = "ai.pleos.playground", name = "FusedLocation", version.ref = "pleosFusedLocation" }
 
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+compose-multiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

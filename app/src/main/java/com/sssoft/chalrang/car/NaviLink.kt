@@ -12,28 +12,22 @@ import android.util.Log
 import com.sssoft.chalrang.core.ManeuverKind
 import com.sssoft.chalrang.core.MotionEstimator
 import com.sssoft.chalrang.core.Upcoming
+import com.sssoft.chalrang.engine.NaviPort
+import com.sssoft.chalrang.engine.RoadAhead
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-
-/** 내비에서 받은 앞으로 올 길 */
-data class RoadAhead(
-    /** 가장 가까운 안내 (회전·진출로·방지턱 등) */
-    val next: Upcoming? = null,
-    /** 경로상 다음 휴게소까지 (km) */
-    val restAreaKm: Double? = null,
-)
 
 /**
  * Pleos NaviHelper 연결. 회전 안내(TBT)·주의 지점으로 흔들리는 곳을 미리 알고,
  * 현재 위치·진행 방향은 흔들림 추정(속도·좌우 가속도)에 보탠다.
  * 거리 단위는 m 로 본다 (에뮬레이터에서 확인 필요).
  */
-class NaviLink(context: Context) {
+class NaviLink(context: Context) : NaviPort {
 
     private val navi = NaviHelper(context.applicationContext)
     private val _ahead = MutableStateFlow(RoadAhead())
-    val ahead: StateFlow<RoadAhead> = _ahead.asStateFlow()
+    override val ahead: StateFlow<RoadAhead> = _ahead.asStateFlow()
 
     var motion: MotionEstimator? = null
     var clock: () -> Double = { System.nanoTime() / 1e9 }
@@ -74,7 +68,7 @@ class NaviLink(context: Context) {
     }
 
     /** 1초마다 불러 회전 안내와 위치를 새로 받는다 */
-    fun poll() {
+    override fun poll() {
         if (!connected) return
         runCatching { navi.getTBTInfo() }
         runCatching { navi.getCurrentLocationInfo() }

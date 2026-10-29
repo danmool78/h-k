@@ -9,7 +9,11 @@ enum class Seat(val label: String) {
 }
 
 /** 창문 위치 (운전석 창문은 쓰지 않는다) */
-enum class Window { FRONT_RIGHT, REAR_LEFT, REAR_RIGHT }
+enum class Window(val label: String) {
+    FRONT_RIGHT("조수석"),
+    REAR_LEFT("뒷좌석 왼쪽"),
+    REAR_RIGHT("뒷좌석 오른쪽"),
+}
 
 /** 아이 프로필. [level] = 물 높이 (멀미 기준), [calibrations] = "지금 멀미" 로 맞춘 횟수 */
 data class Child(

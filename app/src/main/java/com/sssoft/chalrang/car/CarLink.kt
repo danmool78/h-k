@@ -19,23 +19,12 @@ import com.sssoft.chalrang.core.MotionEstimator
 import com.sssoft.chalrang.core.Seat
 import com.sssoft.chalrang.core.SeatState
 import com.sssoft.chalrang.core.Window
+import com.sssoft.chalrang.engine.CarPort
+import com.sssoft.chalrang.engine.CarStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-
-/** 차량 조치 상태 (화면 표시용) */
-data class CarStatus(
-    val connected: Boolean = false,
-    val freshAir: Boolean = false,
-    /** 먼지 나는 길: 내부 순환 + 공기청정 */
-    val dustGuard: Boolean = false,
-    /** 열어 둔 창문과 열린 정도 (%) */
-    val openWindows: Map<Window, Int> = emptyMap(),
-    /** 마지막으로 한 조치 (예: "외기 유입 · 에어컨 · 22→20℃") */
-    val lastAction: String? = null,
-    val error: String? = null,
-)
 
 /**
  * Pleos Vehicle SDK 연결.
@@ -44,18 +33,18 @@ data class CarStatus(
  *
  * 차량이 지원하지 않는 기능은 checkXxxCapabilities 로 확인해 건너뛴다.
  */
-class CarLink(context: Context) {
+class CarLink(context: Context) : CarPort {
 
     private val vehicle = Vehicle(context.applicationContext)
 
     private val _seats = MutableStateFlow<Map<Seat, SeatState>>(emptyMap())
-    val seats: StateFlow<Map<Seat, SeatState>> = _seats.asStateFlow()
+    override val seats: StateFlow<Map<Seat, SeatState>> = _seats.asStateFlow()
 
     private val _raining = MutableStateFlow(false)
-    val raining: StateFlow<Boolean> = _raining.asStateFlow()
+    override val raining: StateFlow<Boolean> = _raining.asStateFlow()
 
     private val _status = MutableStateFlow(CarStatus())
-    val status: StateFlow<CarStatus> = _status.asStateFlow()
+    override val status: StateFlow<CarStatus> = _status.asStateFlow()
 
     /** 흔들림 추정에 쓰는 신호를 받는 곳 (시각은 초) */
     var motion: MotionEstimator? = null
@@ -222,7 +211,7 @@ class CarLink(context: Context) {
      * 환기: 외기 유입 + 에어컨 + 온도 2℃ 낮춤 + 풍량 한 단계 올림.
      * 끌 때는 켜기 전 값으로 되돌린다.
      */
-    fun freshAir(on: Boolean) = safe("공조 제어") {
+    override fun freshAir(on: Boolean) = safe("공조 제어") {
         if (on == _status.value.freshAir) return@safe
         val hvac = vehicle.getHVAC()
         // 온도는 조회가 끝나면 note() 로 덧붙는다
@@ -249,7 +238,7 @@ class CarLink(context: Context) {
                         savedTemp[a] = v
                         val target = (v - COOL_DOWN_C).coerceIn(b.first, b.second)
                         hvac.setHvacTemperature(a, target, TemperatureUnit.CELSIUS, { _, _ -> }, { e -> warn("온도 설정 실패", e) })
-                        note("${v.fmt()}→${target.fmt()}℃")
+                        note("${v.fmt()}→${target.fmt()}도")
                     }
                 }, { e -> warn("온도 조회 실패", e) })
             }
@@ -275,7 +264,7 @@ class CarLink(context: Context) {
      * 먼지 나는 길: 외기 유입을 내부 순환으로 되돌리고 공기청정을 켠다 (에어컨·온도는 그대로).
      * 환기를 끌 때 [freshAir] (false) 가 처음 값으로 함께 되돌린다.
      */
-    fun dustGuard() = safe("공조 제어") {
+    override fun dustGuard() = safe("공조 제어") {
         val hvac = vehicle.getHVAC()
         for (a in hvacRecircAreas) {
             if (a !in savedRecirc) hvac.getHvacRecirculationState(a, { v -> if (v != null) savedRecirc.putIfAbsent(a, v) }, { e -> warn("내외기 조회 실패", e) })
@@ -297,7 +286,7 @@ class CarLink(context: Context) {
     // ---- 창문 ----
 
     /** [windows] 를 [percent]% 연다. 이미 더 열려 있으면 그대로 */
-    fun openWindows(windows: List<Window>, percent: Int) = safe("창문 제어") {
+    override fun openWindows(windows: List<Window>, percent: Int) = safe("창문 제어") {
         val win = vehicle.getWindow()
         val opened = mutableMapOf<Window, Int>()
         for (w in windows) {
@@ -311,14 +300,14 @@ class CarLink(context: Context) {
             opened[w] = percent
         }
         if (opened.isNotEmpty()) {
-            _status.update { it.copy(openWindows = it.openWindows + opened, lastAction = opened.keys.joinToString { w -> windowLabel(w) } + " 창문 $percent%") }
+            _status.update { it.copy(openWindows = it.openWindows + opened, lastAction = opened.keys.joinToString { w -> w.label } + " 창문 $percent%") }
         } else if (windows.isNotEmpty()) {
             _status.update { it.copy(lastAction = "창문 제어를 지원하지 않는 차량") }
         }
     }
 
     /** 연 창문을 열기 전 위치로 */
-    fun closeWindows() = safe("창문 제어") {
+    override fun closeWindows() = safe("창문 제어") {
         val win = vehicle.getWindow()
         savedWindow.forEach { (w, pos) -> win.setWindowPosition(windowArea(w), pos, { _, _ -> }, { e -> warn("창문 닫기 실패", e) }) }
         savedWindow.clear()
@@ -378,12 +367,6 @@ class CarLink(context: Context) {
             WindowValue.ROW_2_LEFT -> Window.REAR_LEFT
             WindowValue.ROW_2_RIGHT -> Window.REAR_RIGHT
             else -> null
-        }
-
-        fun windowLabel(w: Window) = when (w) {
-            Window.FRONT_RIGHT -> "조수석"
-            Window.REAR_LEFT -> "뒷좌석 왼쪽"
-            Window.REAR_RIGHT -> "뒷좌석 오른쪽"
         }
 
         private fun Float.fmt() = if (this % 1f == 0f) toInt().toString() else "%.1f".format(this)

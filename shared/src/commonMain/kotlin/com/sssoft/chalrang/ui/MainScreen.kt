@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -36,10 +37,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.sssoft.chalrang.car.CarLink
 import com.sssoft.chalrang.core.Child
 import com.sssoft.chalrang.core.DriverStyle
 import com.sssoft.chalrang.core.Seat
+import com.sssoft.chalrang.core.Window
+import com.sssoft.chalrang.engine.ChalrangEngine
+import com.sssoft.chalrang.engine.UiState
 
 private val Bg = Color(0xFF0E1621)
 private val Panel = Color(0xFF17222F)
@@ -47,7 +50,7 @@ private val Dim = Color(0xFF9FB0C3)
 private val Sick = Color(0xFFE5533D)
 
 @Composable
-fun MainScreen(vm: ChalrangViewModel) {
+fun MainScreen(vm: ChalrangEngine) {
     val s by vm.ui.collectAsState()
     var editing by remember { mutableStateOf(false) }
 
@@ -76,7 +79,7 @@ fun MainScreen(vm: ChalrangViewModel) {
             Button(
                 onClick = vm::sickNow,
                 enabled = s.setup.active,
-                colors = ButtonDefaults.buttonColors(containerColor = Sick),
+                colors = ButtonDefaults.buttonColors(containerColor = Sick, contentColor = Color.White),
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.fillMaxWidth().height(96.dp),
             ) {
@@ -122,7 +125,7 @@ private fun CarCard(s: UiState) = Card {
         else -> Text(if (car.connected) "평소대로" else "차량 연결 안 됨", color = Color.White, fontSize = 20.sp)
     }
     if (car.openWindows.isNotEmpty()) {
-        Text(car.openWindows.entries.joinToString { (w, p) -> "${CarLink.windowLabel(w)} 창문 $p%" }, color = Color.White, fontSize = 17.sp)
+        Text(car.openWindows.entries.joinToString { (w, p) -> "${w.label} 창문 $p%" }, color = Color.White, fontSize = 17.sp)
     }
     if (s.raining) Text("비 · 창문은 닫아 둬요", color = Dim, fontSize = 15.sp)
     car.lastAction?.let { Text(it, color = Dim, fontSize = 15.sp) }
@@ -130,20 +133,20 @@ private fun CarCard(s: UiState) = Card {
 
 /** 창문을 열지 묻기. 운전 중에도 누르기 쉽게 크게, 동승자가 눌러도 된다 */
 @Composable
-private fun AskWindowCard(windows: List<com.sssoft.chalrang.core.Window>, vm: ChalrangViewModel) = Card {
-    Text(windows.joinToString { CarLink.windowLabel(it) } + " 창문을 조금 열까요?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+private fun AskWindowCard(windows: List<Window>, vm: ChalrangEngine) = Card {
+    Text(windows.joinToString { it.label } + " 창문을 조금 열까요?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Button(onClick = { vm.answerWindow(true) }, modifier = Modifier.weight(1f).height(64.dp)) {
             Text("열기", fontSize = 22.sp)
         }
         OutlinedButton(onClick = { vm.answerWindow(false) }, modifier = Modifier.weight(1f).height(64.dp)) {
-            Text("먼지 · 닫아 두기", fontSize = 18.sp)
+            Text("먼지 · 닫기", fontSize = 20.sp, maxLines = 1)
         }
     }
 }
 
 @Composable
-private fun DemoRow(s: UiState, vm: ChalrangViewModel, onEdit: () -> Unit) {
+private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
     if (s.demo != null) {
         Text("시연 · ${s.demo}", color = Dim, fontSize = 14.sp)
         LinearProgressIndicator(progress = { s.demoProgress }, modifier = Modifier.fillMaxWidth())
@@ -151,8 +154,12 @@ private fun DemoRow(s: UiState, vm: ChalrangViewModel, onEdit: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = onEdit, modifier = Modifier.weight(1f)) { Text("아이 설정") }
         if (s.demo == null) {
-            OutlinedButton(onClick = { vm.startDemo(DriverStyle.ROUGH) }, modifier = Modifier.weight(1f)) { Text("시연 거칠게") }
-            OutlinedButton(onClick = { vm.startDemo(DriverStyle.SMOOTH) }, modifier = Modifier.weight(1f)) { Text("시연 부드럽게") }
+            OutlinedButton(onClick = { vm.startDemo(DriverStyle.ROUGH) }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text("시연 거칠게", maxLines = 1)
+            }
+            OutlinedButton(onClick = { vm.startDemo(DriverStyle.SMOOTH) }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text("시연 부드럽게", maxLines = 1)
+            }
         } else {
             OutlinedButton(onClick = vm::stopDemo, modifier = Modifier.weight(2f)) { Text("시연 끝") }
         }
@@ -160,7 +167,7 @@ private fun DemoRow(s: UiState, vm: ChalrangViewModel, onEdit: () -> Unit) {
 }
 
 @Composable
-private fun ChildrenDialog(children: List<Child>, vm: ChalrangViewModel, onDismiss: () -> Unit) {
+private fun ChildrenDialog(children: List<Child>, vm: ChalrangEngine, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var seat by remember { mutableStateOf(Seat.REAR_LEFT) }
     AlertDialog(

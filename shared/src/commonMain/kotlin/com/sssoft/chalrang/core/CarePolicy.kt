@@ -64,7 +64,8 @@ data class CareInput(
  * - 회복 (누적 0.25 미만, 3분 동안 안 넘침): 공조·창문 원래대로
  * - 내비 다음 안내가 흔들리는 곳(진출로·유턴 등)이고 누적이 쌓여 있으면 미리 예고
  */
-class CarePolicy {
+/** [askTimeoutSec]: 창문 질문에 답이 없으면 열지 않는 시간 (시연은 배속만큼 늘린다) */
+class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
 
     var ventilating = false; private set
     var windowsOpen = false; private set
@@ -125,7 +126,7 @@ class CarePolicy {
                 out += CareAction.AskDone
                 out += CareAction.DustGuard
                 out += CareAction.Say("창문은 닫아 두고 내부 순환과 공기청정으로 바꿀게요")
-            } else if (now - asking >= ASK_TIMEOUT) {
+            } else if (now - asking >= askTimeoutSec) {
                 askingSince = null
                 windowDeclined = true
                 out += CareAction.AskDone

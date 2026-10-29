@@ -45,6 +45,8 @@ xcuserdata/
 .kotlin/
 
 # Firebase
+# 웹 앱 빌드 결과 (배포할 때 shared 에서 만들어 넣는다)
+server/public/app/
 server/functions/lib/
 .firebase/
 firebase-debug.log

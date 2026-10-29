@@ -6,9 +6,9 @@ name: Android
 on:
   push:
     branches: [main]
-    paths: ["app/**", "gradle/**", "*.gradle.kts", "gradle.properties", ".github/workflows/android.yml"]
+    paths: ["app/**", "shared/**", "gradle/**", "*.gradle.kts", "gradle.properties", ".github/workflows/android.yml"]
   pull_request:
-    paths: ["app/**", "gradle/**", "*.gradle.kts", "gradle.properties", ".github/workflows/android.yml"]
+    paths: ["app/**", "shared/**", "gradle/**", "*.gradle.kts", "gradle.properties", ".github/workflows/android.yml"]
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - name: 단위 테스트
-        run: ./gradlew :app:testDebugUnitTest
+        run: ./gradlew :shared:testDebugUnitTest :app:testDebugUnitTest
       - name: 디버그 APK
         run: ./gradlew :app:assembleDebug
       - uses: actions/upload-artifact@v4

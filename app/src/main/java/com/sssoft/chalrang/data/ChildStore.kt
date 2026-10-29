@@ -3,17 +3,18 @@ package com.sssoft.chalrang.data
 import android.content.Context
 import com.sssoft.chalrang.core.Child
 import com.sssoft.chalrang.core.Seat
+import com.sssoft.chalrang.engine.ChildRepo
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** 아이 프로필 저장 (차 안에만, 기기 밖으로 보내지 않는다) */
-class ChildStore(context: Context) {
+class ChildStore(context: Context) : ChildRepo {
 
     private val prefs = context.applicationContext.getSharedPreferences("children", Context.MODE_PRIVATE)
 
-    fun load(): List<Child> = decode(prefs.getString(KEY, null))
+    override fun load(): List<Child> = decode(prefs.getString(KEY, null))
 
-    fun save(children: List<Child>) {
+    override fun save(children: List<Child>) {
         prefs.edit().putString(KEY, encode(children)).apply()
     }
 

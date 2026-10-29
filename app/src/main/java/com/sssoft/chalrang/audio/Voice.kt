@@ -6,6 +6,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import com.sssoft.chalrang.engine.VoicePort
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.exp
@@ -16,7 +17,7 @@ import kotlin.math.sin
  * - [chime]: "찰랑" (물방울 소리, 직접 합성)
  * - [say]: 안드로이드 기본 TTS (Pleos TTS 가 열리면 바꿀 수 있게 이곳에만 둔다)
  */
-class Voice(context: Context) {
+class Voice(context: Context) : VoicePort {
 
     @Volatile private var ready = false
     private val tts: TextToSpeech
@@ -38,7 +39,7 @@ class Voice(context: Context) {
         tts.setAudioAttributes(attrs)
     }
 
-    fun say(text: String) {
+    override fun say(text: String) {
         if (!ready) {
             Log.i(TAG, "TTS 준비 전: $text")
             return
@@ -46,7 +47,7 @@ class Voice(context: Context) {
         tts.speak(text, TextToSpeech.QUEUE_ADD, null, text.hashCode().toString())
     }
 
-    fun chime() {
+    override fun chime() {
         try {
             val track = AudioTrack.Builder()
                 .setAudioAttributes(attrs)

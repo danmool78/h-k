@@ -63,7 +63,9 @@ fun CupView(
         val waterColor = when {
             dose >= 1.0 -> WaterDanger
             dose >= 0.6 -> lerp(WaterWarn, WaterDanger, ((dose - 0.6) / 0.4).toFloat())
-            else -> lerp(Water, WaterWarn, (dose / 0.6).toFloat().coerceIn(0f, 1f) * 0.5f)
+            // 주의(0.6) 직전까지는 파랑, 그다음 짧게 주황으로 (중간색이 탁해지지 않게)
+            dose >= 0.5 -> lerp(Water, WaterWarn, ((dose - 0.5) / 0.1).toFloat())
+            else -> Water
         }
 
         // 물웅덩이 (누적량)
