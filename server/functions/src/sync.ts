@@ -91,13 +91,13 @@ async function syncStationsJob(): Promise<{ message: string; count: number }> {
   return { count: Object.keys(stations).length, message: `급속 충전소 ${Object.keys(stations).length}곳 / ${Object.keys(statuses).length}대 · ${parts.join(" · ")}` };
 }
 
-/** 휴게소 충전기 상태를 이력으로 저장 (실데이터 재현용). 반환: 기록한 충전기 수 */
-async function recordHistory(stations: StationMap, statuses: StatusMap, now: number): Promise<number> {
+/** 휴게소 충전기 상태를 [slotAt] 이 속한 5분 칸에 이력으로 저장 (실데이터 재현용). 반환: 기록한 충전기 수 */
+async function recordHistory(stations: StationMap, statuses: StatusMap, now: number, slotAt: number): Promise<number> {
   const order = restAreaOrder(stations);
   const ver = orderVersion(order);
   const indexName = `history/index/${ver}.json`;
   if (!(await readJson<string[]>(indexName))) await writeJson(indexName, order);
-  const { day, time } = tickName(now);
+  const { day, time } = tickName(slotAt);
   await writeBuffer(`history/${day}/${time}-${ver}.bin`, encodeTick(order, statuses, now));
   return order.length;
 }
@@ -114,19 +114,25 @@ async function cleanupHistory(): Promise<number> {
 /** 모든 출처의 상태 변경분 반영 + 혼잡도 통계 갱신 + 예측 검증. */
 export function syncStatusNow(): Promise<SyncResult> {
   return run("status", async () => {
+    // 이력 칸은 실행 시작 시각으로 정한다. 응답이 느려 다음 칸으로 넘어가면 다음 실행이 덮어써 이 칸이 비기 때문
+    const tickAt = Date.now();
     const { stations, statuses } = await loadSnapshot();
     if (!stations) throw new Error("충전소 목록이 없습니다. 충전소 목록 갱신을 먼저 실행하세요.");
     let total = 0;
     let applied = 0;
+    let failed = 0;
     for (const p of PROVIDERS) {
       try {
         const updates = await p.fetchStatusChanges();
         total += updates.length;
         applied += applyStatus(statuses, stations, updates);
       } catch (e) {
+        failed++;
         logger.error(`${p.id} 상태 갱신 실패`, e);
       }
     }
+    // 새 관측이 하나도 없으면 지난 상태를 이력·통계에 또 쌓지 않는다 (재현·혼잡 예측이 멈춘 상태를 실제로 착각함)
+    if (failed === PROVIDERS.length) throw new Error("모든 출처에서 상태를 받지 못해 이번 기록은 건너뜀");
     await writeJson(STATUS_FILE, statuses);
 
     const now = Date.now();
@@ -141,7 +147,7 @@ export function syncStatusNow(): Promise<SyncResult> {
     const m = recordOccupancy(occ, stations, statuses, now);
     await writeJson(OCCUPANCY_FILE, occ);
 
-    const h = await recordHistory(stations, statuses, now);
+    const h = await recordHistory(stations, statuses, now, tickAt);
     return { count: applied, message: `변경 ${total}건 중 급속 ${applied}건 반영, 혼잡도 ${m}곳 갱신, 예측 검증 ${v}곳, 이력 ${h}대` };
   });
 }

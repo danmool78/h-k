@@ -80,7 +80,8 @@
       <div><div class="muted small">안기다려가 더 빨리 도착</div><div class="saved" id="saved"></div></div>
       <div class="compare" style="flex:1;min-width:300px" id="compare"></div>
     </div>
-    <div class="legend"><span><i style="background:#4f8cff"></i>주행</span><span><i style="background:#9aa3b5"></i>우회·결제</span><span><i style="background:#e53935"></i>대기</span><span><i style="background:#4caf50"></i>충전</span></div>
+    <div class="legend"><span><i style="background:#4f8cff"></i>주행</span><span><i style="background:#9aa3b5"></i>우회·결제</span><span><i style="background:#e53935"></i>대기</span><span><i style="background:#4caf50"></i>충전</span><span><i style="background:#ff9800"></i>식사</span></div>
+    <div class="muted small" style="margin-top:6px">주행 기록은 없으므로 주행 시간은 두 방식 모두 내비 예상 시간으로 같게 두고, 충전소 상태만 기록대로 재현합니다. 그래서 시간 차이와 예측 오차는 모두 <b>충전소 대기 판단</b>에서 나옵니다.</div>
   </section>
 
   <section class="card" id="evCard" hidden>
@@ -99,7 +100,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module">
-import { API, replay } from "./replay.js";
+import { API, replay } from "./replay.js?v=2";
 
 const ORIGIN = { name: "서울시청", lat: 37.5665, lng: 126.978 };
 const DESTS = [
@@ -136,31 +137,35 @@ function speak(text) {
 
 let last = null, raf = null;
 
-function road(el, r, totalKm) {
-  el.innerHTML = [0.25, 0.5, 0.75].map((f) => `<div class="tick" style="left:${f * 100}%"></div>`).join("") +
-    (r.stop ? `<div class="stop" style="left:${r.stop.atKm / totalKm * 100}%;background:#4caf50" title="${r.stop.name}"></div>` : "") +
+/** 경로 비율(0~1) → 막대 위 가로 위치. 자동차·충전소 표시가 같은 기준을 쓴다 (오른쪽 끝은 깃발 자리) */
+const at = (f) => `calc(${f * 100}% * 0.93 + 16px)`;
+
+function road(el, r) {
+  el.innerHTML = [0.25, 0.5, 0.75].map((f) => `<div class="tick" style="left:${at(f)}"></div>`).join("") +
+    (r.stops ?? []).map((s) => `<div class="stop" style="left:${at(s.atKm / res0.route.distanceKm)};background:${s.meal ? "#ff9800" : "#4caf50"}" title="${s.c.name}"></div>`).join("") +
     `<div class="flag">🏁</div><div class="car">🚗</div>`;
 }
+let res0 = null;
 
 /** 시뮬레이션 분 [t] 에서 위치(0~1)·배터리·상태 */
-function stateAt(r, t, totalMin) {
-  if (!r.legs) return { pos: 0, soc: 0, label: "" };
-  const L = r.legs, s = r.socs;
-  const t1 = L.driveMin1, t2 = t1 + L.detourMin + L.waitMin, t3 = t2 + L.chargeMin, t4 = t3 + L.driveMin2;
-  const f1 = L.driveMin1 / totalMin;
-  if (t <= t1) return { pos: f1 * t / t1, soc: s.start + (s.atCharger - s.start) * t / t1, label: "주행" };
-  if (t <= t2) return { pos: f1, soc: s.atCharger, label: L.waitMin > 3 ? "대기" : "진입" };
-  if (t <= t3) return { pos: f1, soc: s.atCharger + (s.after - s.atCharger) * (t - t2) / L.chargeMin, label: "충전" };
-  if (t <= t4) return { pos: f1 + (1 - f1) * (t - t3) / L.driveMin2, soc: s.after + (s.dest - s.after) * (t - t3) / L.driveMin2, label: "주행" };
-  return { pos: 1, soc: s.dest, label: "도착" };
+function stateAt(r, t) {
+  const segs = r.segs ?? [];
+  if (!segs.length) return { pos: 0, soc: 0, label: "" };
+  for (const g of segs) {
+    if (t > g.t1) continue;
+    const f = g.t1 > g.t0 ? Math.max(0, (t - g.t0) / (g.t1 - g.t0)) : 1;
+    return { pos: g.pos0 + (g.pos1 - g.pos0) * f, soc: g.soc0 + (g.soc1 - g.soc0) * f, label: g.label };
+  }
+  const g = segs.at(-1);
+  return { pos: 1, soc: g.soc1, label: "도착" };
 }
 
 function animate(res) {
   cancelAnimationFrame(raf);
-  const totalMin = res.route.durationMin;
+  res0 = res;
   const end = Math.max(res.navi.totalMin ?? 0, res.ours.totalMin ?? 0) + 2;
-  road($("roadNavi"), res.navi, res.route.distanceKm);
-  road($("roadOurs"), res.ours, res.route.distanceKm);
+  road($("roadNavi"), res.navi);
+  road($("roadOurs"), res.ours);
   const evN = res.navi.events, evO = res.ours.events;
   $("evNavi").innerHTML = evN.map((e, i) => `<div class="ev ${e.kind ?? ""}" id="n${i}">${Math.round(e.t)}분 · ${e.text}</div>`).join("");
   $("evOurs").innerHTML = evO.map((e, i) => `<div class="ev ${e.kind ?? ""}" id="o${i}">${Math.round(e.t)}분 · ${e.text}</div>`).join("");
@@ -171,9 +176,9 @@ function animate(res) {
     const t = Math.min(end, (now - t0) / speedMs);
     $("clock").textContent = fmt(res.departAt + t * 60_000);
     for (const [r, roadEl, gEl] of [[res.navi, "roadNavi", "gNavi"], [res.ours, "roadOurs", "gOurs"]]) {
-      const st = stateAt(r, t, totalMin);
-      $(roadEl).querySelector(".car").style.left = `calc(${st.pos * 100}% * 0.93 + 16px)`;
-      $(roadEl).querySelector(".car").textContent = st.label === "대기" ? "⏳" : st.label === "충전" ? "⚡" : st.label === "도착" ? "✅" : "🚗";
+      const st = stateAt(r, t);
+      $(roadEl).querySelector(".car").style.left = at(st.pos);
+      $(roadEl).querySelector(".car").textContent = { 대기: "⏳", 충전: "⚡", 식사: "🍚", 도착: "✅" }[st.label] ?? "🚗";
       const g = $(gEl); g.firstElementChild.style.width = P(st.soc); g.firstElementChild.style.background = lvl(st.soc); g.lastElementChild.textContent = P(st.soc);
     }
     evN.forEach((e, i) => $(`n${i}`).classList.toggle("on", e.t <= t));
@@ -188,7 +193,7 @@ function animate(res) {
     if (t < end) raf = requestAnimationFrame(step);
     else if (res.ours.totalMin && res.navi.totalMin) {
       const d = Math.round(res.navi.totalMin - res.ours.totalMin);
-      speak(d > 0 ? `안기다려가 ${d}분 빨리 도착했습니다.` : "두 방식의 도착 시간이 같습니다.");
+      speak(d > 0 ? `안기다려가 ${d}분 빨리 도착했습니다.` : d < 0 ? `이번에는 내비 방식이 ${-d}분 빨랐습니다.` : "두 방식의 도착 시간이 같습니다.");
     }
   };
   raf = requestAnimationFrame(step);
@@ -199,17 +204,20 @@ function compare(res) {
   const bar = (r, label, color) => {
     if (!r.legs) return `<div class="cbar"><div>${label}</div><div class="muted">계획 없음</div><div></div></div>`;
     const L = r.legs, w = (m) => `${m / max * 100}%`;
+    const err = Math.abs(r.totalMin - r.predictedMin);
     return `<div class="cbar"><div style="color:${color};font-weight:700">${label}</div><div class="stack">
-      <div style="width:${w(L.driveMin1 + L.driveMin2)};background:#4f8cff">주행 ${Math.round(L.driveMin1 + L.driveMin2)}</div>
+      <div style="width:${w(L.driveMin)};background:#4f8cff">주행 ${Math.round(L.driveMin)}</div>
       <div style="width:${w(L.detourMin)};background:#9aa3b5"></div>
       <div style="width:${w(L.waitMin)};background:#e53935">${L.waitMin >= 4 ? `대기 ${Math.round(L.waitMin)}` : ""}</div>
       <div style="width:${w(L.chargeMin)};background:#4caf50">${L.chargeMin >= 6 ? `충전 ${Math.round(L.chargeMin)}` : ""}</div>
+      <div style="width:${w(L.mealMin)};background:#ff9800">${L.mealMin >= 6 ? `식사 ${Math.round(L.mealMin)}` : ""}</div>
     </div><div>${Math.floor(r.totalMin / 60)}시간 ${Math.round(r.totalMin % 60)}분</div></div>
-    <div class="muted small" style="margin:-4px 0 6px 122px">출발 때 예측 ${fmt(res.departAt + r.predictedMin * 60_000)} → 실제 ${fmt(res.departAt + r.totalMin * 60_000)} · 예측 오차 <b style="color:${Math.abs(r.totalMin - r.predictedMin) > 10 ? "var(--bad)" : "var(--good)"}">${Math.round(Math.abs(r.totalMin - r.predictedMin))}분</b></div>`;
+    <div class="muted small" style="margin:-4px 0 6px 122px">${r.stops.length ? r.stops.map((s) => s.c.name).join(" → ") : "충전 없이 직행"} · 출발 때 예측 ${fmt(res.departAt + r.predictedMin * 60_000)} → 실제 ${fmt(res.departAt + r.totalMin * 60_000)} · 예측 오차 <b style="color:${err > 10 ? "var(--bad)" : err > 3 ? "var(--warn)" : "var(--good)"}">${Math.round(err)}분</b></div>`;
   };
   $("compare").innerHTML = bar(res.navi, "내비 방식", "#9aa3b5") + bar(res.ours, "안기다려", "#4f8cff");
   const d = res.navi.totalMin && res.ours.totalMin ? res.navi.totalMin - res.ours.totalMin : null;
-  $("saved").textContent = d == null ? "–" : d >= 1 ? `${Math.round(d)}분` : "같음";
+  $("saved").textContent = d == null ? "–" : d >= 1 ? `${Math.round(d)}분` : d <= -1 ? `−${Math.round(-d)}분` : "같음";
+  $("saved").style.color = d != null && d <= -1 ? "var(--bad)" : "";
 }
 
 let map, mapLayer;
@@ -223,7 +231,7 @@ function drawMap(res) {
   mapLayer.clearLayers();
   const line = L.polyline(res.route.path, { color: "#4f8cff", weight: 4 }).addTo(mapLayer);
   for (const c of res.cands) {
-    const isN = res.navi.stop?.id === c.id, isO = res.ours.stop?.id === c.id;
+    const isN = res.navi.stops?.some((s) => s.c.id === c.id), isO = res.ours.stops?.some((s) => s.c.id === c.id);
     const color = isO ? "#4caf50" : isN ? "#e53935" : "#555";
     L.circleMarker([c.lat, c.lng], { radius: isO || isN ? 9 : 5, color, fillColor: color, fillOpacity: .9 })
       .bindTooltip(`${c.name}${isO ? " · 안기다려 선택" : ""}${isN ? " · 내비 방식 선택" : ""}`).addTo(mapLayer);
@@ -269,6 +277,7 @@ async function runAll() {
   const saves = rows.map(({ r }) => r.navi.totalMin - r.ours.totalMin);
   const avg = saves.reduce((a, b) => a + b, 0) / Math.max(saves.length, 1);
   const waitsN = rows.map(({ r }) => r.navi.legs.waitMin), waitsO = rows.map(({ r }) => r.ours.legs.waitMin);
+  const names = (x) => x.stops.length ? x.stops.map((s) => s.c.name).join(" → ") : "직행";
   const mae = (k) => rows.reduce((a, { r }) => a + Math.abs(r[k].totalMin - r[k].predictedMin), 0) / Math.max(rows.length, 1);
   $("batchSummary").innerHTML = rows.length
     ? `출발 ${rows.length}회 비교 · 평균 <b style="color:var(--good);font-size:20px">${avg.toFixed(1)}분</b> 절약 · 최대 ${Math.round(Math.max(...saves))}분 · ` +
@@ -276,8 +285,8 @@ async function runAll() {
       `도착 시각 예측 오차 평균: 내비 방식 <b style="color:var(--bad)">${mae("navi").toFixed(1)}분</b> → 안기다려 <b style="color:var(--good)">${mae("ours").toFixed(1)}분</b>`
     : "비교할 기록이 부족합니다";
   $("batchTable").innerHTML = `<tr><th>출발</th><th>내비 방식 충전소</th><th>대기</th><th>안기다려 충전소</th><th>대기</th><th>절약</th></tr>` +
-    rows.map(({ t, r }) => `<tr><td>${t.slice(0, 2)}:${t.slice(2)}</td><td>${r.navi.stop.name}</td><td>${Math.round(r.navi.legs.waitMin)}분</td>` +
-      `<td>${r.ours.stop.name}</td><td>${Math.round(r.ours.legs.waitMin)}분</td><td style="color:var(--good)">${Math.round(r.navi.totalMin - r.ours.totalMin)}분</td></tr>`).join("");
+    rows.map(({ t, r }) => `<tr><td>${t.slice(0, 2)}:${t.slice(2)}</td><td>${names(r.navi)}</td><td>${Math.round(r.navi.legs.waitMin)}분</td>` +
+      `<td>${names(r.ours)}</td><td>${Math.round(r.ours.legs.waitMin)}분</td><td style="color:var(--good)">${Math.round(r.navi.totalMin - r.ours.totalMin)}분</td></tr>`).join("");
   $("all").disabled = false;
 }
 

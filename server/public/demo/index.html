@@ -242,11 +242,16 @@ function drawMap(dest, res) {
   const line = L.polyline(res?.route?.path ?? [[ORIGIN.lat, ORIGIN.lng], [dest.lat, dest.lng]], { color: "#4f8cff", weight: 4 }).addTo(layer);
   L.circleMarker([ORIGIN.lat, ORIGIN.lng], { radius: 7, color: "#fff", fillColor: "#4f8cff", fillOpacity: 1 }).bindTooltip("출발 " + ORIGIN.name).addTo(layer);
   L.circleMarker([dest.lat, dest.lng], { radius: 7, color: "#fff", fillColor: "#e53935", fillOpacity: 1 }).bindTooltip("도착 " + dest.name).addTo(layer);
-  const bestId = res?.options?.[0]?.station.id;
-  for (const v of res?.candidates ?? []) {
-    const color = v.id === bestId ? "#4caf50" : v.available > 0 ? "#9aa3b5" : "#ffb300";
-    L.circleMarker([v.lat, v.lng], { radius: v.id === bestId ? 10 : 6, color, fillColor: color, fillOpacity: 0.85 })
-      .bindTooltip(`${v.name}<br>${Math.round(v.atKm)}km 지점 · 빈 ${v.available}/${v.total - v.outOfService} · ${Math.round(v.maxKw)}kW`).addTo(layer);
+  // 계획에 든 정차지 전부 (여러 곳 충전, 충전 없이 밥만 먹는 휴게소 포함) → 순서 번호
+  const planStops = res?.plan?.stops ?? res?.mealStop?.plan.stops ?? [];
+  const order = new Map(planStops.map((st, i) => [st.charger, i]));
+  const cands = [...(res?.candidates ?? [])].sort((a, b) => order.has(a.id) - order.has(b.id));
+  for (const v of cands) {
+    const i = order.get(v.id), picked = i !== undefined;
+    const color = picked ? (planStops[i].meal ? "#ff9800" : "#4caf50") : v.available > 0 ? "#9aa3b5" : "#ffb300";
+    L.circleMarker([v.lat, v.lng], { radius: picked ? 10 : 6, color, fillColor: color, fillOpacity: 0.85 })
+      .bindTooltip(`${picked ? `${"①②③"[i]} ` : ""}${v.name}<br>${Math.round(v.atKm)}km 지점 · 빈 ${v.available}/${v.total - v.outOfService} · ${Math.round(v.maxKw)}kW`).addTo(layer);
+    if (picked) L.tooltip({ permanent: true, direction: "top", offset: [0, -8] }).setLatLng([v.lat, v.lng]).setContent("①②③"[i] + (planStops[i].meal ? " 🍚" : "")).addTo(layer);
   }
   map.fitBounds(line.getBounds(), { padding: [30, 30] });
 }

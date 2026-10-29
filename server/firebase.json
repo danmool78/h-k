@@ -14,6 +14,10 @@
   "hosting": {
     "public": "public",
     "ignore": ["firebase.json", "**/.*"],
-    "redirects": [{ "source": "/", "destination": "/admin/", "type": 302 }]
+    "redirects": [{ "source": "/", "destination": "/admin/", "type": 302 }],
+    "headers": [
+      { "source": "**/*.@(html|js)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+      { "source": "**/", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+    ]
   }
 }

@@ -271,13 +271,18 @@ export const api = onRequest({ memory: "1GiB", cors: true }, async (req, res) =>
         const t = n.split("/")[2].slice(0, 4);
         return t >= from && t <= to;
       }).sort();
+      // 파일을 하나씩 읽으면 하루치(288개)가 응답 제한을 넘으므로 여러 개씩 동시에 읽는다
+      const bufs: (Buffer | null)[] = new Array(files.length);
+      for (let i = 0; i < files.length; i += 24) {
+        await Promise.all(files.slice(i, i + 24).map(async (n, j) => { bufs[i + j] = await readBuffer(n); }));
+      }
       const ticks = [];
-      for (const name of files) {
+      for (const [i, name] of files.entries()) {
         const [, , file] = name.split("/");
         const time = file.slice(0, 4);
         const ver = file.slice(5, -4);
         const order = await historyIndex(ver);
-        const buf = await readBuffer(name);
+        const buf = bufs[i];
         if (!order || !buf) continue;
         const at = tickEpoch(day, time);
         const st = decodeTick(order, buf, at);
