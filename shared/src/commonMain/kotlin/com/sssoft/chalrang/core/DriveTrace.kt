@@ -92,6 +92,15 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
 
     fun timeAt(i: Int): Double = t[(start + i) % capacity]
 
+    // 그래프용: 객체를 만들지 않고 값만
+    fun axAt(i: Int): Double = ax[(start + i) % capacity].toDouble()
+    fun ayAt(i: Int): Double = ay[(start + i) % capacity].toDouble()
+    fun tiltXAt(i: Int): Double = tx[(start + i) % capacity].toDouble()
+    fun tiltYAt(i: Int): Double = ty[(start + i) % capacity].toDouble()
+    fun doseAt(i: Int): Double = dose[(start + i) % capacity].toDouble()
+    fun freeboardAt(i: Int): Double = WaterCup.freeboardOf(level[(start + i) % capacity].toDouble())
+    fun spillingAt(i: Int): Boolean = spill[(start + i) % capacity]
+
     val startTime: Double get() = if (size == 0) 0.0 else timeAt(0)
     val endTime: Double get() = if (size == 0) 0.0 else timeAt(size - 1)
 

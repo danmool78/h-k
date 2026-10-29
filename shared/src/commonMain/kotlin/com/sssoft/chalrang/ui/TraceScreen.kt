@@ -29,6 +29,9 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.State
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -53,7 +56,6 @@ import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TraceSample
 import com.sssoft.chalrang.core.WaterCup
 import com.sssoft.chalrang.engine.ChalrangEngine
-import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
@@ -78,15 +80,30 @@ private val BandColor = Color(0x33B39DDB)
 fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
     val ui by engine.ui.collectAsState()
     val trace = engine.trace
+    // 그래프: 화면 프레임마다 다시 그려 실시간으로 흐른다 (그리기 단계에서만 읽어 화면 재구성은 없다)
+    val frame = remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) {
+        while (true) withFrameNanos { frame.longValue = it }
+    }
+    // 수치·물컵·사건 목록: 0.1초마다
     var version by remember { mutableLongStateOf(trace.version) }
     LaunchedEffect(Unit) {
         while (true) {
-            delay(400)
+            delay(100)
             version = trace.version
         }
     }
-    var windowSec by remember { mutableStateOf<Double?>(120.0) }
+    var windowSec by remember { mutableStateOf<Double?>(60.0) }
     var cursor by remember { mutableStateOf<Double?>(null) }
+    /** 순간을 고르면 그때 화면을 멈춘다 (null = 지금을 따라 흐름) */
+    var frozenEnd by remember { mutableStateOf<Double?>(null) }
+    val pick: (Double) -> Unit = { t -> if (frozenEnd == null) frozenEnd = trace.endTime; cursor = t }
+    // 그래프가 그릴 때마다 부르는 지금 구간과 고른 시각
+    val range: () -> Pair<Double, Double> = {
+        val end = frozenEnd ?: trace.endTime
+        (windowSec?.let { max(trace.startTime, end - it) } ?: trace.startTime) to end
+    }
+    val cursorAt: () -> Double = { val (a, b) = range(); cursor?.coerceIn(a, b) ?: b }
 
     // 아래 물컵 화면으로 누름이 새지 않게 막는다
     Box(Modifier.fillMaxSize().background(Bg).pointerInput(Unit) { detectTapGestures { } }.padding(20.dp)) {
@@ -101,26 +118,29 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
             return@Box
         }
 
-        // version 이 바뀔 때마다 다시 계산
-        val t1 = remember(version) { trace.endTime }
-        val t0 = remember(version, windowSec) { windowSec?.let { max(trace.startTime, t1 - it) } ?: trace.startTime }
-        val lag = remember(version, windowSec) { trace.lag(t0, t1) }
+        // version(0.1초) 이 바뀔 때마다 다시 계산
+        val (t0, t1) = remember(version, windowSec, frozenEnd) { range() }
+        // 무거운 계산은 기록이 1초 쌓일 때마다
+        val lag = remember(trace.size / 10, trace.startTime, windowSec, frozenEnd) { trace.lag(t0, t1) }
         // 주기 분석은 무거우니 기록이 2초 쌓일 때마다
-        val shake = remember(trace.size / 20, trace.startTime, windowSec) { ShakeAnalysis.analyze(trace, t0, t1) }
-        val events = remember(version, windowSec) { trace.events.filter { it.t in t0..t1 } }
+        val shake = remember(trace.size / 20, trace.startTime, windowSec, frozenEnd) { ShakeAnalysis.analyze(trace, t0, t1) }
+        val events = remember(trace.events.size, trace.startTime, t0.toLong(), t1.toLong()) { trace.events.filter { it.t in t0..t1 } }
         val at = cursor?.coerceIn(t0, t1) ?: t1
         val sample = remember(version, at) { trace.indexAt(at).takeIf { it >= 0 }?.let { trace[it] } }
 
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val wide = maxWidth >= 900.dp
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Header(windowSec, onWindow = { windowSec = it; cursor = null }, following = cursor == null, onLive = { cursor = null }, onClose = onClose)
+                Header(
+                    windowSec, onWindow = { windowSec = it; cursor = null; frozenEnd = null }, following = frozenEnd == null,
+                    onLive = { cursor = null; frozenEnd = null }, onClose = onClose,
+                )
                 if (trace.size < 2) {
                     Text("아직 기록이 없어요. 주행하거나 시연을 돌려 보세요.", color = Dim, fontSize = 18.sp)
                     return@Column
                 }
                 val charts: @Composable (Modifier) -> Unit = { m ->
-                    Charts(trace, version, t0, t1, at, events, shake, onCursor = { cursor = it }, modifier = m)
+                    Charts(trace, frame, range, cursorAt, events, shake, onCursor = pick, modifier = m)
                 }
                 if (wide) {
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -128,7 +148,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                             Replay(sample, Modifier.fillMaxWidth().height(230.dp))
                             Values(sample, trace.startTime)
                             LagText(lag)
-                            EventList(events, trace.startTime, onPick = { cursor = it }, modifier = Modifier.weight(1f))
+                            EventList(events, trace.startTime, onPick = pick, modifier = Modifier.weight(1f))
                         }
                         charts(Modifier.weight(1f))
                     }
@@ -213,30 +233,30 @@ private fun EventList(events: List<TraceEvent>, start: Double, onPick: (Double) 
 /** 세 그래프: 차 흔들림(원인), 물 출렁임(결과), 멀미 누적량 */
 @Composable
 private fun Charts(
-    trace: DriveTrace, version: Long, t0: Double, t1: Double, at: Double,
+    trace: DriveTrace, frame: State<Long>, range: () -> Pair<Double, Double>, cursorAt: () -> Double,
     events: List<TraceEvent>, shake: ShakeReport?, onCursor: (Double) -> Unit, modifier: Modifier,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Legend("차 흔들림 (원인) m/s²", listOf("앞뒤" to LongColor, "좌우" to LatColor))
         Chart(
-            trace, version, t0, t1, at, events, onCursor, Modifier.weight(1f),
-            series = listOf(Series(LongColor) { it.ax }, Series(LatColor) { it.ay }),
+            trace, frame, range, cursorAt, events, onCursor, Modifier.weight(1f),
+            series = listOf(Series(LongColor) { t, i -> t.axAt(i) }, Series(LatColor) { t, i -> t.ayAt(i) }),
             range = 5.0, guides = listOf(0.0),
         )
         Legend("물 출렁임 (결과) g · 차 흔들림과 같은 방향 · 빨간 띠 = 넘침", listOf("앞뒤" to LongColor, "좌우" to LatColor, "크기" to Color.White))
         Chart(
-            trace, version, t0, t1, at, events, onCursor, Modifier.weight(1f),
+            trace, frame, range, cursorAt, events, onCursor, Modifier.weight(1f),
             series = listOf(
-                Series(LongColor) { -it.tiltX },
-                Series(LatColor) { -it.tiltY },
-                Series(Color.White, width = 1.2f) { hypot(it.tiltX, it.tiltY) },
+                Series(LongColor) { t, i -> -t.tiltXAt(i) },
+                Series(LatColor) { t, i -> -t.tiltYAt(i) },
+                Series(Color.White, width = 1.2f) { t, i -> hypot(t.tiltXAt(i), t.tiltYAt(i)) },
             ),
-            range = WaterCup.MAX_FREEBOARD * 0.9, guides = listOf(0.0), threshold = { it.freeboard }, shadeSpill = true,
+            range = WaterCup.MAX_FREEBOARD * 0.9, guides = listOf(0.0), threshold = { t, i -> t.freeboardAt(i) }, shadeSpill = true,
         )
         Legend("멀미 누적량", listOf("누적" to DoseColor))
         Chart(
-            trace, version, t0, t1, at, events, onCursor, Modifier.weight(0.55f),
-            series = listOf(Series(DoseColor, width = 2.5f) { it.dose }),
+            trace, frame, range, cursorAt, events, onCursor, Modifier.weight(0.55f),
+            series = listOf(Series(DoseColor, width = 2.5f) { t, i -> t.doseAt(i) }),
             range = null, guides = listOf(0.6, 1.0),
         )
         if (shake != null) {
@@ -259,6 +279,9 @@ private fun Charts(
 @Composable
 private fun SpectrumChart(r: ShakeReport, modifier: Modifier) {
     val measurer = rememberTextMeasurer()
+    val labels = remember(measurer) {
+        listOf(50.0, 20.0, 10.0, 5.0, 2.0, 1.0).map { it to measurer.measure("${it.roundToInt()}초", TextStyle(color = Dim, fontSize = 10.sp)) }
+    }
     Canvas(modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))) {
         val fLo = ShakeAnalysis.F_MIN
         val fHi = ShakeAnalysis.F_MAX
@@ -278,10 +301,9 @@ private fun SpectrumChart(r: ShakeReport, modifier: Modifier) {
         line(r.latAmp, top, LatColor, 2f)
         val xs = x(1 / r.sicknessPeriod)
         drawLine(SpillColor, Offset(xs, 0f), Offset(xs, h), strokeWidth = 2f)
-        for (period in listOf(50.0, 20.0, 10.0, 5.0, 2.0, 1.0)) {
+        for ((period, text) in labels) {
             val px = x(1 / period)
             drawLine(Grid, Offset(px, h), Offset(px, h + 4), strokeWidth = 1f)
-            val text = measurer.measure("${period.roundToInt()}초", TextStyle(color = Dim, fontSize = 10.sp))
             drawText(text, topLeft = Offset((px - text.size.width / 2f).coerceIn(0f, size.width - text.size.width), h + 3))
         }
     }
@@ -298,63 +320,86 @@ private fun Legend(title: String, items: List<Pair<String, Color>>) {
     }
 }
 
-private class Series(val color: Color, val width: Float = 1.8f, val value: (TraceSample) -> Double)
+private class Series(val color: Color, val width: Float = 1.8f, val value: (DriveTrace, Int) -> Double)
 
 /**
  * 시간축 그래프. [range] 가 있으면 ±range, 없으면 0 ~ max(1.2, 최대값).
+ * [frame] 이 바뀔 때마다(화면 프레임) 지금 구간을 다시 읽어 그린다 → 실시간으로 흐른다.
  * 누르거나 가로로 끌면 [onCursor] 로 그 시각을 알린다.
  */
 @Composable
 private fun Chart(
-    trace: DriveTrace, version: Long, t0: Double, t1: Double, at: Double,
+    trace: DriveTrace, frame: State<Long>, timeRange: () -> Pair<Double, Double>, cursorAt: () -> Double,
     events: List<TraceEvent>, onCursor: (Double) -> Unit, modifier: Modifier,
     series: List<Series>, range: Double?, guides: List<Double>,
-    threshold: ((TraceSample) -> Double)? = null, shadeSpill: Boolean = false,
+    threshold: ((DriveTrace, Int) -> Double)? = null, shadeSpill: Boolean = false,
 ) {
-    val span = (t1 - t0).coerceAtLeast(1e-6)
+    fun timeAtX(x: Float, width: Int): Double {
+        val (t0, t1) = timeRange()
+        return t0 + (t1 - t0) * (x / width).coerceIn(0f, 1f)
+    }
+    val spillPath = remember { Path() }
+    val linePath = remember { Path() }
     Canvas(
         modifier
             .fillMaxWidth()
             .background(Panel, RoundedCornerShape(10.dp))
-            .pointerInput(t0, t1) { detectTapGestures { o -> onCursor(t0 + span * (o.x / size.width).coerceIn(0f, 1f)) } }
-            .pointerInput(t0, t1) {
-                detectHorizontalDragGestures { change, _ -> onCursor(t0 + span * (change.position.x / size.width).coerceIn(0f, 1f)) }
-            },
+            .pointerInput(Unit) { detectTapGestures { o -> onCursor(timeAtX(o.x, size.width)) } }
+            .pointerInput(Unit) { detectHorizontalDragGestures { change, _ -> onCursor(timeAtX(change.position.x, size.width)) } },
     ) {
+        frame.value   // 프레임마다 다시 그리기
+        val (t0, t1) = timeRange()
+        val span = (t1 - t0).coerceAtLeast(1e-6)
         val i0 = trace.indexAt(t0).coerceAtLeast(0)
         val i1 = trace.indexAt(t1)
         if (i1 <= i0) return@Canvas
         val step = max(1, (i1 - i0) / max(1, size.width.toInt()))
-        val samples = (i0..i1 step step).map { trace[it] }
-        val (lo, hi) = if (range != null) -range to range else 0.0 to max(1.2, samples.maxOf { s -> series.maxOf { it.value(s) } } * 1.1)
+        val (lo, hi) = if (range != null) {
+            -range to range
+        } else {
+            var m = 0.0
+            var i = i0
+            while (i <= i1) { for (sr in series) m = max(m, sr.value(trace, i)); i += step }
+            0.0 to max(1.2, m * 1.1)
+        }
         fun x(t: Double) = ((t - t0) / span * size.width).toFloat()
         fun y(v: Double) = (size.height * (1 - (v.coerceIn(lo, hi) - lo) / (hi - lo))).toFloat()
-
-        // 넘친 구간
-        if (shadeSpill) {
-            for (s in samples) if (s.spilling) {
-                drawRect(SpillColor.copy(alpha = 0.22f), topLeft = Offset(x(s.t) - 1, 0f), size = Size(max(2f, size.width / samples.size + 1), size.height))
+        fun trace(value: (DriveTrace, Int) -> Double): Path {
+            linePath.reset()
+            var i = i0
+            var first = true
+            while (i <= i1) {
+                val px = x(trace.timeAt(i)); val py = y(value(trace, i))
+                if (first) { linePath.moveTo(px, py); first = false } else linePath.lineTo(px, py)
+                i += step
             }
+            return linePath
+        }
+
+        // 넘친 구간 (한 경로로)
+        if (shadeSpill) {
+            spillPath.reset()
+            val w = max(2f, size.width * step / (i1 - i0 + 1) + 1)
+            var i = i0
+            while (i <= i1) {
+                if (trace.spillingAt(i)) spillPath.addRect(androidx.compose.ui.geometry.Rect(Offset(x(trace.timeAt(i)) - 1, 0f), Size(w, size.height)))
+                i += step
+            }
+            drawPath(spillPath, SpillColor.copy(alpha = 0.22f))
         }
         // 기준선
         for (g in guides) drawLine(Grid, Offset(0f, y(g)), Offset(size.width, y(g)), strokeWidth = 1f, pathEffect = if (g == 0.0) null else PathEffect.dashPathEffect(floatArrayOf(8f, 6f)))
         if (threshold != null) {
-            val p = Path()
-            samples.forEachIndexed { k, s -> val o = Offset(x(s.t), y(threshold(s))); if (k == 0) p.moveTo(o.x, o.y) else p.lineTo(o.x, o.y) }
-            drawPath(p, SpillColor, style = Stroke(1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f))))
+            drawPath(trace(threshold), SpillColor, style = Stroke(1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f))))
         }
         // 사건
-        for (e in events) if (e.kind != TraceKind.SPILL) {
+        for (e in events) if (e.kind != TraceKind.SPILL && e.t in t0..t1) {
             drawLine(kindColor(e.kind).copy(alpha = 0.6f), Offset(x(e.t), 0f), Offset(x(e.t), size.height), strokeWidth = 1.5f)
         }
         // 값
-        for (sr in series) {
-            val p = Path()
-            samples.forEachIndexed { k, s -> val o = Offset(x(s.t), y(sr.value(s))); if (k == 0) p.moveTo(o.x, o.y) else p.lineTo(o.x, o.y) }
-            drawPath(p, sr.color, style = Stroke(sr.width))
-        }
+        for (sr in series) drawPath(trace(sr.value), sr.color, style = Stroke(sr.width))
         // 고른 시각
-        drawCursor(x(at))
+        drawCursor(x(cursorAt()))
     }
 }
 

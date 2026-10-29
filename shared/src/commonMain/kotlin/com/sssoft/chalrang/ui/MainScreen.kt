@@ -65,7 +65,10 @@ fun MainScreen(vm: ChalrangEngine) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Bg)) {
         val wide = maxWidth >= WIDE_MIN && maxWidth > maxHeight
         val sideWidth = minOf(380.dp, maxWidth * 0.38f)
-        if (wide) {
+        if (tracing) {
+            // 기록 화면이 덮는 동안 아래 물컵 화면은 그리지 않는다 (차량 화면 성능)
+            TraceScreen(vm, onClose = { tracing = false })
+        } else if (wide) {
             Row(
                 Modifier.fillMaxSize().padding(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
@@ -96,8 +99,6 @@ fun MainScreen(vm: ChalrangEngine) {
                 Controls(s, vm, onEdit = { editing = true })
             }
         }
-        // 기록 화면은 물컵 화면 위에 덮는다
-        if (tracing) TraceScreen(vm, onClose = { tracing = false })
     }
     if (editing) ChildrenDialog(s.children, vm, onDismiss = { editing = false })
 }
