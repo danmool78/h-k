@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "chalrang"
+include(":app")

@@ -1,0 +1,188 @@
+package com.sssoft.chalrang.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.sssoft.chalrang.car.CarLink
+import com.sssoft.chalrang.core.Child
+import com.sssoft.chalrang.core.DriverStyle
+import com.sssoft.chalrang.core.Seat
+
+private val Bg = Color(0xFF0E1621)
+private val Panel = Color(0xFF17222F)
+private val Dim = Color(0xFF9FB0C3)
+private val Sick = Color(0xFFE5533D)
+
+@Composable
+fun MainScreen(vm: ChalrangViewModel) {
+    val s by vm.ui.collectAsState()
+    var editing by remember { mutableStateOf(false) }
+
+    Row(
+        Modifier
+            .fillMaxSize()
+            .background(Bg)
+            .padding(24.dp),
+        horizontalArrangement = Arrangement.spacedBy(24.dp),
+    ) {
+        Box(Modifier.weight(1.3f).fillMaxHeight()) {
+            CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize())
+            Text("찰랑", color = Dim, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart))
+        }
+        Column(
+            Modifier.width(380.dp).fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            RidersCard(s)
+            CarCard(s)
+            s.lastSaid?.let {
+                Text("“$it”", color = Dim, fontSize = 17.sp, lineHeight = 24.sp)
+            }
+            Spacer(Modifier.weight(1f))
+            Button(
+                onClick = vm::sickNow,
+                enabled = s.setup.active,
+                colors = ButtonDefaults.buttonColors(containerColor = Sick),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth().height(96.dp),
+            ) {
+                Text("지금 멀미", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            }
+            DemoRow(s, vm, onEdit = { editing = true })
+        }
+    }
+    if (editing) ChildrenDialog(s.children, vm, onDismiss = { editing = false })
+}
+
+@Composable
+private fun Card(content: @Composable () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(16.dp)).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) { content() }
+}
+
+@Composable
+private fun RidersCard(s: UiState) = Card {
+    Text("탄 사람", color = Dim, fontSize = 15.sp)
+    val setup = s.setup
+    when {
+        !setup.active -> Text("혼자 주행 · 물컵은 쉬는 중", color = Color.White, fontSize = 20.sp)
+        else -> {
+            setup.children.forEach { c ->
+                Text("${c.name} · ${c.seat.label}", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            }
+            setup.guests.forEach { g -> Text("동승자 · ${g.label}", color = Color.White, fontSize = 20.sp) }
+        }
+    }
+    if (s.assumedSeat) Text("시연: 좌석이 비어 있어 첫 아이가 탄 것으로 봐요", color = Dim, fontSize = 13.sp)
+}
+
+@Composable
+private fun CarCard(s: UiState) = Card {
+    Text("차량", color = Dim, fontSize = 15.sp)
+    val car = s.car
+    when {
+        car.freshAir -> Text("환기 중", color = Color(0xFF81D4FA), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        else -> Text(if (car.connected) "평소대로" else "차량 연결 안 됨", color = Color.White, fontSize = 20.sp)
+    }
+    if (car.openWindows.isNotEmpty()) {
+        Text(car.openWindows.entries.joinToString { (w, p) -> "${CarLink.windowLabel(w)} 창문 $p%" }, color = Color.White, fontSize = 17.sp)
+    }
+    if (s.raining) Text("비 · 창문은 닫아 둬요", color = Dim, fontSize = 15.sp)
+    car.lastAction?.let { Text(it, color = Dim, fontSize = 15.sp) }
+}
+
+@Composable
+private fun DemoRow(s: UiState, vm: ChalrangViewModel, onEdit: () -> Unit) {
+    if (s.demo != null) {
+        Text("시연 · ${s.demo}", color = Dim, fontSize = 14.sp)
+        LinearProgressIndicator(progress = { s.demoProgress }, modifier = Modifier.fillMaxWidth())
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = onEdit, modifier = Modifier.weight(1f)) { Text("아이 설정") }
+        if (s.demo == null) {
+            OutlinedButton(onClick = { vm.startDemo(DriverStyle.ROUGH) }, modifier = Modifier.weight(1f)) { Text("시연 거칠게") }
+            OutlinedButton(onClick = { vm.startDemo(DriverStyle.SMOOTH) }, modifier = Modifier.weight(1f)) { Text("시연 부드럽게") }
+        } else {
+            OutlinedButton(onClick = vm::stopDemo, modifier = Modifier.weight(2f)) { Text("시연 끝") }
+        }
+    }
+}
+
+@Composable
+private fun ChildrenDialog(children: List<Child>, vm: ChalrangViewModel, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var seat by remember { mutableStateOf(Seat.REAR_LEFT) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("아이 설정") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                children.forEach { c ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${c.name} · ${c.seat.label}", fontSize = 18.sp)
+                            Text(
+                                if (c.calibrations == 0) "처음 기준 · 멀미하면 '지금 멀미'를 눌러 주세요"
+                                else "'지금 멀미'로 ${c.calibrations}번 맞춤",
+                                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { vm.removeChild(c) }) { Text("삭제") }
+                    }
+                }
+                Text("아이 추가 · 자리를 정하면 그 좌석에 탈 때 자동으로 맞춰요", fontSize = 14.sp)
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("이름") }, singleLine = true)
+                SeatPicker(seat) { seat = it }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = name.isNotBlank(), onClick = { vm.addChild(name, seat); name = "" }) { Text("추가") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("닫기") } },
+    )
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun SeatPicker(selected: Seat, onSelect: (Seat) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Seat.entries.forEach { s ->
+            FilterChip(selected = s == selected, onClick = { onSelect(s) }, label = { Text(s.label) })
+        }
+    }
+}
