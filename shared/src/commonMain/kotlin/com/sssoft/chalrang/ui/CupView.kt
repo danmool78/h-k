@@ -122,7 +122,7 @@ fun CupView(
             val half = halfAt(midY)
             val eh = w * 0.04f + wave * 0.6f
             drawOval(
-                Color.White.copy(alpha = 0.22f),
+                lerp(waterColor, Color.White, 0.45f).copy(alpha = 0.55f),
                 topLeft = Offset(cx - half, midY - eh / 2),
                 size = Size(half * 2, eh),
             )

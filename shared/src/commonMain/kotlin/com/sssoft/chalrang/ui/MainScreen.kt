@@ -3,6 +3,8 @@ package com.sssoft.chalrang.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sssoft.chalrang.core.Child
@@ -49,58 +52,95 @@ private val Panel = Color(0xFF17222F)
 private val Dim = Color(0xFF9FB0C3)
 private val Sick = Color(0xFFE5533D)
 
+/**
+ * 찰랑 화면. 차량 화면에는 앱이 하나(가로로 넓음) 또는 둘(나란히, 세로로 김)까지 뜨므로
+ * 넓으면 물컵 | 정보 좌우 배치, 좁거나 세로로 길면 물컵 위·정보 아래로 바꾼다.
+ */
 @Composable
 fun MainScreen(vm: ChalrangEngine) {
     val s by vm.ui.collectAsState()
     var editing by remember { mutableStateOf(false) }
 
-    Row(
-        Modifier
-            .fillMaxSize()
-            .background(Bg)
-            .padding(24.dp),
-        horizontalArrangement = Arrangement.spacedBy(24.dp),
-    ) {
-        Box(Modifier.weight(1.3f).fillMaxHeight()) {
-            CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize())
-            Text("찰랑", color = Dim, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart))
-        }
-        Column(
-            Modifier.width(380.dp).fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            RidersCard(s)
-            CarCard(s)
-            s.lastSaid?.let {
-                Text("“$it”", color = Dim, fontSize = 17.sp, lineHeight = 24.sp)
-            }
-            Spacer(Modifier.weight(1f))
-            s.askWindows?.let { AskWindowCard(it, vm) }
-            Button(
-                onClick = vm::sickNow,
-                enabled = s.setup.active,
-                colors = ButtonDefaults.buttonColors(containerColor = Sick, contentColor = Color.White),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxWidth().height(96.dp),
+    BoxWithConstraints(Modifier.fillMaxSize().background(Bg)) {
+        val wide = maxWidth >= WIDE_MIN && maxWidth > maxHeight
+        val sideWidth = minOf(380.dp, maxWidth * 0.38f)
+        if (wide) {
+            Row(
+                Modifier.fillMaxSize().padding(24.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                Text("지금 멀미", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                Cup(s, Modifier.weight(1f).fillMaxHeight())
+                Column(
+                    Modifier.width(sideWidth).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    RidersCard(s)
+                    CarCard(s)
+                    Said(s)
+                    Spacer(Modifier.weight(1f))
+                    Controls(s, vm, onEdit = { editing = true })
+                }
             }
-            DemoRow(s, vm, onEdit = { editing = true })
+        } else {
+            Column(
+                Modifier.fillMaxSize().padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Cup(s, Modifier.weight(1f).fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.height(IntrinsicSize.Min)) {
+                    RidersCard(s, Modifier.weight(1f).fillMaxHeight())
+                    CarCard(s, Modifier.weight(1f).fillMaxHeight())
+                }
+                Said(s)
+                Controls(s, vm, onEdit = { editing = true })
+            }
         }
     }
     if (editing) ChildrenDialog(s.children, vm, onDismiss = { editing = false })
 }
 
+/** 이보다 넓은 가로 화면이면 좌우 배치 */
+private val WIDE_MIN = 900.dp
+
 @Composable
-private fun Card(content: @Composable () -> Unit) {
+private fun Cup(s: UiState, modifier: Modifier) = Box(modifier) {
+    CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize())
+    Text("찰랑", color = Dim, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart))
+}
+
+@Composable
+private fun Said(s: UiState) {
+    s.lastSaid?.let {
+        Text("“$it”", color = Dim, fontSize = 17.sp, lineHeight = 24.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** 창문 질문, "지금 멀미", 아이 설정·시연 */
+@Composable
+private fun Controls(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
+    s.askWindows?.let { AskWindowCard(it, vm) }
+    Button(
+        onClick = vm::sickNow,
+        enabled = s.setup.active,
+        colors = ButtonDefaults.buttonColors(containerColor = Sick, contentColor = Color.White),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().height(88.dp),
+    ) {
+        Text("지금 멀미", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+    }
+    DemoRow(s, vm, onEdit)
+}
+
+@Composable
+private fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Column(
-        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(16.dp)).padding(16.dp),
+        modifier.fillMaxWidth().background(Panel, RoundedCornerShape(16.dp)).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) { content() }
 }
 
 @Composable
-private fun RidersCard(s: UiState) = Card {
+private fun RidersCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier) {
     Text("탄 사람", color = Dim, fontSize = 15.sp)
     val setup = s.setup
     when {
@@ -116,7 +156,7 @@ private fun RidersCard(s: UiState) = Card {
 }
 
 @Composable
-private fun CarCard(s: UiState) = Card {
+private fun CarCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier) {
     Text("차량", color = Dim, fontSize = 15.sp)
     val car = s.car
     when {

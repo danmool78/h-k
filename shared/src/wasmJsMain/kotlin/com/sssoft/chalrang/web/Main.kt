@@ -34,9 +34,15 @@ import com.sssoft.chalrang.ui.ChalrangTheme
 import com.sssoft.chalrang.ui.MainScreen
 import kotlin.math.min
 
-/** 차량 화면 크기 (dp). 브라우저에서는 이 화면을 통째로 줄이거나 키워 보여 준다 */
-private const val SCREEN_W = 1280f
-private const val SCREEN_H = 720f
+/**
+ * 점검할 앱 영역 (dp). 차량 화면 2560×1440(QHD), 배율 2 기준.
+ * 브라우저에서는 이 영역을 통째로 줄이거나 키워 보여 준다.
+ */
+private enum class Frame(val label: String, val w: Float, val h: Float) {
+    FULL("전체 화면", 1280f, 720f),
+    SPLIT("화면 분할 (앱 두 개)", 640f, 720f),
+    PORTRAIT("세로 화면", 720f, 1280f),
+}
 
 @OptIn(ExperimentalComposeUiApi::class)
 fun main() {
@@ -59,13 +65,14 @@ private fun WebApp(engine: ChalrangEngine, car: SimCar, voice: BrowserVoice) {
     val seats by car.seats.collectAsState()
     val raining by car.raining.collectAsState()
     var muted by remember { mutableStateOf(false) }
+    var frame by remember { mutableStateOf(Frame.FULL) }
 
     Column(Modifier.fillMaxSize().background(Color(0xFF05090E))) {
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-            val scale = min(maxWidth.value / SCREEN_W, maxHeight.value / SCREEN_H)
+            val scale = min(maxWidth.value / frame.w, maxHeight.value / frame.h)
             Box(
                 Modifier
-                    .requiredSize(SCREEN_W.dp, SCREEN_H.dp)
+                    .requiredSize(frame.w.dp, frame.h.dp)
                     .graphicsLayer(scaleX = scale, scaleY = scale),
             ) {
                 MainScreen(engine)
@@ -79,6 +86,9 @@ private fun WebApp(engine: ChalrangEngine, car: SimCar, voice: BrowserVoice) {
             Text("점검 · 가짜 차량", color = Color(0xFF9FB0C3), fontSize = 14.sp, modifier = Modifier.align(Alignment.CenterVertically))
             Seat.entries.forEach { s ->
                 FilterChip(selected = seats[s]?.riding == true, onClick = { car.toggleSeat(s) }, label = { Text(s.label) })
+            }
+            Frame.entries.forEach { f ->
+                FilterChip(selected = frame == f, onClick = { frame = f }, label = { Text(f.label) })
             }
             FilterChip(selected = raining, onClick = { car.setRaining(!raining) }, label = { Text("비 (와이퍼)") })
             FilterChip(selected = muted, onClick = { muted = !muted; voice.muted = muted }, label = { Text("소리 끔") })
