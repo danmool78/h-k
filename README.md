@@ -1,39 +1,13 @@
-# 안기다려 (h-k)
+# 찰랑
 
-현대·기아자동차 앱 공모전 출품 프로젝트.
+현대·기아 차량용 앱 공모전 출품 프로젝트 (Pleos Connect / Android Automotive).
 
-## 개요
+화면에 물컵 하나를 띄우고, 물이 넘치지 않게 운전하면 아이가 멀미하지 않는다.
+차량 신호(전륜 조향각·브레이크·주행 거리)와 내비 안내로 물컵을 출렁이게 하고,
+넘친 양을 멀미 누적량으로 쌓아 우리 아이 기준에 닿기 전에 알려 줍니다.
 
-**기다리지 않는 충전 경로**를 찾아주는 전기차 앱 (Pleos Connect / Android Automotive).
+- 기획: [docs/찰랑_기획메모.md](docs/찰랑_기획메모.md)
+- 공모전·Pleos SDK 정리: [docs/PLEOS_SDK.md](docs/PLEOS_SDK.md)
+- 웹 페이지(`server/public`)는 `main` 에 병합되면 https://h-y-server.web.app 에 자동 배포됩니다 (GitHub Actions)
 
-차량 내비는 도착 시 예상 배터리와 경로상 충전소(대수·출력)까지는 알려주지만,
-그 충전소가 **지금 비어 있는지, 도착할 때 붐빌지**는 모릅니다. 안기다려는
-
-- 전국 급속 충전기 5만여 대의 실시간 상태를 5분마다 수집하고 ([server/](server/))
-- 요일·시간대별 혼잡도를 학습해 **도착 시점 대기시간**을 예측하고
-- 배터리·거리·기온의 불확실성을 몬테카를로로 계산해 **도착 확률을 지키면서 총 소요시간이 가장 짧은 충전소**를 추천합니다.
-
-날씨는 [Open-Meteo](https://open-meteo.com)(전 세계, CC BY 4.0)로 경로 지점별 도착 시각 예보를 씁니다.
-
-Gleo AI 음성으로도 쓸 수 있습니다: "안기다려, 어디서 충전해?"
-
-## 실행
-
-- 요구: Android Studio, Android SDK 36, Pleos Connect Emulator v2.1.0 (설치는 [docs/PLEOS_SDK.md](docs/PLEOS_SDK.md))
-- 빌드: `./gradlew :app:assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
-- 테스트: `./gradlew :app:testDebugUnitTest`
-- 차량 연결이 안 되면 배터리 값을 화면에서 수동 입력할 수 있습니다.
-  에뮬레이터 배터리 값은 Virtual Console(`adb forward tcp:8088 tcp:8088` → http://127.0.0.1:8088)의 Energy에서 변경.
-
-## 구조
-
-| 경로 | 내용 |
-|---|---|
-| [app/.../model/EvMonteCarlo.kt](app/src/main/java/com/sssoft/hk/model/EvMonteCarlo.kt) | 도달 확률 · 충전 계획 모델 |
-| [app/.../vehicle/BatterySource.kt](app/src/main/java/com/sssoft/hk/vehicle/BatterySource.kt) | Vehicle SDK 배터리 연동 |
-| [app/.../ui/](app/src/main/java/com/sssoft/hk/ui/) | 게이지 화면, ViewModel |
-| [prototype/ev_montecarlo.py](prototype/ev_montecarlo.py) | 원본 파이썬 프로토타입 |
-
-## 문서
-
-- [공모전 요강 · Pleos Connect SDK 정리](docs/PLEOS_SDK.md)
+이전 출품 후보 "안기다려"(대기 없는 충전 경로)의 코드는 태그 `anki-darye-final` 에 남아 있습니다.

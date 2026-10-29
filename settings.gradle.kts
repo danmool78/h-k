@@ -16,5 +16,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "h-k"
-include(":app")
+rootProject.name = "chalrang"
