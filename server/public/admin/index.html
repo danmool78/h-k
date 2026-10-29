@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>찰랑 계산 근거</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<style>
+  :root {
+    --bg:#f6f7f9; --card:#fff; --text:#1c2230; --muted:#5f6b7d; --line:#e3e7ee; --accent:#0b7fb3;
+    --code:#f1f4f8; --band:rgba(124,92,214,.12); --curve:#0b7fb3; --dot:#e2553d; --warn:#9a5b00; --warnbg:#fff6e5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#0e1621; --card:#17222f; --text:#e8edf4; --muted:#9fb0c3; --line:#26364a; --accent:#4fc3f7;
+      --code:#0f1a26; --band:rgba(179,157,219,.16); --curve:#4fc3f7; --dot:#ff8a65; --warn:#ffcc80; --warnbg:#2a2214;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#0e1621; --card:#17222f; --text:#e8edf4; --muted:#9fb0c3; --line:#26364a; --accent:#4fc3f7;
+    --code:#0f1a26; --band:rgba(179,157,219,.16); --curve:#4fc3f7; --dot:#ff8a65; --warn:#ffcc80; --warnbg:#2a2214;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.7 system-ui,-apple-system,"Segoe UI","Noto Sans KR","Apple SD Gothic Neo",sans-serif; }
+  main { max-width:880px; margin:0 auto; padding:32px 16px 64px; }
+  header { margin-bottom:24px; }
+  header h1 { font-size:28px; margin:0 0 4px; }
+  header p { color:var(--muted); margin:0; }
+  nav { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 18px; margin-bottom:20px; font-size:14px; }
+  nav ol { margin:0; padding-left:20px; columns:2; column-gap:24px; }
+  nav a { color:var(--accent); text-decoration:none; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:16px; }
+  h2 { font-size:20px; margin:0 0 10px; }
+  h3 { font-size:16px; margin:18px 0 6px; }
+  p { margin:8px 0; }
+  .muted { color:var(--muted); font-size:14px; }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:14px; overflow-wrap:anywhere; }
+  .katex-display { overflow-x:auto; overflow-y:hidden; padding:4px 0; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin:8px 0; }
+  th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .scroll { overflow-x:auto; }
+  .flow { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:14px; margin:8px 0; }
+  .flow span { background:var(--code); border:1px solid var(--line); border-radius:8px; padding:4px 10px; }
+  .flow b { color:var(--muted); font-weight:400; }
+  .note { background:var(--warnbg); color:var(--warn); border-radius:8px; padding:10px 14px; font-size:14px; margin:10px 0; }
+  .chart { width:100%; height:auto; display:block; margin:8px 0; }
+  .chart .grid { stroke:var(--line); stroke-width:1; }
+  .chart .band { fill:var(--band); }
+  .chart .curve { fill:none; stroke:var(--curve); stroke-width:2.5; }
+  .chart .dot { fill:var(--dot); }
+  .chart .ax { fill:var(--muted); font-size:11px; }
+  .chart .ax2 { fill:var(--muted); font-size:10px; opacity:.8; }
+  footer { color:var(--muted); font-size:13px; text-align:center; margin-top:24px; }
+  @media (max-width:600px) { nav ol { columns:1; } section { padding:16px; } header h1 { font-size:24px; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>찰랑 계산 근거</h1>
+  <p>쓴 수식, 매개변수, 검증 결과, 출처 · 코드: <code>shared/src/commonMain/kotlin/com/sssoft/chalrang/core/</code></p>
+</header>
+
+<nav aria-label="목차">
+  <ol>
+    <li><a href="#flow">전체 흐름</a></li>
+    <li><a href="#motion">차량 신호 → 가속도</a></li>
+    <li><a href="#wf">ISO 2631-1 Wf 가중</a></li>
+    <li><a href="#cup">물 기울기·넘침·멀미 누적</a></li>
+    <li><a href="#calib">"지금 멀미" 기준 맞추기</a></li>
+    <li><a href="#care">차량 조치 규칙</a></li>
+    <li><a href="#trace">흔들림 기록과 지연</a></li>
+    <li><a href="#period">흔들림 주기와 MSDV</a></li>
+    <li><a href="#cup3d">3D 물컵 그리기</a></li>
+    <li><a href="#tests">검증 (테스트)</a></li>
+    <li><a href="#limits">한계와 확인할 것</a></li>
+    <li><a href="#sources">출처</a></li>
+  </ol>
+</nav>
+
+<section id="flow">
+  <h2>1. 전체 흐름</h2>
+  <div class="flow">
+    <span>차량 신호 (주행 거리·조향각·브레이크·위치)</span><b>→</b>
+    <span>앞뒤·좌우 가속도</span><b>→</b>
+    <span>ISO 2631-1 Wf 가중</span><b>→</b>
+    <span>물 기울기</span><b>→</b>
+    <span>넘친 양</span><b>→</b>
+    <span>멀미 누적량</span><b>→</b>
+    <span>안내·공조·창문</span>
+  </div>
+  <p>20Hz(0.05초)마다 한 번 돈다. 시연은 같은 계산에 주행 시나리오의 가속도를 6배속으로 넣는다. 앱과 웹 점검판이 같은 코드를 쓴다.</p>
+</section>
+
+<section id="motion">
+  <h2>2. 차량 신호 → 가속도 <span class="muted">MotionEstimator.kt</span></h2>
+  <p>Pleos Vehicle SDK 에는 가속도 값이 없어 다른 신호로 추정한다.</p>
+  <h3>속도·앞뒤 가속도</h3>
+  <p>주행 거리 \(d\) (Odometer, km → m) 또는 내비 위치 변화(하버사인 거리)를 약 2초 구간의 기울기로 읽는다. 거리 값이 거칠게(예: 1m 단위) 와도 흔들리지 않게 하려는 것이다.</p>
+  $$v = \frac{d(t) - d(t - \Delta)}{\Delta},\qquad a_x = \frac{v(t) - v(t - \Delta)}{\Delta},\qquad \Delta \approx 2\,\text{s}$$
+  <p>브레이크를 밟는 중이면 \(a_x > 0\) 을 0 으로 본다. 2초 구간은 멀미 대역(2~10초 주기)보다 짧아 그 흔들림은 남는다.</p>
+  <h3>좌우 가속도</h3>
+  <p>조향각이 있으면 자전거 모형(정상 선회), 없으면 진행 방향의 변화율로 구한다. 왼쪽으로 도는 중이 +.</p>
+  $$a_y = -\frac{v^2 \tan\delta}{L},\qquad \delta = \frac{\delta_\text{SDK}}{r_s},\qquad L = 2.9\,\text{m}$$
+  $$a_y = -v\,\dot\psi\quad(\text{조향각이 없을 때},\ \psi = \text{나침반 방향})$$
+  <p>\(\delta_\text{SDK}\) 는 AAOS 관례대로 왼쪽이 음수. SDK 가 알려 주는 최대 각도가 60°를 넘으면 운전대 각도로 보고 조향비 \(r_s = 14\) 로 나누고, 아니면 바퀴 각도(\(r_s = 1\))로 본다. 가속도는 \(\pm 0.8g\) 로 자른다.</p>
+</section>
+
+<section id="wf">
+  <h2>3. ISO 2631-1 멀미 주파수 가중 Wf <span class="muted">Iso2631.kt</span></h2>
+  <p>사람이 멀미하는 흔들림은 주기 2~10초(0.1~0.5Hz)의 느린 흔들림이다. ISO 2631-1 은 이것을 가중 함수 Wf 로 정해 두었고, 찰랑은 표준의 전달 함수를 그대로 쓴다.</p>
+  $$W_f(s) = H_h(s)\,H_l(s)\,H_t(s)\,H_s(s)$$
+  $$H_h = \frac{s^2}{s^2 + \sqrt2\,\omega_1 s + \omega_1^2},\qquad
+    H_l = \frac{\omega_2^2}{s^2 + \sqrt2\,\omega_2 s + \omega_2^2}$$
+  $$H_t = \frac{\omega_4^2}{s^2 + \frac{\omega_4}{Q_4}s + \omega_4^2}\ (f_3=\infty),\qquad
+    H_s = \frac{s^2 + \frac{\omega_5}{Q_5}s + \omega_5^2}{s^2 + \frac{\omega_6}{Q_6}s + \omega_6^2}$$
+  <div class="scroll"><table>
+    <thead><tr><th>구간</th><th>뜻</th><th class="num">f (Hz)</th><th class="num">Q</th></tr></thead>
+    <tbody>
+      <tr><td>\(H_h\)</td><td>고역 (아주 느린 가속 제거)</td><td class="num">f₁ = 0.08</td><td class="num">1/√2</td></tr>
+      <tr><td>\(H_l\)</td><td>저역 (빠른 진동 제거)</td><td class="num">f₂ = 0.63</td><td class="num">1/√2</td></tr>
+      <tr><td>\(H_t\)</td><td>가속도-속도 전이</td><td class="num">f₄ = 0.25</td><td class="num">Q₄ = 0.86</td></tr>
+      <tr><td>\(H_s\)</td><td>상향 계단</td><td class="num">f₅ = 0.0625, f₆ = 0.1</td><td class="num">Q₅ = Q₆ = 0.80</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">\(\omega_i = 2\pi f_i\). 매개변수는 ISO 2631-1:1997 기준이며 공개 구현 janiex/SimulinkMatlab (<code>Matlab/ISO2631.m</code>) 과 같다.</p>
+  <h3>디지털로 바꾸기</h3>
+  <p>각 2차 구간을 쌍선형 변환으로 바꿔 20Hz 에서 돈다. 다루는 대역이 0.63Hz 이하라 주파수 왜곡은 무시할 만하다.</p>
+  $$s \;\to\; \frac{2}{T}\,\frac{z-1}{z+1},\qquad T = 0.05\,\text{s}$$
+  <h3>표준 표와 대조</h3>
+  <p>점 = 표준 가중값 표 (janiex/SimulinkMatlab <code>Matlab/ISO2631.xlsx</code>), 선 = 위 수식. 보라 띠 = 멀미 주기 2~10초. 0.16Hz(약 6초 주기)에서 가장 크다.</p>
+  <svg viewBox="0 0 640 300" class="chart" role="img" aria-label="ISO 2631-1 Wf 가중 곡선과 표준 표 값">
+<rect x="263.9" y="16" width="148.1" height="244" class="band"/>
+<line x1="52" x2="624" y1="260.0" y2="260.0" class="grid"/><text x="46" y="264.0" class="ax" text-anchor="end">0</text>
+<line x1="52" x2="624" y1="204.5" y2="204.5" class="grid"/><text x="46" y="208.5" class="ax" text-anchor="end">0.25</text>
+<line x1="52" x2="624" y1="149.1" y2="149.1" class="grid"/><text x="46" y="153.1" class="ax" text-anchor="end">0.5</text>
+<line x1="52" x2="624" y1="93.6" y2="93.6" class="grid"/><text x="46" y="97.6" class="ax" text-anchor="end">0.75</text>
+<line x1="52" x2="624" y1="38.2" y2="38.2" class="grid"/><text x="46" y="42.2" class="ax" text-anchor="end">1</text>
+<line x1="52.0" x2="52.0" y1="16" y2="260" class="grid"/><text x="52.0" y="276" class="ax" text-anchor="middle">0.01Hz</text><text x="52.0" y="290" class="ax2" text-anchor="middle">100초</text>
+<line x1="115.8" x2="115.8" y1="16" y2="260" class="grid"/><text x="115.8" y="276" class="ax" text-anchor="middle">0.02Hz</text><text x="115.8" y="290" class="ax2" text-anchor="middle">50초</text>
+<line x1="200.1" x2="200.1" y1="16" y2="260" class="grid"/><text x="200.1" y="276" class="ax" text-anchor="middle">0.05Hz</text><text x="200.1" y="290" class="ax2" text-anchor="middle">20초</text>
+<line x1="263.9" x2="263.9" y1="16" y2="260" class="grid"/><text x="263.9" y="276" class="ax" text-anchor="middle">0.1Hz</text><text x="263.9" y="290" class="ax2" text-anchor="middle">10초</text>
+<line x1="327.7" x2="327.7" y1="16" y2="260" class="grid"/><text x="327.7" y="276" class="ax" text-anchor="middle">0.2Hz</text><text x="327.7" y="290" class="ax2" text-anchor="middle">5초</text>
+<line x1="412.1" x2="412.1" y1="16" y2="260" class="grid"/><text x="412.1" y="276" class="ax" text-anchor="middle">0.5Hz</text><text x="412.1" y="290" class="ax2" text-anchor="middle">2초</text>
+<line x1="475.9" x2="475.9" y1="16" y2="260" class="grid"/><text x="475.9" y="276" class="ax" text-anchor="middle">1Hz</text><text x="475.9" y="290" class="ax2" text-anchor="middle">1초</text>
+<line x1="539.7" x2="539.7" y1="16" y2="260" class="grid"/><text x="539.7" y="276" class="ax" text-anchor="middle">2Hz</text><text x="539.7" y="290" class="ax2" text-anchor="middle">0.5초</text>
+<line x1="624.0" x2="624.0" y1="16" y2="260" class="grid"/><text x="624.0" y="276" class="ax" text-anchor="middle">5Hz</text><text x="624.0" y="290" class="ax2" text-anchor="middle">0.2초</text>
+<polyline points="52.0,258.6 53.9,258.6 55.8,258.5 57.7,258.5 59.6,258.4 61.5,258.3 63.4,258.3 65.3,258.2 67.3,258.1 69.2,258.0 71.1,258.0 73.0,257.9 74.9,257.8 76.8,257.7 78.7,257.6 80.6,257.5 82.5,257.4 84.4,257.3 86.3,257.2 88.2,257.0 90.1,256.9 92.0,256.8 93.9,256.7 95.9,256.5 97.8,256.4 99.7,256.2 101.6,256.1 103.5,255.9 105.4,255.7 107.3,255.5 109.2,255.3 111.1,255.2 113.0,254.9 114.9,254.7 116.8,254.5 118.7,254.3 120.6,254.0 122.5,253.8 124.5,253.5 126.4,253.3 128.3,253.0 130.2,252.7 132.1,252.4 134.0,252.1 135.9,251.7 137.8,251.4 139.7,251.0 141.6,250.6 143.5,250.2 145.4,249.8 147.3,249.4 149.2,249.0 151.1,248.5 153.1,248.0 155.0,247.5 156.9,247.0 158.8,246.4 160.7,245.8 162.6,245.2 164.5,244.6 166.4,243.9 168.3,243.2 170.2,242.5 172.1,241.8 174.0,241.0 175.9,240.2 177.8,239.3 179.7,238.4 181.7,237.4 183.6,236.4 185.5,235.4 187.4,234.3 189.3,233.1 191.2,231.9 193.1,230.6 195.0,229.3 196.9,227.8 198.8,226.3 200.7,224.8 202.6,223.1 204.5,221.3 206.4,219.5 208.3,217.5 210.3,215.4 212.2,213.3 214.1,211.0 216.0,208.5 217.9,206.0 219.8,203.3 221.7,200.4 223.6,197.5 225.5,194.3 227.4,191.1 229.3,187.6 231.2,184.1 233.1,180.3 235.0,176.4 236.9,172.4 238.9,168.3 240.8,164.0 242.7,159.5 244.6,155.0 246.5,150.4 248.4,145.6 250.3,140.8 252.2,136.0 254.1,131.1 256.0,126.1 257.9,121.2 259.8,116.3 261.7,111.4 263.6,106.6 265.5,101.8 267.5,97.1 269.4,92.5 271.3,88.1 273.2,83.8 275.1,79.6 277.0,75.6 278.9,71.7 280.8,68.0 282.7,64.5 284.6,61.2 286.5,58.1 288.4,55.2 290.3,52.4 292.2,49.9 294.1,47.5 296.1,45.4 298.0,43.5 299.9,41.7 301.8,40.2 303.7,38.8 305.6,37.7 307.5,36.7 309.4,36.0 311.3,35.4 313.2,35.1 315.1,35.0 317.0,35.1 318.9,35.4 320.8,36.0 322.7,36.8 324.7,37.8 326.6,39.1 328.5,40.6 330.4,42.3 332.3,44.3 334.2,46.6 336.1,49.1 338.0,51.8 339.9,54.8 341.8,58.0 343.7,61.4 345.6,65.1 347.5,69.0 349.4,73.0 351.3,77.2 353.3,81.6 355.2,86.1 357.1,90.8 359.0,95.5 360.9,100.3 362.8,105.2 364.7,110.1 366.6,115.1 368.5,120.0 370.4,124.9 372.3,129.8 374.2,134.7 376.1,139.4 378.0,144.2 379.9,148.8 381.9,153.3 383.8,157.8 385.7,162.1 387.6,166.3 389.5,170.5 391.4,174.5 393.3,178.3 395.2,182.1 397.1,185.8 399.0,189.3 400.9,192.7 402.8,196.0 404.7,199.2 406.6,202.2 408.5,205.2 410.5,208.0 412.4,210.7 414.3,213.4 416.2,215.9 418.1,218.3 420.0,220.6 421.9,222.8 423.8,225.0 425.7,227.0 427.6,228.9 429.5,230.8 431.4,232.5 433.3,234.2 435.2,235.8 437.1,237.3 439.1,238.8 441.0,240.1 442.9,241.4 444.8,242.6 446.7,243.8 448.6,244.9 450.5,245.9 452.4,246.9 454.3,247.8 456.2,248.6 458.1,249.4 460.0,250.2 461.9,250.9 463.8,251.5 465.7,252.2 467.7,252.7 469.6,253.3 471.5,253.8 473.4,254.2 475.3,254.7 477.2,255.1 479.1,255.4 481.0,255.8 482.9,256.1 484.8,256.4 486.7,256.7 488.6,256.9 490.5,257.2 492.4,257.4 494.3,257.6 496.3,257.8 498.2,257.9 500.1,258.1 502.0,258.3 503.9,258.4 505.8,258.5 507.7,258.6 509.6,258.7 511.5,258.8 513.4,258.9 515.3,259.0 517.2,259.1 519.1,259.2 521.0,259.2 522.9,259.3 524.9,259.3 526.8,259.4 528.7,259.4 530.6,259.5 532.5,259.5 534.4,259.6 536.3,259.6 538.2,259.6 540.1,259.7 542.0,259.7 543.9,259.7 545.8,259.7 547.7,259.8 549.6,259.8 551.5,259.8 553.5,259.8 555.4,259.8 557.3,259.8 559.2,259.9 561.1,259.9 563.0,259.9 564.9,259.9 566.8,259.9 568.7,259.9 570.6,259.9 572.5,259.9 574.4,259.9 576.3,259.9 578.2,259.9 580.1,259.9 582.1,259.9 584.0,259.9 585.9,260.0 587.8,260.0 589.7,260.0 591.6,260.0 593.5,260.0 595.4,260.0 597.3,260.0 599.2,260.0 601.1,260.0 603.0,260.0 604.9,260.0 606.8,260.0 608.7,260.0 610.7,260.0 612.6,260.0 614.5,260.0 616.4,260.0 618.3,260.0 620.2,260.0 622.1,260.0 624.0,260.0" class="curve"/>
+<circle cx="115.8" cy="254.6" r="3.5" class="dot"><title>0.02 Hz: 표 0.0242, 계산 0.02419</title></circle>
+<circle cx="136.3" cy="251.6" r="3.5" class="dot"><title>0.025 Hz: 표 0.0377, 계산 0.03768</title></circle>
+<circle cx="157.6" cy="246.8" r="3.5" class="dot"><title>0.0315 Hz: 표 0.0597, 계산 0.05974</title></circle>
+<circle cx="179.6" cy="238.5" r="3.5" class="dot"><title>0.04 Hz: 표 0.0971, 계산 0.09714</title></circle>
+<circle cx="200.1" cy="225.2" r="3.5" class="dot"><title>0.05 Hz: 표 0.157, 계산 0.1566</title></circle>
+<circle cx="221.4" cy="200.8" r="3.5" class="dot"><title>0.063 Hz: 표 0.267, 계산 0.2665</title></circle>
+<circle cx="243.4" cy="157.7" r="3.5" class="dot"><title>0.08 Hz: 표 0.461, 계산 0.4607</title></circle>
+<circle cx="263.9" cy="105.8" r="3.5" class="dot"><title>0.1 Hz: 표 0.695, 계산 0.6951</title></circle>
+<circle cx="284.5" cy="61.5" r="3.5" class="dot"><title>0.125 Hz: 표 0.895, 계산 0.8951</title></circle>
+<circle cx="307.2" cy="36.9" r="3.5" class="dot"><title>0.16 Hz: 표 1.006, 계산 1.006</title></circle>
+<circle cx="327.7" cy="40.0" r="3.5" class="dot"><title>0.2 Hz: 표 0.992, 계산 0.992</title></circle>
+<circle cx="348.3" cy="70.6" r="3.5" class="dot"><title>0.25 Hz: 표 0.854, 계산 0.8543</title></circle>
+<circle cx="369.5" cy="122.7" r="3.5" class="dot"><title>0.315 Hz: 표 0.619, 계산 0.6191</title></circle>
+<circle cx="391.5" cy="174.8" r="3.5" class="dot"><title>0.4 Hz: 표 0.384, 계산 0.3843</title></circle>
+<circle cx="412.1" cy="210.3" r="3.5" class="dot"><title>0.5 Hz: 표 0.224, 계산 0.2239</title></circle>
+<circle cx="433.3" cy="234.3" r="3.5" class="dot"><title>0.63 Hz: 표 0.116, 계산 0.1163</title></circle>
+<circle cx="455.3" cy="248.2" r="3.5" class="dot"><title>0.8 Hz: 표 0.053, 계산 0.05301</title></circle>
+<circle cx="475.9" cy="254.8" r="3.5" class="dot"><title>1.0 Hz: 표 0.0235, 계산 0.02352</title></circle>
+<circle cx="496.4" cy="257.8" r="3.5" class="dot"><title>1.25 Hz: 표 0.00998, 계산 0.009978</title></circle>
+<circle cx="519.1" cy="259.2" r="3.5" class="dot"><title>1.6 Hz: 표 0.00377, 계산 0.003771</title></circle>
+<circle cx="539.7" cy="259.7" r="3.5" class="dot"><title>2.0 Hz: 표 0.00155, 계산 0.001551</title></circle>
+<circle cx="560.2" cy="259.9" r="3.5" class="dot"><title>2.5 Hz: 표 0.00064, 계산 0.0006359</title></circle>
+<circle cx="581.5" cy="259.9" r="3.5" class="dot"><title>3.15 Hz: 표 0.00025, 계산 0.0002523</title></circle>
+<circle cx="603.5" cy="260.0" r="3.5" class="dot"><title>4.0 Hz: 표 9.7e-05, 계산 9.7e-05</title></circle>
+<text x="338.0" y="30" class="ax" text-anchor="middle">멀미 주기 2~10초</text>
+</svg>
+  <details>
+    <summary>24개 지점 표 펼치기</summary>
+    <div class="scroll"><table>
+      <thead><tr><th class="num">f (Hz)</th><th class="num">주기 (초)</th><th class="num">표준 ×1000</th><th class="num">계산 ×1000</th><th class="num">차이</th></tr></thead>
+      <tbody>
+<tr><td>0.02</td><td>50</td><td>24.2</td><td>24.19</td><td>-0.05%</td></tr>
+<tr><td>0.025</td><td>40</td><td>37.7</td><td>37.68</td><td>-0.06%</td></tr>
+<tr><td>0.0315</td><td>31.7</td><td>59.7</td><td>59.74</td><td>+0.07%</td></tr>
+<tr><td>0.04</td><td>25</td><td>97.1</td><td>97.14</td><td>+0.04%</td></tr>
+<tr><td>0.05</td><td>20</td><td>157</td><td>156.6</td><td>-0.23%</td></tr>
+<tr><td>0.063</td><td>15.9</td><td>267</td><td>266.5</td><td>-0.18%</td></tr>
+<tr><td>0.08</td><td>12.5</td><td>461</td><td>460.7</td><td>-0.07%</td></tr>
+<tr><td>0.1</td><td>10</td><td>695</td><td>695.1</td><td>+0.01%</td></tr>
+<tr><td>0.125</td><td>8</td><td>895</td><td>895.1</td><td>+0.01%</td></tr>
+<tr><td>0.16</td><td>6.25</td><td>1006</td><td>1006</td><td>+0.00%</td></tr>
+<tr><td>0.2</td><td>5</td><td>992</td><td>992</td><td>+0.00%</td></tr>
+<tr><td>0.25</td><td>4</td><td>854</td><td>854.3</td><td>+0.04%</td></tr>
+<tr><td>0.315</td><td>3.17</td><td>619</td><td>619.1</td><td>+0.01%</td></tr>
+<tr><td>0.4</td><td>2.5</td><td>384</td><td>384.3</td><td>+0.08%</td></tr>
+<tr><td>0.5</td><td>2</td><td>224</td><td>223.9</td><td>-0.05%</td></tr>
+<tr><td>0.63</td><td>1.59</td><td>116</td><td>116.3</td><td>+0.22%</td></tr>
+<tr><td>0.8</td><td>1.25</td><td>53</td><td>53.01</td><td>+0.02%</td></tr>
+<tr><td>1</td><td>1</td><td>23.5</td><td>23.52</td><td>+0.09%</td></tr>
+<tr><td>1.25</td><td>0.8</td><td>9.98</td><td>9.978</td><td>-0.02%</td></tr>
+<tr><td>1.6</td><td>0.625</td><td>3.77</td><td>3.771</td><td>+0.03%</td></tr>
+<tr><td>2</td><td>0.5</td><td>1.55</td><td>1.551</td><td>+0.06%</td></tr>
+<tr><td>2.5</td><td>0.4</td><td>0.64</td><td>0.6359</td><td>-0.64%</td></tr>
+<tr><td>3.15</td><td>0.317</td><td>0.25</td><td>0.2523</td><td>+0.92%</td></tr>
+<tr><td>4</td><td>0.25</td><td>0.097</td><td>0.097</td><td>-0.00%</td></tr>
+      </tbody>
+    </table></div>
+  </details>
+  <p>0.02~2Hz 에서는 0.25% 안, 전체 1% 안에서 맞는다. 차이가 가장 큰 2.5Hz·3.15Hz 는 표 값이 0.64·0.25 처럼 작고 유효숫자가 2자리라 반올림 탓이다. 디지털 필터도 0.1·0.16·0.25·0.5Hz 사인파에서 해석값과 0.02 안으로 같다.</p>
+</section>
+
+<section id="cup">
+  <h2>4. 물 기울기 · 넘침 · 멀미 누적 <span class="muted">WaterCup.kt</span></h2>
+  <h3>물 기울기 = Wf 가중 가속도</h3>
+  <p>가속하면 물은 뒤로, 왼쪽으로 돌면 오른쪽으로 쏠리므로 부호를 바꾼다. 단위는 g.</p>
+  $$\theta_x = \frac{W_f\{-a_x\}}{g},\qquad \theta_y = \frac{W_f\{-a_y\}}{g},\qquad |\theta| = \sqrt{\theta_x^2 + \theta_y^2}$$
+  <h3>넘침</h3>
+  <p>물 높이 \(\ell\) (0.05~0.95, 아이별 기준) 이 높을수록 여유가 작아 쉽게 넘친다.</p>
+  $$F(\ell) = (1 - \ell)\,F_\text{max},\qquad F_\text{max} = 0.30\,g$$
+  $$r = K\,\max\!\big(0,\ |\theta| - F(\ell)\big)^2,\qquad K = 3\ \ \text{(g}^{-2}\text{s}^{-1}\text{)}$$
+  <h3>멀미 누적량 (몸의 회복 포함)</h3>
+  $$D(t + \Delta t) = D(t)\,e^{-\Delta t/\tau} + \int_t^{t+\Delta t} r\,dt,\qquad \tau = 600\,\text{s}$$
+  <p>넘치지 않으면 10분마다 \(1/e\) 로 줄어든다. \(D = 1\) 이 이 아이가 멀미하는 수준이다.</p>
+  <h3>값을 정한 방법</h3>
+  <p>\(F_\text{max}\), \(K\) 는 주말 나들이 시나리오(도심 가다 서다 → 고속도로 → 진출로 → 산길 → 휴게소, 약 13분)로 맞췄다.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>운전</th><th class="num">물 높이 0.3</th><th class="num">0.6 (기본)</th><th class="num">0.85</th></tr></thead>
+    <tbody>
+      <tr><td>거칠게 (가속 3·제동 4.5 m/s², 핸들 고침)</td><td class="num">0.31</td><td class="num">1.43 (위험)</td><td class="num">4.35</td></tr>
+      <tr><td>부드럽게 (가속 1·제동 1.5 m/s²)</td><td class="num">—</td><td class="num">0.00</td><td class="num">0.12</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">표 값 = 그 주행에서의 최대 누적량. 주의 0.6, 위험 1.0.</p>
+</section>
+
+<section id="calib">
+  <h2>5. "지금 멀미" 로 기준 맞추기 <span class="muted">Calibration.kt</span></h2>
+  <p>이번 주행의 \(|\theta|\) 를 0.2초마다(그 구간의 최댓값) 남겨 두고, 버튼을 누르면 다른 물 높이로 다시 재생한다. 누적량은 물 높이에 대해 단조 증가하므로 이분 탐색으로 그 순간 누적량이 목표가 되는 물 높이를 찾는다.</p>
+  $$\ell^* :\ D_\text{재생}(\ell^*) = 1.25$$
+  <p>목표를 1.25 로 잡아, 다음에 같은 길을 달리면 멀미하기 전에 위험 경고(1.0)가 먼저 나온다. 이전 기준과 섞는다.</p>
+  $$\ell_\text{새} = \ell_\text{이전} + 0.6\,(\ell^* - \ell_\text{이전})\quad(\text{처음이면 } \ell^*)$$
+  <p>부드럽게 달렸는데도 멀미했으면 가장 예민하게(0.95), 아주 거칠게 달려야 멀미했으면 가장 둔하게(0.05).</p>
+</section>
+
+<section id="care">
+  <h2>6. 차량 조치 규칙 <span class="muted">CarePolicy.kt</span></h2>
+  <div class="scroll"><table>
+    <thead><tr><th>조건</th><th>조치</th></tr></thead>
+    <tbody>
+      <tr><td>넘치기 시작 (6초에 한 번까지)</td><td>"찰랑" 소리</td></tr>
+      <tr><td>\(D \ge 0.5\), 또는 3분 안에 4번 넘치고 \(D \ge 0.25\)</td><td>환기: 외기 유입·에어컨·온도 −2℃·풍량 +1. 아이 옆 창문 25%는 먼저 묻는다 (시속 80km 이하·와이퍼 꺼짐일 때만, 20초 답 없으면 안 엶)</td></tr>
+      <tr><td>창문 질문에 "먼지 · 닫기"</td><td>내부 순환·공기청정, 이번 환기 동안 다시 묻지 않음</td></tr>
+      <tr><td>환기 중 시속 90km 초과 또는 비</td><td>창문 원래대로 (허락받았으면 느려질 때 다시 연다)</td></tr>
+      <tr><td>\(D \ge 0.6\) (3분에 한 번)</td><td>"다음 구간은 부드럽게"</td></tr>
+      <tr><td>\(D \ge 1.0\) 또는 "지금 멀미" (10분에 한 번, 버튼은 즉시)</td><td>"N km 앞 휴게소에서 쉬어 가세요" (내비 안내에 휴게소가 30km 안이면)</td></tr>
+      <tr><td>내비 다음 안내가 진출로·유턴·급회전 등이고 400m 안, \(D \ge 0.3\)</td><td>"곧 진출로예요. 천천히 부드럽게"</td></tr>
+      <tr><td>\(D &lt; 0.25\) 이고 3분 동안 안 넘침</td><td>공조·창문을 바꾸기 전 값으로</td></tr>
+      <tr><td>좌석에 아이·동승자가 없음 (혼자)</td><td>아무것도 안 하고 하던 조치를 되돌림</td></tr>
+    </tbody>
+  </table></div>
+  <p>물 높이는 좌석 탑승·안전벨트로 고른다: 등록한 아이가 자기 자리에 타면 그 아이 기준, 여럿이면 가장 높은(예민한) 기준, 모르는 동승자만 있으면 0.5, 혼자면 끔. 벨트를 안 맨 좌석은 짐으로 본다.</p>
+</section>
+
+<section id="trace">
+  <h2>7. 흔들림 기록과 지연 <span class="muted">DriveTrace.kt</span></h2>
+  <p>0.1초마다 원인(차 흔들림 \(a_x, a_y\))과 결과(물 기울기 \(\theta_x, \theta_y\)), 속도, 물 높이, 누적량, 넘침 여부를 남긴다 (최대 2시간). 넘침·안내·차량 조치·"지금 멀미"는 사건으로 남긴다.</p>
+  <h3>지연: 물이 차 흔들림을 얼마나 늦게 따라오나</h3>
+  <p>차 흔들림이 물을 미는 방향 \(u = -a/g\) 와 물 기울기 \(\theta\) 의 정규화 상호상관이 가장 큰 시간차 \(\tau^*\) (0~5초)를 찾는다. 두 축을 합쳐 계산한다.</p>
+  $$\rho(\tau) = \frac{\sum_k \big(u_x[k]\,\theta_x[k+\tau] + u_y[k]\,\theta_y[k+\tau]\big)}{\sqrt{\sum_k \|u[k]\|^2\ \sum_k \|\theta[k+\tau]\|^2}},\qquad \tau^* = \arg\max_\tau \rho(\tau)$$
+  <p>거친 운전 시나리오에서 \(\tau^* \approx 0.3\sim0.4\)초. Wf 가 2~10초 주기만 남기므로 넓은 대역의 차 흔들림과 상관은 0.2 안팎으로 높지 않다 — 대략적인 값으로 본다.</p>
+</section>
+
+<section id="period">
+  <h2>8. 흔들림 주기와 MSDV <span class="muted">ShakeAnalysis.kt</span></h2>
+  <p>기록 구간(30초 이상)의 \(a_x, a_y\) 에서 평균을 빼고 해닝 창을 씌워, 로그 간격 60개 주파수(0.02~1Hz, 주기 50~1초)에서 이산 푸리에 변환을 직접 계산한다.</p>
+  $$w[k] = \tfrac12 - \tfrac12\cos\frac{2\pi k}{N-1},\qquad
+    X(f) = \sum_{k=0}^{N-1} w[k]\,a[k]\,e^{-i 2\pi f k T_s},\qquad
+    A(f) = \frac{2\,|X(f)|}{\sum_k w[k]}$$
+  <p>\(T_s = 0.1\)초. \(A(f)\) 는 사인파의 진폭을 그대로 준다 (6초 주기 진폭 1.5 m/s² → 1.5).</p>
+  <ul>
+    <li><b>가장 센 흔들림의 주기</b>: \(1/\arg\max_f P(f)\), \(P = A_x^2 + A_y^2\)</li>
+    <li><b>멀미에 가장 영향을 준 주기</b>: \(1/\arg\max_f P(f)\,W_f(f)^2\)</li>
+    <li><b>멀미 주기 비율</b>: 로그 간격이라 구간 폭 \(\propto f\) 를 곱해 \(\dfrac{\sum_{0.1\le f\le0.5} P(f)\,f}{\sum_f P(f)\,f}\)</li>
+  </ul>
+  <h3>MSDV (Motion Sickness Dose Value)</h3>
+  <p>물 기울기가 곧 Wf 가중 가속도이므로 기록에서 바로 계산한다.</p>
+  $$\text{MSDV} = \sqrt{\int \big(a_{wx}^2 + a_{wy}^2\big)\,dt} = g\sqrt{\sum_k \big(\theta_x[k]^2 + \theta_y[k]^2\big)\,T_s}\quad [\text{m/s}^{1.5}]$$
+  <p>시나리오 결과: 거친 운전 MSDV 약 21.7, 부드러운 운전 약 7.3. 거친 운전에서 가장 센 흔들림은 약 23~26초 주기(가다 서다)지만, 멀미에 가장 영향을 준 주기는 6~7초였다.</p>
+</section>
+
+<section id="cup3d">
+  <h2>9. 3D 물컵 그리기 <span class="muted">ui/CupView.kt</span></h2>
+  <p>원뿔대 유리컵 (아래 반지름 \(R_b = 0.74\), 위 \(R_t = 1\), 높이 \(H = 2.1\)) 안의 물을 기울어진 평면 수면으로 자른다. \(x\) = 오른쪽, \(y\) = 앞(화면 안쪽), \(z\) = 위.</p>
+  $$z_\text{수면}(x, y) = \ell H + k\,(\theta_x\,y - \theta_y\,x),\qquad k = \frac{H}{R_t\,F_\text{max}}$$
+  <p>\(k\) 는 계산상 넘치는 순간(\(|\theta| = F(\ell)\)) 수면이 정확히 컵 가장자리에 닿도록 정했다. 실제 컵보다 기울기를 크게 보여 주는 것이다.</p>
+  <p>수면이 벽과 만나는 높이는 원뿔 벽 \(r(z) = R_b + c z\), \(c = (R_t - R_b)/H\) 위에서 풀어 구한다 (각도 \(\varphi\), 경사 \(g(\varphi) = p_x\cos\varphi + p_y\sin\varphi\)).</p>
+  $$z(\varphi) = \frac{\ell H + R_b\,g(\varphi)}{1 - c\,g(\varphi)}\ \ \text{(0 과 } H \text{ 사이로 자름)}$$
+  <p>카메라는 뒤에서 앞을 보며 24° 내려다보는 원근 투영 (거리 8). 넘치는 동안 수면이 가장 높은 쪽 가장자리 ±40° 에서 초당 40개 물방울을 내고, 물방울은 \(\ddot z = -6\) 의 포물선으로 떨어진다. 물 색: 누적 0.6 전 파랑, 0.6~1.0 주황→빨강.</p>
+</section>
+
+<section id="tests">
+  <h2>10. 검증 (단위 테스트)</h2>
+  <p><code>./gradlew :shared:testDebugUnitTest</code> — 주요 항목:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>테스트</th><th>확인하는 것</th></tr></thead>
+    <tbody>
+      <tr><td>Iso2631Test</td><td>Wf 해석식이 표준 표 24개 지점과 일치, 디지털 필터 진폭이 해석값과 일치</td></tr>
+      <tr><td>WaterCupTest</td><td>부드러운 운전은 주의 아래, 거친 운전은 위험 · 물 높이가 높을수록 빨리 멀미 · 0.2Hz 가 1.5Hz·0.02Hz 보다 3배 넘게 출렁임 · 10분 쉬면 누적이 1/e</td></tr>
+      <tr><td>CalibrationTest</td><td>"지금 멀미" 시점 누적이 목표(1.25)가 되는 물 높이를 찾고, 같은 길을 다시 달리면 그 전에 위험 경고</td></tr>
+      <tr><td>CarePolicyTest</td><td>환기·창문 질문·먼지 차단·고속/비에서 닫기·휴게소 안내·미리 예고·혼자면 되돌림</td></tr>
+      <tr><td>DriveTraceTest</td><td>0.1초 기록, 시각으로 찾기, 오래된 것부터 버리기, 물이 차 흔들림보다 늦게 따라옴</td></tr>
+      <tr><td>ShakeAnalysisTest</td><td>6초 주기 → 주기 6초·대역 100%·진폭 1.5·MSDV 해석값과 5% 안 · 1초 진동 + 8초 흔들림 → 주기 1초, 멀미 주기 8초</td></tr>
+      <tr><td>MotionEstimatorTest</td><td>1m 단위 거리에서 속도·가속도, 조향각(바퀴/운전대)과 진행 방향으로 좌우 가속도</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="limits">
+  <h2>11. 한계와 확인할 것</h2>
+  <div class="note">기획서에 쓰기 전에 아래를 확인한다.</div>
+  <ul>
+    <li>ISO 2631-1 의 Wf·MSDV 는 <b>수직(z) 흔들림</b> 기준이다. 찰랑은 차량 멀미 연구처럼 수평(앞뒤·좌우)에 적용한다 — 근거 논문을 찾아 인용할 것.</li>
+    <li>\(F_\text{max}\), \(K\), \(\tau\), 경고 기준(0.5·0.6·1.0)은 시나리오로 정한 값이다. 실제 아이의 멀미와 맞추는 것은 "지금 멀미" 보정이 한다.</li>
+    <li>가속도는 직접 값이 아니라 추정이다. 에뮬레이터에서 주행 거리·조향각의 간격·단위를 확인할 것 (조향각이 바퀴 각도인지 운전대 각도인지 포함).</li>
+    <li>3D 물컵의 기울기는 넘침이 보이도록 키운 것이고, 출렁임 주기는 실제 컵이 아니라 멀미 대역에 맞춘 모형이다 ("물컵은 비유, 속은 국제 규격의 멀미 지표").</li>
+    <li>지연(상관 최대 시간차)은 상관이 낮아 대략적인 값이다.</li>
+  </ul>
+</section>
+
+<section id="sources">
+  <h2>12. 출처</h2>
+  <ul>
+    <li>ISO 2631-1:1997, Mechanical vibration and shock — Evaluation of human exposure to whole-body vibration — Part 1: General requirements (Wf 가중, MSDV)</li>
+    <li><a href="https://github.com/janiex/SimulinkMatlab">janiex/SimulinkMatlab</a> — <code>Matlab/ISO2631.m</code> (가중 필터 매개변수, 쌍선형 변환), <code>Matlab/ISO2631.xlsx</code> (표준 가중값 표). 라이선스가 없어 코드는 옮기지 않고 대조에만 썼다.</li>
+    <li><a href="https://document.pleos.ai/en/docs/connect/guide/docs-design/getting-started/layout">Pleos Connect 디자인 가이드 — Display Layout</a> (화면 분할·가로/세로)</li>
+    <li>Pleos Vehicle SDK 2.3.2, NaviHelper 3.0.5 — 클래스 파일에서 직접 확인한 API·권한 (<code>docs/PLEOS_SDK.md</code>)</li>
+  </ul>
+</section>
+
+<footer>찰랑 · 이 페이지는 저장소의 <code>server/public/admin/index.html</code> · 수식이 바뀌면 함께 고친다</footer>
+</main>
+</body>
+</html>

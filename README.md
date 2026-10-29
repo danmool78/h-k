@@ -27,7 +27,7 @@
 
 **물컵 = ISO 2631-1 멀미 가중(Wf)**: 물 기울기는 차의 앞뒤·좌우 가속도에 ISO 2631-1 Wf 필터를 건 값이다(0.16Hz, 약 6초 주기에서 가장 큼).
 구현은 표준의 전달 함수를 직접 옮겼고, 공개 저장소 [janiex/SimulinkMatlab](https://github.com/janiex/SimulinkMatlab) 의 `ISO2631.m` 매개변수와
-`ISO2631.xlsx` 의 표준 가중값 표 24개 지점과 대조해 0.3% 안에서 일치한다 (`Iso2631Test`).
+`ISO2631.xlsx` 의 표준 가중값 표 24개 지점과 대조해 0.02~2Hz 에서 0.25%, 전체 1% 안에서 일치한다 (`Iso2631Test`).
 표준의 Wf·MSDV 는 수직(z) 흔들림 기준이며, 여기서는 차량 멀미 연구처럼 수평(앞뒤·좌우)에 적용한다.
 
 **흔들림 기록** (물컵 화면 오른쪽 위): 차 흔들림(원인, 앞뒤·좌우 m/s²)과 물 출렁임(결과, g)을 같은 시간축에 0.1초마다 남긴다.
@@ -70,6 +70,7 @@
 
 ## 문서
 
+- **계산 근거 (수식·매개변수·검증·출처): https://h-y-server.web.app/admin/** (`server/public/admin/index.html`)
 - 기획: [docs/찰랑_기획메모.md](docs/찰랑_기획메모.md)
 - 공모전·Pleos SDK 정리: [docs/PLEOS_SDK.md](docs/PLEOS_SDK.md)
 - 웹 페이지(`server/public`)는 `main` 에 병합되면 https://h-y-server.web.app 에 자동 배포됩니다 (GitHub Actions)
