@@ -21,12 +21,62 @@ class VerticalTest {
     }
 
     /** 차 기준 가속 + 경사(앞 올라감 [pitch]) 에서 센서 값 */
-    private fun sense(f: ImuFrame, t: Double, carAx: Double, carAz: Double, pitch: Double, speed: Double) {
+    private fun sense(f: ImuFrame, t: Double, carAx: Double, carAz: Double, pitch: Double, speed: Double, mapGrade: Double? = null) {
         val g = WaterCup.G
         // 오르막: 위(중력 반작용)가 차 뒤쪽으로 기운다
         val car = doubleArrayOf(carAx - g * sin(pitch), 0.0, carAz + g * cos(pitch))
         val d = toDevice(car)
-        f.update(t, d[0], d[1], d[2], carAx, 0.0, speed)
+        f.update(t, d[0], d[1], d[2], carAx, 0.0, speed, mapGrade)
+    }
+
+    @Test
+    fun `비탈에서 출발해도 지도 경사로 기준을 바로잡는다`() {
+        val f = ImuFrame()
+        var t = 0.0
+        var v = 0.0
+        // 지금 자리의 실제 도로 경사 (처음 300m 는 8% 오르막, 그 뒤 평지)
+        fun road(d: Double) = if (d < 300) 0.08 else 0.0
+        var dist = 0.0
+        fun run(sec: Double, ax: Double, map: Boolean) {
+            repeat((sec / 0.02).toInt()) {
+                v = (v + ax * 0.02).coerceAtLeast(0.0)
+                dist += v * 0.02
+                val g = road(dist)
+                sense(f, t, ax, 0.0, g, v, if (map) g else null)
+                t += 0.02
+            }
+        }
+        run(3.0, 0.0, map = true)        // 8% 비탈에서 멈춰 출발 → 기준 "위" 가 비탈
+        run(4.0, 2.0, map = true)        // 곧게 가속 → 앞 방향
+        run(3.0, -1.0, map = true)
+        run(120.0, 0.0, map = true)      // 일정하게 약 5m/s (오르막 끝나고 평지까지)
+        assertTrue("평지까지 왔다", dist > 400)
+        assertTrue(f.mapAnchored)
+        assertEquals("평지에서 0 으로 바로잡힘", 0.0, f.pitch, 0.015)
+        assertEquals("기준 자리 경사 = 출발 비탈 (기준이 그만큼 기울어 있었다)", -0.08, f.pitchOffset, 0.015)
+    }
+
+    @Test
+    fun `지도가 없으면 오래 달리며 평균을 0 으로`() {
+        val f = ImuFrame()
+        var t = 0.0
+        var v = 0.0
+        fun run(sec: Double, ax: Double, g: Double) {
+            repeat((sec / 0.02).toInt()) {
+                v = (v + ax * 0.02).coerceAtLeast(0.0)
+                sense(f, t, ax, 0.0, g, v)
+                t += 0.02
+            }
+        }
+        run(3.0, 0.0, 0.08)              // 8% 비탈에서 출발
+        run(4.0, 2.0, 0.08)
+        run(3.0, -1.0, 0.08)
+        run(10.0, 0.0, 0.0)              // 평지로
+        val before = f.pitch
+        run(1_790.0, 0.0, 0.0)           // 30분 평지
+        println("지도 없이 평지 오차: 처음 ${"%.3f".format(before)} → 30분 뒤 ${"%.3f".format(f.pitch)}")
+        assertTrue("처음엔 출발 비탈만큼 어긋남", before < -0.06)
+        assertEquals("30분이면 거의 0", 0.0, f.pitch, 0.01)
     }
 
     @Test

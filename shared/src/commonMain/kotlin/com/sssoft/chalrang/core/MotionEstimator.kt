@@ -28,6 +28,9 @@ class MotionEstimator(
     var ay = 0.0; private set             // m/s², + 왼쪽으로 도는 중
     var az = 0.0; private set             // m/s², + 위로 (기기 가속도 센서가 있을 때만, 없으면 0)
     private var azT = Double.NaN
+    /** 지도에서 아는 지금 도로 경사 (rad, + 오르막): 길 안내 중 도로 높이로. 센서의 기준 각도 오차를 맞추는 데 쓴다 */
+    var mapGrade: Double? = null
+
     /** 길 경사 (rad): 앞이 올라감, 왼쪽이 올라감 (기기 센서가 차 방향을 알게 된 뒤부터) */
     var gradeX = 0.0; private set
     var gradeY = 0.0; private set
