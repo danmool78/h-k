@@ -175,21 +175,52 @@ private data class P3(val x: Double, val y: Double, val z: Double)
 
 /** 뒤에서 앞을 보며 [PITCH] 만큼 내려다보는 원근 카메라 */
 private class Camera(w: Float, h: Float) {
-    val unit = min(w / 3.4f, h / 3.6f)
-    private val cx = w / 2
-    private val cy = h * 0.47f
+    /** 컵 가장자리부터 바닥 고리·물웅덩이 끝까지가 화면 안에 들어오도록 크기와 중심을 맞춘다 */
+    val unit: Float
+    private val cx: Float
+    private val cy: Float
+
+    init {
+        val (minX, maxX, minY, maxY) = BOUNDS
+        unit = min(w * FILL / (maxX - minX), h * FILL / (maxY - minY)).toFloat()
+        cx = (w / 2 - unit * (minX + maxX) / 2).toFloat()
+        cy = (h / 2 - unit * (minY + maxY) / 2).toFloat()
+    }
+
     fun project(p: P3): Offset {
-        val up = p.z * cos(PITCH) + p.y * sin(PITCH)
-        val depth = p.y * cos(PITCH) - p.z * sin(PITCH) + DIST
-        val s = DIST / depth
-        return Offset(cx + (p.x * s * unit).toFloat(), cy - ((up - H * 0.45) * s * unit).toFloat())
+        val (x, y) = raw(p)
+        return Offset(cx + (x * unit).toFloat(), cy + (y * unit).toFloat())
     }
 
     companion object {
         val PITCH = 24.0 * PI / 180
         const val DIST = 8.0
+        const val FILL = 0.94
+
+        /** 크기 1, 중심 0 일 때의 화면 좌표 (아래가 +) */
+        fun raw(p: P3): Pair<Double, Double> {
+            val up = p.z * cos(PITCH) + p.y * sin(PITCH)
+            val depth = p.y * cos(PITCH) - p.z * sin(PITCH) + DIST
+            val s = DIST / depth
+            return p.x * s to -up * s
+        }
+
+        /** 가장자리(z = H)와 바닥에 그리는 것 중 가장 큰 원(z = 0)의 화면 범위 */
+        val BOUNDS: List<Double> by lazy {
+            val pts = (0 until 72).flatMap { i ->
+                val th = 2 * PI * i / 72
+                listOf(
+                    raw(P3(RT * cos(th), RT * sin(th), H + 0.15)),
+                    raw(P3(FLOOR_R * cos(th), FLOOR_R * sin(th), 0.0)),
+                )
+            }
+            listOf(pts.minOf { it.first }, pts.maxOf { it.first }, pts.minOf { it.second }, pts.maxOf { it.second })
+        }
     }
 }
+
+/** 바닥에 그리는 것(받침 고리·물웅덩이)의 가장 큰 반지름 */
+private const val FLOOR_R = RB * 1.8
 
 private fun ring(cam: Camera, r: Double, z: Double, from: Double = 0.0, to: Double = 2 * PI, n: Int = 72): List<Offset> =
     (0..n).map { i -> val th = from + (to - from) * i / n; cam.project(P3(r * cos(th), r * sin(th), z)) }
@@ -197,6 +228,27 @@ private fun ring(cam: Camera, r: Double, z: Double, from: Double = 0.0, to: Doub
 private fun Path.addPoly(points: List<Offset>, close: Boolean = true) {
     points.forEachIndexed { i, o -> if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
     if (close) close()
+}
+
+/**
+ * 넘친 물웅덩이: 가장자리가 고르지 않은 얇은 물 막. 안쪽이 진하고, 가장자리에 빛이 맺히고, 뒤쪽에 반사광.
+ */
+private fun DrawScope.drawPuddle(cam: Camera, c: Color, radius: Double) {
+    fun blob(scale: Double) = Path().apply {
+        val n = 96
+        for (i in 0..n) {
+            val th = 2 * PI * i / n
+            val r = radius * scale * (1 + 0.07 * sin(3 * th + 1.1) + 0.05 * sin(5 * th + 2.3) + 0.03 * sin(8 * th + 0.4))
+            val o = cam.project(P3(r * cos(th), r * sin(th), 0.0))
+            if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y)
+        }
+        close()
+    }
+    for ((k, a) in listOf(1.0 to 0.22f, 0.82 to 0.14f, 0.64 to 0.14f)) drawPath(blob(k), c.copy(alpha = a))
+    drawPath(blob(1.0), Color.White.copy(alpha = 0.28f), style = Stroke(cam.unit * 0.008f))
+    // 뒤쪽 반사광 (위에서 오는 빛)
+    val shine = ring(cam, radius * 0.86, 0.0, PI * 0.58, PI * 0.82, 12)
+    drawPath(Path().apply { addPoly(shine, close = false) }, Color.White.copy(alpha = 0.35f), style = Stroke(cam.unit * 0.014f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
 }
 
 /**
@@ -214,7 +266,7 @@ private fun DrawScope.drawFloor(cam: Camera, c: Color, puddle: Float, stage: Boo
             drawPath(e, Color(0xFF29C4F6).copy(alpha = a), style = Stroke(cam.unit * 0.012f))
         }
     }
-    if (puddle > 0.005f) drawPath(ellipse(RB * (1.15 + 0.5 * puddle)), c.copy(alpha = 0.32f))
+    if (puddle > 0.005f) drawPuddle(cam, c, RB * (1.12 + 0.48 * puddle))
     // 접촉 그림자: 바닥에 가까울수록 진하다
     for ((k, a) in listOf(1.12 to 0.12f, 1.05 to 0.18f, 1.0 to 0.25f)) drawPath(ellipse(RB * k), Color.Black.copy(alpha = a))
 }
