@@ -4,6 +4,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -25,7 +26,10 @@ class ShakeReport(
     /** ISO 2631-1 멀미 누적량 MSDV (m/s^1.5): 앞뒤·좌우 Wf 가중 가속도 제곱의 시간 적분의 제곱근 */
     val msdv: Double,
     val durationSec: Double,
-)
+) {
+    /** 흔들림이 거의 없어 주기가 의미 없다 (가장 센 성분이 [ShakeAnalysis.QUIET_AMP] 미만) */
+    val quiet: Boolean get() = longAmp.indices.none { max(longAmp[it], latAmp[it]) >= ShakeAnalysis.QUIET_AMP }
+}
 
 object ShakeAnalysis {
 
@@ -103,4 +107,6 @@ object ShakeAnalysis {
     }
 
     const val MIN_SEC = 30.0
+    /** 이보다 약하면 (m/s², 사인 진폭) 흔들림 없음으로 본다 */
+    const val QUIET_AMP = 0.02
 }

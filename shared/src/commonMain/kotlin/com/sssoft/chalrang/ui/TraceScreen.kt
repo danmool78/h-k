@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -376,7 +377,7 @@ private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: Window
             Icons.Filled.Hub, "차량-물 상관", lag?.let { fmt(it.correlation, 2) } ?: "-",
             lag?.let { when { it.correlation >= 0.6 -> "높음"; it.correlation >= 0.3 -> "보통"; else -> "낮음" } } ?: "",
         )
-        if (shake != null) SummaryRow(Icons.Filled.GraphicEq, "멀미 주기", "${fmt(shake.sicknessPeriod, 1)}초", "MSDV ${fmt(shake.msdv, 1)}")
+        if (shake != null) SummaryRow(Icons.Filled.GraphicEq, "멀미 주기", if (shake.quiet) "-" else "${fmt(shake.sicknessPeriod, 1)}초", "MSDV ${fmt(shake.msdv, 1)}")
         if (child != null) {
             val sens = child.sensitivity
             SummaryRow(
@@ -500,8 +501,8 @@ private fun Charts(
             Icons.Filled.GraphicEq, "흔들림 주기", "",
             listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "Wf 가중" to Neon.Dim) +
                 (child?.sensitivity?.takeIf { it.active }?.let { listOf("${child.name} 가중" to Neon.Red) } ?: emptyList()),
-            if (shake == null) {
-                buildAnnotatedString { withStyle(SpanStyle(color = Neon.Dim)) { append("30초 넘게 기록되면 분석해요") } }
+            if (shake == null || shake.quiet) {
+                buildAnnotatedString { withStyle(SpanStyle(color = Neon.Dim)) { append(if (shake == null) "30초 넘게 기록되면 분석해요" else "이 구간은 흔들림이 거의 없어요") } }
             } else {
                 stat(
                     "가장 센 주기" to "${fmt(shake.peakPeriod, 1)}초", "멀미 주기" to "${fmt(shake.sicknessPeriod, 1)}초",
@@ -599,8 +600,11 @@ private fun TimeChart(
         val span = (t1 - t0).coerceAtLeast(1e-6)
         val w = size.width - left
         val h = size.height - bottom
-        val i0 = trace.indexAt(t0).coerceAtLeast(0)
-        val i1 = trace.indexAt(t1)
+        // 기록이 끊긴 구간(앱이 멈췄던 동안)이 있으면 가장 가까운 기록이 창 밖일 수 있다: 창 안의 것만
+        var i0 = trace.indexAt(t0).coerceAtLeast(0)
+        if (i0 < trace.size - 1 && trace.timeAt(i0) < t0) i0++
+        var i1 = trace.indexAt(t1)
+        if (i1 > 0 && trace.timeAt(i1) > t1) i1--
         val step = max(1, (i1 - i0) / max(1, w.toInt()))
         val (lo, hi) = yRange ?: run {
             var m = 0.0
@@ -633,6 +637,8 @@ private fun TimeChart(
         }
         if (i1 <= i0) return@Canvas
 
+        // 값은 그래프 칸 안에만 (빛 번짐 몇 px 여유): 기록이 끊겼거나 값이 범위를 넘어도 칸 밖으로 그리지 않는다
+        clipRect(left - 2f, -4f, size.width + 4f, h + 4f) {
         // 넘친 구간
         if (shadeSpill) {
             spillPath.reset()
@@ -647,11 +653,15 @@ private fun TimeChart(
         fun build(value: (DriveTrace, Int) -> Double): Path {
             linePath.reset()
             var i = i0
-            var first = true
+            var prevT = Double.NEGATIVE_INFINITY
+            // 그림 간격보다 훨씬 긴 빈틈(앱이 멈췄던 동안)은 선을 잇지 않는다
+            val gap = max(1.0, trace.interval * step * 3)
             while (i <= i1) {
-                val px = x(trace.timeAt(i))
+                val t = trace.timeAt(i)
+                val px = x(t)
                 val py = y(value(trace, i))
-                if (first) { linePath.moveTo(px, py); first = false } else linePath.lineTo(px, py)
+                if (t - prevT > gap) linePath.moveTo(px, py) else linePath.lineTo(px, py)
+                prevT = t
                 i += step
             }
             return linePath
@@ -688,6 +698,7 @@ private fun TimeChart(
         // 고른 시각
         val cx = x(cursorAt())
         glowLine(Neon.White, Offset(cx, 0f), Offset(cx, h), 1.5f)
+        }
     }
 }
 
