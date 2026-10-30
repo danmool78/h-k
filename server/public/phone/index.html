@@ -53,7 +53,7 @@
   <div class="card">
     <b>잡는 법</b>
     <ol class="muted">
-      <li>화면이 위로 오게 <b>평평하게</b> 들고, 휴대폰 <b>위쪽을 차 앞쪽</b>으로</li>
+      <li><b>평평하게</b> 눕혀 휴대폰 <b>위쪽을 차 앞</b>으로, 또는 거치대에 <b>세워 화면이 운전자 쪽</b>으로 (시작할 때 놓인 자세를 알아서 찾아요 — 시작한 뒤엔 돌리지 마세요)</li>
       <li>브레이크·출발처럼 <b>앞뒤로</b>, 굽은 길처럼 <b>좌우로</b> 밀었다 당기기</li>
       <li><b>위아래로</b> 들었다 내리면 방지턱·오르내리는 길, 앞을 <b>살짝 들면</b> 오르막 (시작할 때 기울기를 평지로 봐요)</li>
       <li><b>2~10초에 한 번</b> 정도로 천천히 — 멀미를 일으키는 흔들림이에요. 빨리 흔드는 떨림은 물컵이 거의 반응하지 않아요</li>
@@ -63,6 +63,7 @@
   <div class="card">
     <div class="row" style="justify-content:space-between; margin-bottom:8px">
       <div><span class="muted">상태</span><div class="big" id="state">대기</div></div>
+      <div><span class="muted">놓인 자세</span><div id="mount" style="font-weight:700">-</div></div>
       <div style="text-align:right"><span class="muted">보낸 묶음</span><div class="big" id="sent">0</div></div>
     </div>
     <canvas id="chart" width="960" height="320"></canvas>
@@ -94,7 +95,7 @@
   let session = null, seq = 0, buf = { ax: [], ay: [], az: [] };
   let latest = { ax: 0, ay: 0, az: 0 }, gravity = null;
   // 기울기: 중력 포함 값을 느리게 평균 → 시작할 때를 평지로 보고 그 뒤 기운 만큼 (rad)
-  let tiltG = null, tilt0 = null, tilt = { px: 0, py: 0 };
+  let tiltG = null, tilt = { px: 0, py: 0 };
   let sampleTimer = null, batchTimer = null, wakeLock = null;
   const history = [];       // 그래프용 최근 10초
 
@@ -118,25 +119,43 @@
     if (isAdmin) msg("준비됐어요. 시연 시작을 누르세요.", "ok");
   });
 
-  // 휴대폰 가속도 → 차 기준: 휴대폰 위쪽(y) = 차 앞, 오른쪽(x) = 차 오른쪽. 찰랑은 왼쪽으로 도는 가속을 + 로 쓴다
-  // 위아래(z): 화면이 위를 보면 +z = 위
+  // 휴대폰 가속도 → 차 기준 (앞, 왼쪽, 위). 휴대폰을 눕혀 두든 거치대에 세워 두든 맞게:
+  // - 위 = 중력 반대 방향 (OS 가 자이로로 구한 중력 = 중력 포함 값 − 순수 가속, 없으면 느린 평균)
+  // - 앞 = 처음 놓인 자세에서 휴대폰 위쪽(눕혔을 때) 또는 뒷면(세웠을 때, 화면이 운전자 쪽) 중 더 수평인 쪽
+  // - 왼쪽 = 위 × 앞. 앞뒤·좌우·위아래 = 순수 가속을 이 세 방향에 나눈 값 (찰랑은 왼쪽으로 도는 가속을 + 로)
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const norm = (a) => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  let frame = null;   // { up0, fwd, left, mount }
   function onMotion(e) {
-    let x, y, z;
     const g = e.accelerationIncludingGravity;
-    if (e.acceleration && e.acceleration.x != null) { x = e.acceleration.x; y = e.acceleration.y; z = e.acceleration.z || 0; }
-    else if (g) {
+    if (!g || g.x == null) return;
+    let lin, grav;
+    if (e.acceleration && e.acceleration.x != null) {
+      lin = [e.acceleration.x, e.acceleration.y, e.acceleration.z || 0];
+      grav = [g.x - lin[0], g.y - lin[1], (g.z || 0) - lin[2]];
+    } else {
       // 중력이 섞인 값만 주는 기기: 느린 평균을 중력으로 보고 뺀다
-      gravity = gravity ? { x: gravity.x * 0.98 + g.x * 0.02, y: gravity.y * 0.98 + g.y * 0.02, z: gravity.z * 0.98 + g.z * 0.02 } : { x: g.x, y: g.y, z: g.z };
-      x = g.x - gravity.x; y = g.y - gravity.y; z = g.z - gravity.z;
-    } else return;
-    latest = { ax: y, ay: -x, az: z };
-    if (g && g.z != null) {
-      tiltG = tiltG ? { x: tiltG.x * 0.97 + g.x * 0.03, y: tiltG.y * 0.97 + g.y * 0.03, z: tiltG.z * 0.97 + g.z * 0.03 } : { x: g.x, y: g.y, z: g.z };
-      // 위쪽(차 앞)을 들면 중력 반작용이 아래쪽으로 기운다: 앞 올라감 = atan2(-y, z), 왼쪽 올라감 = atan2(-x, z)
-      const p = Math.atan2(-tiltG.y, tiltG.z), r = Math.atan2(-tiltG.x, tiltG.z);
-      if (!tilt0) tilt0 = { p, r };
-      tilt = { px: p - tilt0.p, py: r - tilt0.r };
+      gravity = gravity ? [gravity[0] * 0.98 + g.x * 0.02, gravity[1] * 0.98 + g.y * 0.02, gravity[2] * 0.98 + (g.z || 0) * 0.02] : [g.x, g.y, g.z || 0];
+      grav = gravity;
+      lin = [g.x - grav[0], g.y - grav[1], (g.z || 0) - grav[2]];
     }
+    // 위 방향은 0.5초쯤으로 고른다 (손 떨림에 기울기가 흔들리지 않게)
+    tiltG = tiltG ? tiltG.map((v, k) => v * 0.97 + grav[k] * 0.03) : grav.slice();
+    const up = norm(tiltG);
+    if (!frame) {
+      const top = [0, 1, 0], back = [0, 0, -1];
+      const flat = Math.abs(dot(up, top)) < Math.abs(dot(up, back));
+      const a = flat ? top : back;
+      const d = dot(a, up);
+      const fwd = norm([a[0] - d * up[0], a[1] - d * up[1], a[2] - d * up[2]]);
+      frame = { up0: up, fwd, left: cross(up, fwd), mount: flat ? "눕혀서 (위쪽이 차 앞)" : "세워서 (화면이 운전자 쪽)" };
+      $("mount").textContent = frame.mount;
+    }
+    latest = { ax: dot(lin, frame.fwd), ay: dot(lin, frame.left), az: dot(lin, up) };
+    // 경사: 처음 자세를 평지로 보고, 위가 차 뒤로 기울면 오르막 (앞 올라감), 오른쪽으로 기울면 왼쪽 올라감
+    const du = [up[0] - frame.up0[0], up[1] - frame.up0[1], up[2] - frame.up0[2]];
+    tilt = { px: -dot(du, frame.fwd), py: -dot(du, frame.left) };
   }
 
   async function start() {
@@ -145,7 +164,7 @@
       if (r !== "granted") { msg("움직임 센서 권한이 필요해요.", "bad"); return; }
     }
     session = "s" + Date.now().toString(36);
-    seq = 0; buf = { ax: [], ay: [], az: [] }; gravity = null; tiltG = null; tilt0 = null; tilt = { px: 0, py: 0 };
+    seq = 0; buf = { ax: [], ay: [], az: [] }; gravity = null; tiltG = null; frame = null; tilt = { px: 0, py: 0 }; $("mount").textContent = "-";
     try { await setDoc(doc(db, "demo", "live"), { active: true, session, by: user.uid, startedAt: serverTimestamp() }); }
     catch (e) { msg("시작 실패: " + (e.code || e.message) + " (Firestore 규칙이 배포됐는지 확인)", "bad"); return; }
     window.addEventListener("devicemotion", onMotion);
