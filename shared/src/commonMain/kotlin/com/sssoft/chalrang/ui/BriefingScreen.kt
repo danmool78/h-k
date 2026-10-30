@@ -67,15 +67,14 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
     val speakNow by rememberUpdatedState(speak)
     val close by rememberUpdatedState(onClose)
     val pv = path.preview
-    // 기본 속도: 전체를 약 24초에 (안전한 길은 그 3배 넘게, 위험 구간은 따로)
-    val base = (path.lengthM / 24.0).coerceIn(150.0, 4_000.0)
+    val pace = remember(path) { BriefPace.of(path) }
 
     LaunchedEffect(path) {
         val intro = intro(pv)
         caption = intro
         speakNow(intro)
         // 첫 설명을 들을 시간
-        var wait = 2.5
+        var wait = 2.0
         var last = 0L
         val told = HashSet<Int>()
         var ended = false
@@ -95,10 +94,7 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
                             speakNow(line)
                         }
                     }
-                    // 안전한 길은 건너뛰듯 빠르게, 위험 구간은 구간마다 약 10초에 (설명을 들을 시간)
-                    val seg = pv.segments.firstOrNull { at + 150 >= it.startM && at < it.endM }
-                    val speed = seg?.let { (it.lengthM / SEGMENT_SEC).coerceIn(120.0, 600.0) } ?: max(SKIP_MPS, base * 3)
-                    at = min(path.lengthM, at + speed * dt)
+                    at = pace.advance(path, at, dt)
                     if (at >= path.lengthM) {
                         ended = true
                         val outro = "브리핑을 마쳤어요." + (pv.restAdvice?.let { " $it." } ?: "") + " 안전하게 다녀오세요."
@@ -163,9 +159,71 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
     }
 }
 
-/** 위험 구간 하나를 지나는 시간 (초), 안전한 길을 지나는 최소 속도 (m/s) */
-private const val SEGMENT_SEC = 10.0
-private const val SKIP_MPS = 900.0
+/**
+ * 브리핑 빠르기: 전체 [CAP_SEC] 초 안에 (한 번 주행 200km 정도까지).
+ * - 안전한 길: 건너뛰듯 — 모두 합쳐 [SAFE_MIN_SEC]~[SAFE_MAX_SEC] 초 (실주행의 100배 넘게)
+ * - 위험 구간(150m 앞부터): 그 지점 실제 속도의 [RISK_X] 배로 비교적 천천히 — 굽이가 하나씩 보이는 빠르기.
+ *   다 들어가지 않으면 남은 시간에 맞춰 그만큼만 빠르게
+ */
+internal class BriefPace(val safeMps: Double, val riskX: Double) {
+
+    /** [dt] 초 진행. 안전한 길에서 크게 건너뛰어도 위험 구간 앞에서는 꼭 멈춰 그 구간을 천천히 보여 준다 */
+    fun advance(path: RoutePath, from: Double, dt: Double): Double {
+        var at = from
+        var left = dt
+        var guard = 0
+        while (left > 1e-6 && at < path.lengthM && guard++ < 64) {
+            val seg = path.preview.segments.firstOrNull { at + LEAD_M >= it.startM && at < it.endM }
+            if (seg == null) {
+                // 다음 위험 구간 앞(LEAD_M)까지만 빠르게
+                val next = path.preview.segments.firstOrNull { it.startM - LEAD_M > at }?.let { it.startM - LEAD_M } ?: path.lengthM
+                val need = (next - at) / safeMps
+                if (need <= left) { at = next; left -= need } else { at += safeMps * left; left = 0.0 }
+            } else {
+                val v = realMps(path, at) * riskX
+                val end = seg.endM
+                val need = (end - at) / v
+                // 한 번에 너무 멀리 가지 않게 잘게 (그 사이 실제 속도가 바뀐다)
+                val step = min(left, min(need, 0.05))
+                at = min(end, at + v * step)
+                left -= step
+            }
+        }
+        return min(at, path.lengthM)
+    }
+
+    companion object {
+        const val CAP_SEC = 30.0
+        const val SAFE_MIN_SEC = 1.5
+        const val SAFE_MAX_SEC = 5.0
+        const val SAFE_X = 120.0
+        const val RISK_X = 20.0
+        const val LEAD_M = 150.0
+
+        /** 서는 곳·출발 직후에도 멈춰 있지 않게 최소 시속 20km 로 본다 */
+        fun realMps(path: RoutePath, m: Double) = max(path.speedKmh[path.index(m)], 20.0) / 3.6
+
+        fun of(path: RoutePath): BriefPace {
+            val segs = path.preview.segments
+            var riskLen = 0.0
+            var riskReal = 0.0
+            var safeReal = 0.0
+            var i = 0
+            while (i < path.size - 1) {
+                val m = i * RoutePath.STEP
+                val inRisk = segs.any { m + LEAD_M >= it.startM && m < it.endM }
+                val t = RoutePath.STEP / realMps(path, m)
+                if (inRisk) { riskLen += RoutePath.STEP; riskReal += t } else safeReal += t
+                i++
+            }
+            val safeLen = path.lengthM - riskLen
+            val safeTime = if (safeLen <= 0) 0.0 else (safeReal / SAFE_X).coerceIn(SAFE_MIN_SEC, SAFE_MAX_SEC)
+            val safeMps = if (safeLen <= 0) 1.0 else safeLen / safeTime
+            val riskX = if (riskReal <= 0) RISK_X else max(RISK_X, riskReal / (CAP_SEC - safeTime))
+            return BriefPace(safeMps, riskX)
+        }
+    }
+}
 
 private fun intro(p: RoutePreview): String {
     val km = RoutePreview.fmtKm(p.totalM)
