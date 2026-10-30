@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>찰랑 휴대폰 시연</title>
+<style>
+  :root { --bg:#030814; --card:#0b1d36; --edge:#2a8be0; --cyan:#29c4f6; --amber:#ffb31a; --red:#ff4d5e; --text:#e3eeff; --dim:#8aa2c2; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:linear-gradient(#07132a, var(--bg)); color:var(--text); min-height:100%;
+    font:16px/1.6 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:24px; margin:4px 0 2px; }
+  .sub { color:var(--dim); font-size:14px; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid rgba(42,139,224,.55); border-radius:14px; padding:16px; margin-bottom:14px; }
+  button { width:100%; border:0; border-radius:14px; padding:16px; font-size:18px; font-weight:700; color:#fff; cursor:pointer;
+    background:linear-gradient(#2a86f0,#1250b0); border:1.5px solid var(--cyan); }
+  button.stop { background:linear-gradient(#ff6a5a,#d9283c); border-color:#ffa19a; }
+  button.ghost { background:transparent; border:1px solid rgba(42,139,224,.6); font-weight:500; font-size:15px; padding:10px; }
+  button:disabled { opacity:.45; }
+  .row { display:flex; gap:10px; align-items:center; }
+  .muted { color:var(--dim); font-size:14px; }
+  .ok { color:var(--cyan); } .warn { color:var(--amber); } .bad { color:var(--red); }
+  code { background:#06111f; padding:2px 6px; border-radius:6px; font-size:13px; word-break:break-all; }
+  canvas { width:100%; height:160px; display:block; background:#06111f; border-radius:10px; }
+  .big { font-size:28px; font-weight:800; }
+  ol { padding-left:20px; margin:6px 0; } li { margin:2px 0; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>찰랑 휴대폰 시연</h1>
+  <p class="sub">실제 차가 없을 때 휴대폰을 흔들어 차 흔들림 대신 보냅니다. 차량 앱(에뮬레이터)과 웹 점검판(<a href="/app/" style="color:var(--cyan)">/app/</a>)이 자동으로 "휴대폰 시연" 모드로 바뀝니다.</p>
+
+  <div class="card" id="loginCard">
+    <div class="row" style="justify-content:space-between">
+      <div><b>관리자 로그인</b><div class="muted" id="who">로그인하지 않음</div></div>
+    </div>
+    <div style="margin-top:12px"><button id="login" class="ghost">Google 로 로그인</button></div>
+    <div id="notAdmin" class="hidden" style="margin-top:12px">
+      <p class="warn" style="margin:0 0 6px">이 계정은 아직 관리자가 아니에요.</p>
+      <ol class="muted">
+        <li>Firebase 콘솔 → Firestore → <b>admins</b> 컬렉션</li>
+        <li>문서 ID 에 아래 값을 넣고 빈 문서로 저장</li>
+      </ol>
+      <code id="uid"></code>
+      <p class="muted" style="margin:8px 0 0">저장한 뒤 이 페이지를 새로고침하세요.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <b>잡는 법</b>
+    <ol class="muted">
+      <li>화면이 위로 오게 <b>평평하게</b> 들고, 휴대폰 <b>위쪽을 차 앞쪽</b>으로</li>
+      <li>브레이크·출발처럼 <b>앞뒤로</b>, 굽은 길처럼 <b>좌우로</b> 밀었다 당기기</li>
+      <li><b>2~10초에 한 번</b> 정도로 천천히 — 멀미를 일으키는 흔들림이에요. 빨리 흔드는 떨림은 물컵이 거의 반응하지 않아요</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between; margin-bottom:8px">
+      <div><span class="muted">상태</span><div class="big" id="state">대기</div></div>
+      <div style="text-align:right"><span class="muted">보낸 묶음</span><div class="big" id="sent">0</div></div>
+    </div>
+    <canvas id="chart" width="960" height="320"></canvas>
+    <div class="muted" style="margin-top:6px"><span style="color:var(--amber)">■</span> 앞뒤 &nbsp; <span style="color:var(--cyan)">■</span> 좌우 (m/s², 최근 10초)</div>
+    <div style="margin-top:14px"><button id="start" disabled>시연 시작</button></div>
+    <p class="muted" id="msg" style="margin:10px 0 0"></p>
+  </div>
+</main>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signInWithRedirect } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+  import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+  // 웹 공개 설정 (비밀 아님). 쓰기는 Firestore 규칙이 관리자(admins/{uid})만 허용한다
+  const app = initializeApp({
+    apiKey: "AIzaSyAC-If99_ZU2DoU4VTxzBtwRchGVg2JRqQ",
+    authDomain: "h-y-server.firebaseapp.com",
+    projectId: "h-y-server",
+    appId: "1:103262040494:web:a147ea52af9e34efcd983f",
+  });
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const $ = (id) => document.getElementById(id);
+
+  const DT = 0.05;          // 시료 간격 (초) = 20Hz
+  const BATCH_MS = 500;     // 0.5초마다 묶어서 올림 (문서 하나에 초당 1번 넘게 쓰지 않게, 새 문서로)
+  let user = null, isAdmin = false, running = false;
+  let session = null, seq = 0, buf = { ax: [], ay: [] };
+  let latest = { ax: 0, ay: 0 }, gravity = null;
+  let sampleTimer = null, batchTimer = null, wakeLock = null;
+  const history = [];       // 그래프용 최근 10초
+
+  function msg(text, cls = "muted") { $("msg").className = cls; $("msg").textContent = text; }
+
+  $("login").onclick = async () => {
+    const p = new GoogleAuthProvider();
+    try { await signInWithPopup(auth, p); }
+    catch (e) { if (String(e.code).includes("popup")) await signInWithRedirect(auth, p); else msg("로그인 실패: " + e.code, "bad"); }
+  };
+
+  onAuthStateChanged(auth, async (u) => {
+    user = u; isAdmin = false;
+    $("notAdmin").classList.add("hidden");
+    if (!u) { $("who").textContent = "로그인하지 않음"; $("start").disabled = true; return; }
+    $("who").textContent = u.email || u.uid;
+    $("login").textContent = "다른 계정으로 로그인";
+    try { isAdmin = (await getDoc(doc(db, "admins", u.uid))).exists(); } catch (e) { isAdmin = false; }
+    if (!isAdmin) { $("uid").textContent = u.uid; $("notAdmin").classList.remove("hidden"); }
+    $("start").disabled = !isAdmin;
+    if (isAdmin) msg("준비됐어요. 시연 시작을 누르세요.", "ok");
+  });
+
+  // 휴대폰 가속도 → 차 기준: 휴대폰 위쪽(y) = 차 앞, 오른쪽(x) = 차 오른쪽. 찰랑은 왼쪽으로 도는 가속을 + 로 쓴다
+  function onMotion(e) {
+    let x, y;
+    if (e.acceleration && e.acceleration.x != null) { x = e.acceleration.x; y = e.acceleration.y; }
+    else if (e.accelerationIncludingGravity) {
+      // 중력이 섞인 값만 주는 기기: 느린 평균을 중력으로 보고 뺀다
+      const g = e.accelerationIncludingGravity;
+      gravity = gravity ? { x: gravity.x * 0.98 + g.x * 0.02, y: gravity.y * 0.98 + g.y * 0.02 } : { x: g.x, y: g.y };
+      x = g.x - gravity.x; y = g.y - gravity.y;
+    } else return;
+    latest = { ax: y, ay: -x };
+  }
+
+  async function start() {
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const r = await DeviceMotionEvent.requestPermission().catch(() => "denied");   // iOS
+      if (r !== "granted") { msg("움직임 센서 권한이 필요해요.", "bad"); return; }
+    }
+    session = "s" + Date.now().toString(36);
+    seq = 0; buf = { ax: [], ay: [] }; gravity = null;
+    try { await setDoc(doc(db, "demo", "live"), { active: true, session, by: user.uid, startedAt: serverTimestamp() }); }
+    catch (e) { msg("시작 실패: " + (e.code || e.message) + " (Firestore 규칙이 배포됐는지 확인)", "bad"); return; }
+    window.addEventListener("devicemotion", onMotion);
+    sampleTimer = setInterval(() => {
+      buf.ax.push(+latest.ax.toFixed(3)); buf.ay.push(+latest.ay.toFixed(3));
+      history.push([latest.ax, latest.ay]); if (history.length > 200) history.shift();
+    }, DT * 1000);
+    batchTimer = setInterval(flush, BATCH_MS);
+    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (e) { wakeLock = null; }
+    running = true;
+    $("state").textContent = "시연 중"; $("state").className = "big ok";
+    $("start").textContent = "시연 끝"; $("start").className = "stop";
+    msg("앱·웹 점검판이 1~2초 안에 휴대폰 시연으로 바뀌어요.", "ok");
+  }
+
+  async function flush() {
+    if (!buf.ax.length) return;
+    const ax = buf.ax, ay = buf.ay; buf = { ax: [], ay: [] };
+    seq += 1;
+    try {
+      await setDoc(doc(db, "demo", "live", session, String(seq).padStart(6, "0")), { seq, dt: DT, ax, ay, t: Date.now() });
+      $("sent").textContent = seq;
+    } catch (e) { msg("보내기 실패: " + (e.code || e.message), "bad"); }
+  }
+
+  async function stop(reason) {
+    if (!running) return;
+    running = false;
+    window.removeEventListener("devicemotion", onMotion);
+    clearInterval(sampleTimer); clearInterval(batchTimer);
+    await flush();
+    try { await setDoc(doc(db, "demo", "live"), { active: false, session, by: user.uid, endedAt: serverTimestamp() }); } catch (e) {}
+    try { await wakeLock?.release(); } catch (e) {}
+    wakeLock = null;
+    $("state").textContent = "대기"; $("state").className = "big";
+    $("start").textContent = "시연 시작"; $("start").className = "";
+    msg(reason || "시연을 끝냈어요.", "muted");
+  }
+
+  $("start").onclick = () => running ? stop() : start();
+  // 다른 앱으로 넘어가면 센서가 멈추므로 시연도 끝낸다
+  document.addEventListener("visibilitychange", () => { if (document.hidden && running) stop("화면을 벗어나 시연을 끝냈어요."); });
+
+  // 최근 10초 그래프
+  const cv = $("chart"), cx = cv.getContext("2d");
+  function draw() {
+    const w = cv.width, h = cv.height;
+    cx.clearRect(0, 0, w, h);
+    cx.strokeStyle = "rgba(79,163,224,.25)"; cx.beginPath(); cx.moveTo(0, h / 2); cx.lineTo(w, h / 2); cx.stroke();
+    for (const [k, color] of [[0, "#ffb31a"], [1, "#29c4f6"]]) {
+      cx.strokeStyle = color; cx.lineWidth = 3; cx.beginPath();
+      history.forEach((p, i) => { const x = i / 199 * w, y = h / 2 - Math.max(-6, Math.min(6, p[k])) / 6 * (h / 2 - 6); i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
+      cx.stroke();
+    }
+    if (running) requestAnimationFrame(draw); else setTimeout(() => requestAnimationFrame(draw), 500);
+  }
+  draw();
+</script>
+</body>
+</html>

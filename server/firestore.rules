@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 관리자: Firestore 콘솔에서 admins/{로그인 uid} 문서를 만들어 지정한다 (이메일을 공개 저장소에 적지 않으려고)
+    function isAdmin() {
+      return request.auth != null && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // 관리자 목록: 본인 것만 읽기 (휴대폰 페이지가 관리자인지 확인), 쓰기는 콘솔에서만
+    match /admins/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // 휴대폰 시연: 차량 앱·웹 점검판이 읽고, 관리자 휴대폰만 쓴다
+    match /demo/live {
+      allow read: if true;
+      allow write: if isAdmin();
+      match /{session}/{batch} {
+        allow read: if true;
+        allow write: if isAdmin();
+      }
+    }
+
+    // 그 밖은 모두 막는다
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

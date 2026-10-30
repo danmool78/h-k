@@ -114,6 +114,11 @@ class RemoteFeed {
             """"where":{"fieldFilter":{"field":{"fieldPath":"seq"},"op":"GREATER_THAN","value":{"integerValue":"$lastSeq"}}},""" +
             """"orderBy":[{"field":{"fieldPath":"seq"}}],"limit":40}}"""
         val text = httpRequest("${FirebaseWeb.DOCS}/demo/live:runQuery?key=${FirebaseWeb.API_KEY}", "POST", body) ?: return
+        accept(text)
+    }
+
+    /** Firestore runQuery 응답(묶음 목록)을 받아 시료를 쌓는다 */
+    internal fun accept(text: String) {
         val rows = runCatching { Json.parseToJsonElement(text).jsonArray }.getOrNull() ?: return
         for (row in rows) {
             val f = row.jsonObject["document"]?.jsonObject?.get("fields")?.jsonObject ?: continue

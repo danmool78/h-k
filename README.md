@@ -50,6 +50,9 @@
   화면 크기도 바꿔 본다: 전체 화면(1280×720dp = 2560×1440 QHD 배율 2), 화면 분할(앱 두 개, 640×720), 세로 화면(720×1280).
   앱 화면은 넓으면 물컵|정보 좌우, 좁거나 세로로 길면 물컵 위·정보 아래로 바뀐다
   로컬: `./gradlew :shared:wasmJsBrowserDevelopmentRun`
+- **휴대폰 시연 (실제 차가 없을 때): https://h-y-server.web.app/phone/** — 관리자 Google 로그인 → "시연 시작" → 휴대폰을 흔들면
+  가속도가 0.5초 묶음으로 Firestore(`demo/live/{세션}`)에 올라가고, 차량 앱·웹 점검판이 자동으로 "휴대폰 시연" 모드로 받아 물컵을 흔든다.
+  관리자 지정: Firebase 콘솔 → Firestore → `admins/{로그인 uid}` 빈 문서 (휴대폰 페이지가 uid 를 알려 준다). 규칙: `server/firestore.rules`
 - `main` 푸시·PR 마다 GitHub Actions 가 테스트하고 디버그 APK 를 올린다. 웹판은 `main` 에 들어가면 자동 배포, PR 은 미리보기 주소
 
 ## 구조

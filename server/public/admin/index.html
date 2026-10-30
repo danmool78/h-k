@@ -351,6 +351,17 @@
   </ul>
 </section>
 
+<section id="phone">
+  <h2>11-1. 휴대폰 시연 (실제 차가 없을 때)</h2>
+  <ol>
+    <li>관리자가 <a href="/phone/">/phone/</a> 에서 Google 로그인 → "시연 시작". 관리자는 Firestore <code>admins/{uid}</code> 문서로 지정한다.</li>
+    <li>휴대폰을 화면이 위로 오게 평평하게, 위쪽을 차 앞으로 들고 흔든다. 휴대폰 가속도(중력 제외) \(y\) → 차 앞뒤 \(a_x\), \(-x\) → 차 좌우 \(a_y\).</li>
+    <li>20Hz 로 모아 0.5초마다 새 문서 <code>demo/live/{세션}/{순번}</code> 로 올린다 (문서 하나에 초당 1번 넘게 쓰지 않게).</li>
+    <li>차량 앱·웹 점검판은 화면이 보이는 동안 <code>demo/live</code> 를 2초(시연이 없으면 최대 10초)마다 보고, 시연 중이면 0.4초마다 새 묶음을 받아(Firestore REST) 1초 쌓은 뒤 차 흔들림 대신 물컵에 넣는다. 10초 동안 새 묶음이 없으면 끝난 것으로 본다. 속도는 40km/h 로 둔다.</li>
+  </ol>
+  <p class="muted">보안 규칙(<code>server/firestore.rules</code>): 시연 데이터는 누구나 읽기, 관리자만 쓰기, 그 밖은 모두 막음.</p>
+</section>
+
 <section id="sources">
   <h2>12. 출처</h2>
   <ul>

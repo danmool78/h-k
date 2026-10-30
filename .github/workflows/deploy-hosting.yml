@@ -1,4 +1,4 @@
-# 웹 페이지(server/public) + 앱 화면 웹판(shared → /app/) 자동 배포
+# 웹 페이지(server/public) + 앱 화면 웹판(shared → /app/) + Firestore 규칙 자동 배포
 #  - main 에 병합되면 h-y-server.web.app 에 배포
 #  - PR 이면 미리보기 주소에 배포하고 PR 에 댓글로 주소를 남김 (7일 뒤 만료)
 # 함수(server/functions)는 자동 배포하지 않는다: 예약 수집 함수가 다시 살아나 비용이 생기므로 손으로 배포.
@@ -8,9 +8,9 @@ name: Deploy hosting
 on:
   push:
     branches: [main]
-    paths: ["server/public/**", "server/firebase.json", "shared/**", "gradle/**", "*.gradle.kts", ".github/workflows/deploy-hosting.yml"]
+    paths: ["server/public/**", "server/firebase.json", "server/firestore.rules", "shared/**", "gradle/**", "*.gradle.kts", ".github/workflows/deploy-hosting.yml"]
   pull_request:
-    paths: ["server/public/**", "server/firebase.json", "shared/**", "gradle/**", "*.gradle.kts", ".github/workflows/deploy-hosting.yml"]
+    paths: ["server/public/**", "server/firebase.json", "server/firestore.rules", "shared/**", "gradle/**", "*.gradle.kts", ".github/workflows/deploy-hosting.yml"]
 
 permissions:
   contents: read
@@ -58,3 +58,14 @@ jobs:
           projectId: h-y-server
           entryPoint: server
           channelId: live
+      # 휴대폰 시연용 Firestore 규칙. 서비스 계정에 규칙 배포 권한(Firebase Rules Admin)이 없으면 실패하므로
+      # 실패해도 웹 배포는 그대로 두고 경고만 남긴다 → 그때는 콘솔에 server/firestore.rules 를 붙여 넣는다
+      - name: Firestore 규칙 배포 (main)
+        if: env.SA != '' && github.event_name == 'push'
+        continue-on-error: true
+        working-directory: server
+        run: |
+          echo "$SA" > "$RUNNER_TEMP/sa.json"
+          GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json" npx -y firebase-tools@13 deploy --only firestore:rules --project h-y-server --non-interactive \
+            || echo "::warning::Firestore 규칙 배포 실패 — Firebase 콘솔 → Firestore → 규칙에 server/firestore.rules 를 붙여 넣어 주세요"
+          rm -f "$RUNNER_TEMP/sa.json"
