@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.LocalDrink
 import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
@@ -173,7 +174,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                             CupCard(sample, Modifier.fillMaxWidth().height(232.dp))
                             // 요약·안내는 남는 높이에서 함께 스크롤 (화면이 낮아도 안내가 잘리지 않게)
                             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                SummaryCard(sample, trace.startTime, lag, stats, shake, ui.setup.primary)
+                                SummaryCard(sample, trace.startTime, if (trace.size > 0) trace[0].level else null, lag, stats, shake, ui.setup.primary)
                                 MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier)
                             }
                         }
@@ -182,7 +183,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                 } else {
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         CupCard(sample, Modifier.fillMaxWidth().height(220.dp))
-                        SummaryCard(sample, trace.startTime, lag, stats, shake, ui.setup.primary)
+                        SummaryCard(sample, trace.startTime, if (trace.size > 0) trace[0].level else null, lag, stats, shake, ui.setup.primary)
                         Charts(trace, frame, range, cursorAt, following, events, shake, ui.setup.primary, sample, stats, pick, Modifier.fillMaxWidth(), 200.dp)
                         MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier)
                     }
@@ -377,7 +378,7 @@ private fun LevelGauge(s: TraceSample?, modifier: Modifier) {
 }
 
 @Composable
-private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: WindowStats, shake: ShakeReport?, child: Child?, modifier: Modifier = Modifier) {
+private fun SummaryCard(s: TraceSample?, start: Double, startWater: Double?, lag: Lag?, stats: WindowStats, shake: ShakeReport?, child: Child?, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().neonCard().padding(horizontal = 16.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.Speed, null, tint = Neon.Cyan, modifier = Modifier.size(22.dp))
@@ -391,6 +392,13 @@ private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: Window
         val tilt = s.total
         SummaryRow(Icons.Filled.DirectionsCar, "차 흔들림", "${signed(s.ax, 1)} | ${signed(s.ay, 1)} | ${signed(s.az, 1)}", "앞|옆|위 m/s²")
         SummaryRow(Icons.Filled.WaterDrop, "물 출렁임", "${fmt(tilt, 2)} g", "넘침 ${fmt(s.freeboard, 2)} g", if (s.spilling) Neon.Red else Neon.White)
+        // 남은 물: 첫 화면 물컵과 같은 값 (평소 운전 습관으로 채우고 넘친 만큼 줄어듦)
+        val lost = (startWater ?: s.level) - s.level
+        SummaryRow(
+            Icons.Filled.LocalDrink, "남은 물", "${(s.level * 100).roundToInt()}%",
+            startWater?.let { "출발 ${(it * 100).roundToInt()}%" + if (lost > 0.005) " · 넘쳐서 -${(lost * 100).roundToInt()}%" else "" } ?: "",
+            if (lost > 0.03) Neon.Amber else Neon.White,
+        )
         SummaryRow(
             Icons.Filled.Warning, "멀미 누적", fmt(s.dose, 2), "주의 0.6 · 위험 1.0",
             when { s.dose >= 1.0 -> Neon.Red; s.dose >= 0.6 -> Neon.Amber; else -> Neon.White },

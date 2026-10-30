@@ -150,13 +150,23 @@ class ChalrangEngine(
      * 물 양 기준 넘침: 물이 많을수록 작은 쏠림에도 넘치고, 넘친 만큼 물이 준다.
      * (아이 멀미 누적·경고는 [cup] 이 아이 기준으로 따로 계산한다)
      */
-    private fun pour(dt: Double) {
+    private fun pour(dt: Double): Boolean {
         val tilt = cup.tilt
         val fb = WaterCup.freeboardOf(water)
         val now = tilt > fb
-        if (now && !waterSpilling) waterSpills++
+        val started = now && !waterSpilling
+        if (started) waterSpills++
         waterSpilling = now
         if (now) water = (water - WaterCup.spillRate(tilt, water) * dt * WATER_PER_DOSE).coerceAtLeast(WATER_LEFT_MIN)
+        return started
+    }
+
+    /**
+     * 흔들림 기록: 물 높이·넘침은 화면에 보이는 물컵(남은 물) 그대로, 멀미 누적은 아이 기준.
+     * 그래서 분석 화면의 물컵·넘침 기준·넘침 횟수가 첫 화면과 같다.
+     */
+    private fun record(t: Double, ax: Double, ay: Double, kmh: Double, az: Double) {
+        trace.record(t, ax, ay, cup.tiltX, cup.tiltY, kmh, cup.dose, water, waterSpilling, az, cup.tiltZ, cup.gradeX, cup.gradeY)
     }
 
     /** 출발 전에만 물을 더 채우거나(도전) 덜어 낸다 */
@@ -270,13 +280,10 @@ class ChalrangEngine(
                 val before = cup.spillCount
                 cup.gradeX = f.grade
                 if (f.resting) cup.rest(SCENARIO_DT) else cup.step(f.ax, f.ay, SCENARIO_DT, f.az)
-                pour(SCENARIO_DT)
+                if (pour(SCENARIO_DT)) trace.event(f.t, TraceKind.SPILL)
                 log.add(cup.tilt, SCENARIO_DT)
-                if (cup.spillCount > before) {
-                    spillStarted = true
-                    trace.event(f.t, TraceKind.SPILL)
-                }
-                trace.record(f.t, f.ax, f.ay, cup.tiltX, cup.tiltY, f.speedKmh, cup.dose, cup.level, cup.spilling, f.az, cup.tiltZ, cup.gradeX, cup.gradeY)
+                if (cup.spillCount > before) spillStarted = true
+                record(f.t, f.ax, f.ay, f.speedKmh, f.az)
                 d.frame = f
             }
             if (seats.values.none { it.riding } && children.isNotEmpty()) {
@@ -310,13 +317,10 @@ class ChalrangEngine(
                 val before = cup.spillCount
                 cup.gradeX = r.gradeX; cup.gradeY = r.gradeY
                 cup.step(r.ax, r.ay, step, r.az)
-                pour(step)
+                if (pour(step)) trace.event(remoteT, TraceKind.SPILL)
                 log.add(cup.tilt, step)
-                if (cup.spillCount > before) {
-                    spillStarted = true
-                    trace.event(remoteT, TraceKind.SPILL)
-                }
-                trace.record(remoteT, r.ax, r.ay, cup.tiltX, cup.tiltY, REMOTE_KMH, cup.dose, cup.level, cup.spilling, r.az, cup.tiltZ, cup.gradeX, cup.gradeY)
+                if (cup.spillCount > before) spillStarted = true
+                record(remoteT, r.ax, r.ay, REMOTE_KMH, r.az)
             }
             clock = remoteT
             if (seats.values.none { it.riding } && children.isNotEmpty()) {
@@ -346,10 +350,9 @@ class ChalrangEngine(
             val before = cup.spillCount
             cup.gradeX = motion.gradeX; cup.gradeY = motion.gradeY
             cup.step(motion.ax, motion.ay, dt, motion.az)
-            pour(dt)
+            if (pour(dt)) trace.event(now, TraceKind.SPILL)
             log.add(cup.tilt, dt)
-            if (cup.spillCount > before) trace.event(now, TraceKind.SPILL)
-            trace.record(now, motion.ax, motion.ay, cup.tiltX, cup.tiltY, motion.speedKmh ?: 0.0, cup.dose, cup.level, cup.spilling, motion.az, cup.tiltZ, cup.gradeX, cup.gradeY)
+            record(now, motion.ax, motion.ay, motion.speedKmh ?: 0.0, motion.az)
             val setup = applySetup(CupSetup.choose(seats, children))
             val ahead = navi.ahead.value
             input = CareInput(
