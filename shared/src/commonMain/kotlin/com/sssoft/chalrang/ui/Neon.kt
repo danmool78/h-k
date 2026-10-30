@@ -1,5 +1,7 @@
 package com.sssoft.chalrang.ui
 
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -28,10 +30,10 @@ import androidx.compose.ui.unit.dp
 
 /** 찰랑 분석 화면의 네온 스타일 (차량 화면, 어두운 실내) */
 object Neon {
-    val Bg0 = Color(0xFF030814)
-    val Bg1 = Color(0xFF07132A)
-    val CardTop = Color(0xEB0B1D36)
-    val CardBottom = Color(0xEB06111F)
+    val Bg0 = Color(0xFF020611)
+    val Bg1 = Color(0xFF061029)
+    val CardTop = Color(0xEB0A1A33)
+    val CardBottom = Color(0xEB040C1A)
     val Edge = Color(0xFF2A8BE0)
     val Cyan = Color(0xFF29C4F6)
     val Blue = Color(0xFF2F7CF6)
@@ -69,7 +71,7 @@ fun NeonBackground(modifier: Modifier = Modifier, content: @Composable BoxScope.
 fun Modifier.neonCard(): Modifier = this
     .drawBehind {
         // 바깥으로 번지는 빛
-        for ((w, a) in listOf(10f to 0.05f, 5f to 0.08f)) {
+        for ((w, a) in listOf(14f to 0.04f, 8f to 0.07f, 4f to 0.12f)) {
             drawRoundRect(
                 Neon.Edge.copy(alpha = a), topLeft = Offset(-w / 2, -w / 2),
                 size = androidx.compose.ui.geometry.Size(size.width + w, size.height + w),
@@ -153,6 +155,8 @@ fun NeonChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    /** 오른쪽 끝 ">" (눌러서 다른 화면으로 가는 버튼) */
+    chevron: Boolean = false,
 ) {
     val shape = RoundedCornerShape(12.dp)
     val look = if (on) {
@@ -174,5 +178,9 @@ fun NeonChip(
             label, color = if (on) Neon.White else Neon.Text, fontSize = androidx.compose.ui.unit.TextUnit(15f, androidx.compose.ui.unit.TextUnitType.Sp),
             fontWeight = if (on) androidx.compose.ui.text.font.FontWeight.Bold else null, maxLines = 1,
         )
+        if (chevron) {
+            androidx.compose.foundation.layout.Spacer(Modifier.width(4.dp))
+            androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Neon.Cyan, modifier = Modifier.size(20.dp))
+        }
     }
 }

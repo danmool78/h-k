@@ -310,8 +310,13 @@ private class Camera(w: Float, h: Float) {
 }
 
 // 바닥 그리기 값 (반지름 배율 to 진하기)
-private val FLOOR_GLOW = listOf(1.75 to 0.04f, 1.45 to 0.06f, 1.2 to 0.08f)
-private val FLOOR_RINGS = listOf(1.2 to 0.6f, 1.45 to 0.35f, 1.72 to 0.18f)
+private val FLOOR_GLOW = listOf(1.78 to 0.035f, 1.45 to 0.05f, 1.2 to 0.08f, 1.06 to 0.10f)
+private val FLOOR_RINGS = listOf(1.1 to 0.75f, 1.2 to 0.45f, 1.34 to 0.3f, 1.45 to 0.5f, 1.72 to 0.22f)
+/** 눈금 고리 (안쪽·바깥 반지름 배율), 눈금 수 */
+private const val TICK_IN = 1.52
+private const val TICK_OUT = 1.6
+private const val TICKS = 90
+private val StageCyan = Color(0xFF29C4F6)
 private val CONTACT_SHADOW = listOf(1.12 to 0.12f, 1.05 to 0.18f, 1.0 to 0.25f)
 private val PUDDLE_LAYERS = listOf(1.0 to 0.22f, 0.82 to 0.14f, 0.64 to 0.14f)
 
@@ -365,13 +370,45 @@ private fun DrawScope.drawPuddle(cam: Camera, pen: Pen, c: Color, radius: Double
 private fun DrawScope.drawFloor(cam: Camera, pen: Pen, c: Color, puddle: Float, stage: Boolean) {
     fun ellipse(r: Double) = pen.a.ellipse(cam, r)
     if (stage) {
+        // 아래로 퍼지는 빛줄기 (받침 앞쪽에서 화면 아래로, 아래로 갈수록 옅다)
+        val rayLen = cam.unit * 0.9f
+        for (i in 0..8) {
+            val th = PI * (1.18 + 0.08 * i)
+            val o = cam.project(RB * 1.2 * cos(th), RB * 1.2 * sin(th), 0.0)
+            val spread = (o.x - cam.cx) * 0.35f
+            for (j in 0 until 4) {
+                val t0 = j / 4f
+                val t1 = (j + 1) / 4f
+                drawLine(
+                    StageCyan.copy(alpha = 0.16f * (1 - t0) * (if (i % 2 == 0) 1f else 0.55f)),
+                    Offset(o.x + spread * t0, o.y + rayLen * t0), Offset(o.x + spread * t1, o.y + rayLen * t1),
+                    strokeWidth = cam.unit * (0.03f - 0.006f * j),
+                )
+            }
+        }
         // 바닥 빛 (안쪽이 밝다)
-        for ((k, a) in FLOOR_GLOW) drawPath(ellipse(RB * k), Color(0xFF29C4F6).copy(alpha = a))
+        for ((k, a) in FLOOR_GLOW) drawPath(ellipse(RB * k), StageCyan.copy(alpha = a))
         for ((k, a) in FLOOR_RINGS) {
             val e = ellipse(RB * k)
-            drawPath(e, Color(0xFF29C4F6).copy(alpha = a * 0.25f), style = Stroke(cam.unit * 0.05f))
-            drawPath(e, Color(0xFF29C4F6).copy(alpha = a), style = Stroke(cam.unit * 0.012f))
+            drawPath(e, StageCyan.copy(alpha = a * 0.25f), style = Stroke(cam.unit * 0.05f))
+            drawPath(e, StageCyan.copy(alpha = a), style = Stroke(cam.unit * 0.010f))
         }
+        // 새겨진 방사형 눈금 (10칸마다 길고 밝게)
+        for (i in 0 until TICKS) {
+            val th = 2 * PI * i / TICKS
+            val major = i % 10 == 0
+            val r1 = RB * (if (major) TICK_OUT + 0.04 else TICK_OUT)
+            val a = cam.project(RB * TICK_IN * cos(th), RB * TICK_IN * sin(th), 0.0)
+            val b = cam.project(r1 * cos(th), r1 * sin(th), 0.0)
+            drawLine(StageCyan.copy(alpha = if (major) 0.7f else 0.32f), a, b, strokeWidth = cam.unit * (if (major) 0.012f else 0.007f))
+        }
+        // 바깥 점선 고리: 짧은 호를 띄엄띄엄
+        pen.b.reset()
+        for (i in 0 until 48) {
+            val from = 2 * PI * i / 48
+            pen.b.arc(cam, RB * 1.79, 0.0, from, from + PI / 72, 3)
+        }
+        drawPath(pen.b, StageCyan.copy(alpha = 0.3f), style = Stroke(cam.unit * 0.008f))
     }
     if (puddle > 0.005f) drawPuddle(cam, pen, c, RB * (1.12 + 0.48 * puddle))
     // 접촉 그림자: 바닥에 가까울수록 진하다
