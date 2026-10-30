@@ -295,17 +295,9 @@ private fun CupCard(s: TraceSample?, modifier: Modifier) {
             while (gx < size.width) { drawLine(Color(0x0F4FA3E0), Offset(gx, 0f), Offset(gx, size.height)); gx += step }
             var gy = 0f
             while (gy < size.height) { drawLine(Color(0x0F4FA3E0), Offset(0f, gy), Offset(size.width, gy)); gy += step }
-            // 받침 고리
-            val c = Offset(size.width * 0.6f, size.height * 0.88f)
-            for ((k, a) in listOf(1.0f to 0.55f, 1.35f to 0.3f, 1.7f to 0.15f)) {
-                val rw = size.width * 0.24f * k
-                val rh = rw * 0.2f
-                drawOval(Neon.Cyan.copy(alpha = a * 0.25f), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(9f))
-                drawOval(Neon.Cyan.copy(alpha = a), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(1.6f))
-            }
         }
         if (s != null) {
-            CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(start = 92.dp, end = 24.dp, top = 22.dp, bottom = 10.dp))
+            CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(start = 84.dp, end = 8.dp, top = 14.dp, bottom = 4.dp), stage = true)
         }
         Column(Modifier.align(Alignment.CenterStart).padding(start = 14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Gauge("앞뒤", s?.let { -it.tiltX })

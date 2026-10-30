@@ -132,18 +132,11 @@ private val WIDE_MIN = 900.dp
 
 @Composable
 private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit) = Box(modifier.neonCard().clip(Neon.CardShape)) {
-    // 받침 고리와 은은한 빛
+    // 은은한 빛 (고리·그림자는 CupView 가 같은 3D 바닥에 그린다)
     Canvas(Modifier.fillMaxSize()) {
         drawRect(Brush.radialGradient(listOf(Color(0x3329C4F6), Color.Transparent), center = Offset(size.width * 0.5f, size.height * 0.62f), radius = size.minDimension * 0.7f))
-        val c = Offset(size.width * 0.5f, size.height * 0.86f)
-        for ((k, a) in listOf(1.0f to 0.5f, 1.4f to 0.28f, 1.8f to 0.14f)) {
-            val rw = size.minDimension * 0.26f * k
-            val rh = rw * 0.2f
-            drawOval(Neon.Cyan.copy(alpha = a * 0.25f), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(10f))
-            drawOval(Neon.Cyan.copy(alpha = a), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(1.8f))
-        }
     }
-    CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 12.dp))
+    CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 8.dp), stage = true)
     Row(Modifier.align(Alignment.TopStart).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Filled.WaterDrop, null, tint = Neon.Cyan, modifier = Modifier.size(26.dp))
         Spacer(Modifier.width(6.dp))
