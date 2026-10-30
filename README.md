@@ -90,6 +90,7 @@
 ## 문서
 
 - **계산 근거 (수식·매개변수·검증·출처): https://h-y-server.web.app/admin/** (`server/public/admin/index.html`)
+- **공모전 지원서용 기능 정리: [docs/공모전_기능정리.md](docs/공모전_기능정리.md)**
 - 기획: [docs/찰랑_기획메모.md](docs/찰랑_기획메모.md)
 - 공모전·Pleos SDK 정리: [docs/PLEOS_SDK.md](docs/PLEOS_SDK.md)
 - 웹 페이지(`server/public`)는 `main` 에 병합되면 https://h-y-server.web.app 에 자동 배포됩니다 (GitHub Actions)
