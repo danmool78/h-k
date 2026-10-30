@@ -172,12 +172,50 @@ class WaterSim(private val extent: Double) {
         }
     }
 
-    /** 셰이더용 그림: R·G = 16비트 높이 (가운데 0.5 = 0). 컵 밖 칸은 수면 경사를 이어 채워 벽에서 높이가 뚝 끊기지 않게 */
+    private val hbuf = FloatArray(N * N)
+    private val filled = BooleanArray(N * N)
+    private val nextFilled = BooleanArray(N * N)
+
+    /**
+     * 셰이더용 그림: R·G = 16비트 높이 (가운데 0.5 = 0).
+     * 컵 밖 칸은 안쪽 이웃에서 경사를 따라 몇 겹 이어 채운다: 원을 계단 모양 격자로 자른 경계에서
+     * 높이가 뚝 끊기면 벽에 닿은 물 가장자리가 톱니처럼 보인다
+     */
     fun encode(): IntArray {
         for (k in 0 until N * N) {
             val i = k % N
             val j = k / N
-            val h = if (inside[k] && xs[i] * xs[i] + xs[j] * xs[j] <= lastR2) u[k] else sx * xs[i] + sy * xs[j]
+            filled[k] = inside[k] && xs[i] * xs[i] + xs[j] * xs[j] <= lastR2
+            hbuf[k] = if (filled[k]) u[k] else 0f
+        }
+        repeat(FILL_RINGS) {
+            for (k in 0 until N * N) {
+                nextFilled[k] = filled[k]
+                if (filled[k]) continue
+                val i = k % N
+                val j = k / N
+                var sum = 0f
+                var cnt = 0
+                // 네 이웃 (매 프레임 도는 곳이라 람다·객체 없이)
+                for (d in 0 until 4) {
+                    val di = if (d == 0) -1 else if (d == 1) 1 else 0
+                    val dj = if (d == 2) -1 else if (d == 3) 1 else 0
+                    val ii = i + di
+                    val jj = j + dj
+                    if (ii < 0 || jj < 0 || ii >= N || jj >= N) continue
+                    val kk = jj * N + ii
+                    if (!filled[kk]) continue
+                    sum += hbuf[kk] - (sx * di + sy * dj) * cell
+                    cnt++
+                }
+                if (cnt > 0) { hbuf[k] = sum / cnt; nextFilled[k] = true }
+            }
+            nextFilled.copyInto(filled)
+        }
+        for (k in 0 until N * N) {
+            val i = k % N
+            val j = k / N
+            val h = if (filled[k]) hbuf[k] else sx * xs[i] + sy * xs[j]
             val v = ((h / SCALE + 0.5f).coerceIn(0f, 1f) * 65535f).toInt()
             argb[k] = (0xFF shl 24) or ((v shr 8) shl 16) or ((v and 0xFF) shl 8)
         }
@@ -198,6 +236,8 @@ class WaterSim(private val extent: Double) {
         private const val BREAK_STEEP = 3.0f
         private const val VISC = 0.06f
         private const val BREAK_SAMPLES = 24
+        /** 컵 밖으로 이어 채우는 칸 수 (B-스플라인 4×4 와 잔물결 판정이 닿는 범위) */
+        private const val FILL_RINGS = 3
 
         fun clampSize(v: Int) = max(1, min(v, N))
     }
@@ -236,6 +276,42 @@ float wave(float2 xy) {
     float2 t = (xy / RTI * 0.5 + 0.5) * N;
     half4 c = heights.eval(clamp(t, float2(0.5), float2(N - 0.5)));
     return ((float(c.r) * 255.0 * 256.0 + float(c.g) * 255.0) / 65535.0 - 0.5) * SCALE;
+}
+
+float texel(float2 c) {
+    half4 v = heights.eval(clamp(c, float2(0.5), float2(N - 0.5)));
+    return ((float(v.r) * 255.0 * 256.0 + float(v.g) * 255.0) / 65535.0 - 0.5) * SCALE;
+}
+
+// 물결 경사: 격자 4×4 칸을 3차 B-스플라인으로 이어 미분 (선형 보간의 꺾인 자국 없이 매끈한 법선)
+float2 waveGrad(float2 xy) {
+    float2 t = (xy / RTI * 0.5 + 0.5) * N - 0.5;
+    float2 b = floor(t);
+    float2 f = t - b;
+    float2 g = 1.0 - f;
+    float2 f2 = f * f;
+    float2 w0 = g * g * g / 6.0;
+    float2 w1 = (3.0 * f2 * f - 6.0 * f2 + 4.0) / 6.0;
+    float2 w2 = (-3.0 * f2 * f + 3.0 * f2 + 3.0 * f + 1.0) / 6.0;
+    float2 w3 = f2 * f / 6.0;
+    float2 d0 = -0.5 * g * g;
+    float2 d1 = 1.5 * f2 - 2.0 * f;
+    float2 d2 = -1.5 * f2 + f + 0.5;
+    float2 d3 = 0.5 * f2;
+    float gx = 0.0;
+    float gy = 0.0;
+    for (int j = 0; j < 4; j++) {
+        float wy = j == 0 ? w0.y : (j == 1 ? w1.y : (j == 2 ? w2.y : w3.y));
+        float dy = j == 0 ? d0.y : (j == 1 ? d1.y : (j == 2 ? d2.y : d3.y));
+        for (int i = 0; i < 4; i++) {
+            float wx = i == 0 ? w0.x : (i == 1 ? w1.x : (i == 2 ? w2.x : w3.x));
+            float dx = i == 0 ? d0.x : (i == 1 ? d1.x : (i == 2 ? d2.x : d3.x));
+            float h = texel(b + float2(float(i) - 0.5, float(j) - 0.5));
+            gx += dx * wy * h;
+            gy += wx * dy * h;
+        }
+    }
+    return float2(gx, gy) * (N * 0.5 / RTI);
 }
 
 float innerR(float z) { return RBI + CONE * z; }
@@ -279,8 +355,10 @@ float3 env(float3 d) {
     // 어두운 실내 + 위쪽의 넓은 조명 + 왼쪽 위 창
     float3 sky = mix(float3(0.02, 0.05, 0.10), float3(0.30, 0.55, 0.80), smoothstep(-0.3, 0.9, d.z));
     float box = smoothstep(0.85, 0.97, dot(d, normalize(float3(-0.45, -0.35, 0.82))));
-    float strip = smoothstep(0.02, 0.0, abs(d.x + 0.55)) * smoothstep(0.1, 0.5, d.z);
-    return sky + float3(1.0) * box * 1.4 + float3(0.8, 0.9, 1.0) * strip * 0.6;
+    // 스튜디오 조명 두 줄 (유리에 세로로 길게 비친다): 왼쪽 좁고 밝게, 오른쪽 넓고 은은하게
+    float strip = smoothstep(0.05, 0.0, abs(d.x + 0.55)) * smoothstep(-0.2, 0.4, d.z);
+    float soft = smoothstep(0.22, 0.0, abs(d.x - 0.6)) * smoothstep(-0.3, 0.5, d.z);
+    return sky + float3(1.0) * box * 1.4 + float3(0.85, 0.93, 1.0) * strip * 1.3 + float3(0.45, 0.65, 0.9) * soft * 0.5;
 }
 
 float2 coneHits(float3 ro, float3 rd, float r0) {
@@ -327,12 +405,12 @@ float surfaceHit(float3 ro, float3 rd) {
     return -1.0;
 }
 
-// 법선: 시뮬레이션 물결은 격자 간격(0.05)으로 매끄럽게, 잔물결·메니스커스는 촘촘하게 (격자 모서리가 비치지 않게)
+// 법선: 시뮬레이션 물결은 B-스플라인 경사로 매끄럽게, 잔물결·메니스커스는 촘촘하게 (격자 모서리가 비치지 않게)
 float3 surfNormal(float2 xy) {
-    float e1 = 0.05;
     float e2 = 0.008;
-    float wx = (wave(xy + float2(e1, 0.0)) - wave(xy - float2(e1, 0.0))) / (2.0 * e1);
-    float wy = (wave(xy + float2(0.0, e1)) - wave(xy - float2(0.0, e1))) / (2.0 * e1);
+    float2 wg = waveGrad(xy);
+    float wx = wg.x;
+    float wy = wg.y;
     float rest0x = surf(xy + float2(e2, 0.0)) - wave(xy + float2(e2, 0.0));
     float rest1x = surf(xy - float2(e2, 0.0)) - wave(xy - float2(e2, 0.0));
     float rest0y = surf(xy + float2(0.0, e2)) - wave(xy + float2(0.0, e2));
@@ -448,8 +526,26 @@ half4 main(float2 fc) {
         float3 body = uWater * (0.62 + 0.38 * lift) * (0.85 + 0.2 * thick) + float3(0.04, 0.05, 0.06);
         // 수면 바로 아래의 밝은 띠 (전반사)
         float meniscus = smoothstep(0.05, 0.0, surfSmooth(pW.xy) + 0.022 - pW.z);
-        col = body + float3(0.85, 0.95, 1.0) * meniscus * 0.5;
+        // 수면 물결이 모은 빛이 물속으로 내려오며 퍼지는 줄무늬 (위에서 가깝게 진하다)
+        float2 sx = pW.xy * 0.9;
+        float lapS = wave(sx + float2(0.06, 0.0)) + wave(sx - float2(0.06, 0.0)) + wave(sx + float2(0.0, 0.06)) + wave(sx - float2(0.0, 0.06)) - 4.0 * wave(sx);
+        float depthFade = exp(-max(surfSmooth(pW.xy) - pW.z, 0.0) * 2.2);
+        float streak = clamp(-lapS * 60.0, -0.2, 0.4) * depthFade;
+        col = body * (1.0 + streak * 0.2) + float3(0.85, 0.95, 1.0) * meniscus * 0.5;
         alpha = 0.95;
+    }
+
+    // 뒤쪽 유리: 물 위 빈 컵 너머로 비치는 뒷벽 (안쪽에서 본 반사와 세로 빛줄기)
+    if (!surfHit && !wallHit && g.y > 0.0) {
+        float3 pb = ro + rd * g.y;
+        if (pb.z >= BASE && pb.z <= H) {
+            float3 nb = -normalize(float3(pb.xy / max(length(pb.xy), 1e-4), -CONE));
+            float cb = abs(dot(nb, v));
+            float Fb = 0.04 + 0.96 * pow(1.0 - cb, 5.0);
+            float3 gb = env(reflect(rd, nb)) * Fb * 0.6 + float3(0.7, 0.85, 1.0) * smoothstep(0.25, 0.03, cb) * 0.25;
+            col += gb;
+            alpha = max(alpha, clamp(0.03 + Fb * 0.4 + smoothstep(0.25, 0.03, cb) * 0.3, 0.0, 1.0));
+        }
     }
 
     // 유리 앞면: 반사·가장자리 빛
@@ -472,12 +568,15 @@ half4 main(float2 fc) {
         col = float3(0.6, 0.75, 0.9) * 0.4;
         alpha = 0.5;
     }
-    // 가장자리 테두리
+    // 가장자리 테두리: 두께가 있는 유리 입술 (안·밖 모서리가 빛나고 가운데는 은은하게)
     if (throughTop) {
-        float d = abs(length(pTop.xy) - (RT - WALL * 0.5));
-        float rim = smoothstep(0.03, 0.0, d);
-        col += float3(0.95, 0.98, 1.0) * rim;
-        alpha = max(alpha, rim);
+        float rr = length(pTop.xy);
+        float lip = smoothstep(WALL * 0.9, WALL * 0.5, abs(rr - (RT - WALL * 0.5)));
+        float edges = smoothstep(0.012, 0.0, abs(rr - RT)) + smoothstep(0.012, 0.0, abs(rr - RTI)) * 0.7;
+        float lit = 0.6 + 0.4 * dot(normalize(pTop.xy + 1e-4), normalize(float2(-0.45, -0.35)));
+        float3 rimCol = float3(0.55, 0.72, 0.9) * lip * 0.45 + float3(0.95, 0.98, 1.0) * edges * lit;
+        col = col * (1.0 - lip * 0.4) + rimCol;
+        alpha = max(alpha, max(lip * 0.6, edges));
     }
     return half4(half3(col * alpha), half(alpha));
 }
