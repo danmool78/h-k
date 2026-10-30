@@ -92,7 +92,7 @@ class WaterSim(private val extent: Double) {
         if (rnd.nextDouble() < dt * (if (spilling) 6.0 else 0.15)) {
             val a = kotlin.math.atan2(py, px) + (rnd.nextDouble() - 0.5) * 1.6
             val rr = radius * (if (spilling) 0.85 else rnd.nextDouble() * 0.7)
-            bump(rr * kotlin.math.cos(a), rr * kotlin.math.sin(a), if (spilling) 0.04 else 0.005)
+            bump(rr * kotlin.math.cos(a), rr * kotlin.math.sin(a), if (spilling) 0.025 else 0.003, wide = 0.02)
         }
         acc += dt
         var n = 0
@@ -193,10 +193,10 @@ class WaterSim(private val extent: Double) {
         private const val C2 = 0.15f
         private const val DAMP = 0.997f
         /** 비선형 세기 (물결 높이에 따른 속도 변화) */
-        private const val NONLINEAR = 1.2f
+        private const val NONLINEAR = 0.6f
         /** 이보다 가파르면 부서진다 (평면 대비 경사) */
-        private const val BREAK_STEEP = 2.0f
-        private const val VISC = 0.03f
+        private const val BREAK_STEEP = 3.0f
+        private const val VISC = 0.06f
         private const val BREAK_SAMPLES = 24
 
         fun clampSize(v: Int) = max(1, min(v, N))
@@ -242,7 +242,7 @@ float innerR(float z) { return RBI + CONE * z; }
 
 // 잔물결: 방향이 다른 짧은 물결 몇 개 (흔들릴수록 크다) — 빛이 반짝이는 수면
 float ripple(float2 xy) {
-    float a = 0.002 + 0.007 * uAgit;
+    float a = 0.0012 + 0.003 * uAgit;
     return a * (sin(dot(xy, float2(23.0, 9.0)) + uTime * 5.1)
               + 0.8 * sin(dot(xy, float2(-11.0, 21.0)) + uTime * 4.3)
               + 0.6 * sin(dot(xy, float2(17.0, -19.0)) - uTime * 6.2)
@@ -254,9 +254,10 @@ float surfSmooth(float2 xy) { return uH0 + wave(xy); }
 
 // 벽에 닿은 물 높이: 둘레 방향으로 고르게 (유리에 붙은 물 가장자리는 매끄럽다) + 메니스커스
 float wallLevel(float2 xy) {
-    float2 t = float2(-xy.y, xy.x) * 0.08;
-    float2 inw = xy * 0.96;
-    return (surfSmooth(inw) * 2.0 + surfSmooth(inw + t) + surfSmooth(inw - t)) * 0.25 + 0.02;
+    float2 t = float2(-xy.y, xy.x) * 0.09;
+    float2 inw = xy * 0.93;
+    return (surfSmooth(inw) * 2.0 + surfSmooth(inw + t) + surfSmooth(inw - t)
+          + surfSmooth(inw + 2.0 * t) + surfSmooth(inw - 2.0 * t)) / 6.0 + 0.02;
 }
 
 // 수면: 시뮬레이션(기울기·출렁임·간섭) + 잔물결 + 벽에서 말려 올라간 메니스커스
@@ -379,16 +380,47 @@ half4 main(float2 fc) {
     float3 col = float3(0.0);
     float alpha = 0.0;
 
-    // 1) 위에서 수면에 닿는가
-    float tS = surfaceHit(ro, rd);
-    float3 pS = ro + rd * tS;
-    bool surfHit = tS > 0.0 && pS.z >= BASE && pS.z <= H && length(pS.xy) <= innerR(pS.z) + 0.03;
-    // 2) 옆 유리를 지나 물에 들어가는가 (안쪽 벽 앞면이 수면 아래)
+    // 컵 안(안쪽 원뿔)으로 들어오는 곳부터 따라간다: 들어오자마자 물속이면 옆에서 본 물,
+    // 가다가 수면을 지나면 위에서 본 수면 (두 판정이 한 번에 정해져 틈이 생기지 않는다)
     float2 gi = coneHits(ro, rd, RBI);
-    float3 pW = ro + rd * gi.x;
-    // 벽 앞면을 먼저 본다: 벽에 닿은 물 높이보다 아래면 옆에서 본 물
-    bool wallHit = gi.x > 0.0 && pW.z >= BASE && pW.z <= H && pW.z <= wallLevel(pW.xy);
-    if (wallHit) surfHit = false;
+    float tIn = -1.0;
+    float zf = ro.z + rd.z * gi.x;
+    if (gi.x > 0.0 && zf >= BASE && zf <= H) tIn = gi.x;
+    else if (tTop > 0.0 && length(pTop.xy) <= innerR(H)) tIn = tTop;
+    float tOut = gi.y;
+    if (rd.z < 0.0) tOut = min(tOut, (BASE - ro.z) / rd.z);
+    bool surfHit = false;
+    bool wallHit = false;
+    float3 pS = float3(0.0);
+    float3 pW = float3(0.0);
+    if (tIn > 0.0 && tOut > tIn) {
+        float3 p0 = ro + rd * tIn;
+        // 유리에 닿은 물 높이는 잔물결 없이 (가장자리가 매끈하게)
+        if (p0.z <= surfSmooth(p0.xy) + 0.022) {
+            wallHit = true;
+            pW = p0;
+        } else {
+            float dt = (tOut - tIn) / 40.0;
+            float prev = tIn;
+            for (int k = 1; k <= 40; k++) {
+                float t = tIn + dt * float(k);
+                float3 p = ro + rd * t;
+                if (p.z <= surf(p.xy)) {
+                    float lo = prev;
+                    float hi = t;
+                    for (int m = 0; m < 7; m++) {
+                        float mid = (lo + hi) * 0.5;
+                        float3 q = ro + rd * mid;
+                        if (q.z > surf(q.xy)) lo = mid; else hi = mid;
+                    }
+                    pS = ro + rd * hi;
+                    surfHit = true;
+                    break;
+                }
+                prev = t;
+            }
+        }
+    }
 
     if (surfHit) {
         float3 n = surfNormal(pS.xy);
@@ -404,7 +436,7 @@ half4 main(float2 fc) {
         float onFloor = q.z < BASE + 0.03 ? 1.0 : 0.55;
         float3 floorCol = float3(0.80, 0.92, 1.0) * (0.45 + 0.35 * caustic) * onFloor;
         float thick = 1.0 - exp(-d * 1.4);
-        float3 body = mix(floorCol * mix(float3(1.0), uWater, 0.6), uWater * 0.9, thick * 0.7);
+        float3 body = mix(floorCol * mix(float3(1.0), uWater, 0.6), uWater, 0.55 + thick * 0.35);
         col = mix(body, refl, F) + spec;
         alpha = 0.97;
     } else if (wallHit) {
@@ -413,9 +445,9 @@ half4 main(float2 fc) {
         float thick = 1.0 - exp(-d * 1.4);
         float lift = smoothstep(BASE, uH0 + 0.2, pW.z);
         // 위쪽(빛이 드는 쪽)이 밝고 두꺼울수록 물 색이 진하다
-        float3 body = uWater * (0.30 + 0.55 * lift) * (0.65 + 0.45 * thick) + float3(0.06, 0.09, 0.12);
+        float3 body = uWater * (0.62 + 0.38 * lift) * (0.85 + 0.2 * thick) + float3(0.04, 0.05, 0.06);
         // 수면 바로 아래의 밝은 띠 (전반사)
-        float meniscus = smoothstep(0.06, 0.0, wallLevel(pW.xy) - pW.z);
+        float meniscus = smoothstep(0.05, 0.0, surfSmooth(pW.xy) + 0.022 - pW.z);
         col = body + float3(0.85, 0.95, 1.0) * meniscus * 0.5;
         alpha = 0.95;
     }
