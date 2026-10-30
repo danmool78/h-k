@@ -40,6 +40,7 @@ class WaterUniforms {
     var r = 0.3f
     var g = 0.76f
     var b = 0.97f
+    var agitation = 0f
 }
 
 /**
@@ -53,12 +54,11 @@ class WaterSim(private val extent: Double) {
     private val next = FloatArray(N * N)
     private val inside = BooleanArray(N * N)
     private val xs = FloatArray(N)
+    private val cell = (2 * extent / N).toFloat()
     val argb = IntArray(N * N)
 
     private var p1x = 0.0
     private var p1y = 0.0
-    private var p2x = 0.0
-    private var p2y = 0.0
     private var acc = 0.0
     private val rnd = Random(3)
 
@@ -69,45 +69,76 @@ class WaterSim(private val extent: Double) {
         }
     }
 
+    /** 흔들림 정도 (0~1): 기울기가 빨리 바뀔수록 커진다. 셰이더 잔물결에 쓴다 */
+    var agitation = 0.0; private set
+
     /**
-     * [dt] 초 진행. [px], [py] = 지금 수면 평면의 기울기, [radius] = 지금 수면 높이의 컵 안쪽 반지름,
-     * [spilling] 이면 가장자리에 잔물결을 더 일으킨다.
+     * [dt] 초 진행. [px], [py] = 지금 물이 기울어야 하는 경사 (차 가속 ÷ 중력, 물컵 모델의 기울기),
+     * [radius] = 지금 수면 높이의 컵 안쪽 반지름, [spilling] 이면 가장자리에서 물이 튄다.
+     *
+     * 가속은 벽에서만 들어간다: 벽에서의 수면 경사 = 가속/중력 (얕은 물 방정식의 경계 조건).
+     * 그래서 가만히 있으면 수면이 그 경사의 평면으로 멈추고, 가속이 바뀌면 벽에서 물결이 생겨
+     * 반대편으로 건너가고, 벽에서 되돌아오고, 서로 부딪혀 간섭 무늬를 만든다.
      */
     fun step(dt: Double, px: Double, py: Double, radius: Double, spilling: Boolean) {
-        // 평면 기울기의 가속(2계 차분)만큼 물을 반대로 민다 → 출렁임
-        val ddx = (px - 2 * p1x + p2x).coerceIn(-0.3, 0.3)
-        val ddy = (py - 2 * p1y + p2y).coerceIn(-0.3, 0.3)
-        p2x = p1x; p2y = p1y; p1x = px; p1y = py
+        val rate = kotlin.math.hypot(px - p1x, py - p1y) / max(dt, 1e-3)
+        agitation += ((rate * 2.5).coerceIn(0.0, 1.0) - agitation) * min(1.0, dt * 3)
+        p1x = px; p1y = py
+        sx = px.toFloat()
+        sy = py.toFloat()
         val r2 = (radius * radius).toFloat()
-        for (j in 0 until N) for (i in 0 until N) {
-            val k = j * N + i
-            if (!inside[k] || xs[i] * xs[i] + xs[j] * xs[j] > r2) continue
-            val f = (ddx * xs[i] + ddy * xs[j]).toFloat() * FORCE
-            u[k] -= f
-            prev[k] -= f * 0.5f
-        }
-        // 살아 있는 잔물결: 가끔 작은 물방울이 떨어진 듯
-        if (rnd.nextDouble() < dt * (if (spilling) 6.0 else 0.6)) {
-            val a = rnd.nextDouble() * 6.283
-            val rr = radius * (if (spilling) 0.8 else rnd.nextDouble() * 0.7)
-            bump(rr * kotlin.math.cos(a), rr * kotlin.math.sin(a), if (spilling) 0.03 else 0.008)
+        lastR2 = r2
+        // 넘치면 가장자리에서 물이 튄다, 평소에도 가끔 작은 물방울
+        if (rnd.nextDouble() < dt * (if (spilling) 6.0 else 0.15)) {
+            val a = kotlin.math.atan2(py, px) + (rnd.nextDouble() - 0.5) * 1.6
+            val rr = radius * (if (spilling) 0.85 else rnd.nextDouble() * 0.7)
+            bump(rr * kotlin.math.cos(a), rr * kotlin.math.sin(a), if (spilling) 0.04 else 0.005)
         }
         acc += dt
         var n = 0
-        while (acc >= SUB && n < 4) {
+        while (acc >= SUB && n < 8) {
             acc -= SUB
             n++
             wave(r2)
         }
+        if (n > 0) breakSteep(r2)
         if (acc > SUB) acc = 0.0
     }
 
-    private fun bump(x: Double, y: Double, amp: Double) {
+    private var sx = 0f
+    private var sy = 0f
+    private var lastR2 = 0f
+
+    /** 지금 경사의 평면 (비선형 항은 이것에 대한 높이로 본다) */
+    private fun planeAt(i: Int, j: Int): Float = sx * xs[i] + sy * xs[j]
+
+    /**
+     * 부서짐: 물결이 너무 가팔라진 곳 몇 군데를 찾아 그 자리에 잔물결을 일으키고 그만큼 낮춘다.
+     * 파도가 벽에 부딪혀 솟거나 물결끼리 겹쳐 높아지면 새 물결이 퍼진다.
+     */
+    private fun breakSteep(r2: Float) {
+        repeat(BREAK_SAMPLES) {
+            val i = 1 + rnd.nextInt(N - 2)
+            val j = 1 + rnd.nextInt(N - 2)
+            val k = j * N + i
+            if (!inside[k] || xs[i] * xs[i] + xs[j] * xs[j] > r2) return@repeat
+            val gx = (u[k + 1] - u[k - 1]) / (2 * cell) - sx
+            val gy = (u[k + N] - u[k - N]) / (2 * cell) - sy
+            val steep = kotlin.math.sqrt(gx * gx + gy * gy)
+            if (steep > BREAK_STEEP) {
+                val amp = (steep - BREAK_STEEP) * 0.008
+                bump(xs[i].toDouble(), xs[j].toDouble(), amp.toDouble(), wide = 0.008)
+                u[k] -= amp.toFloat() * 0.5f
+            }
+        }
+    }
+
+    private fun bump(x: Double, y: Double, amp: Double, wide: Double = 0.012) {
         for (j in 0 until N) for (i in 0 until N) {
             val k = j * N + i
             if (!inside[k]) continue
             val d2 = (xs[i] - x) * (xs[i] - x) + (xs[j] - y) * (xs[j] - y)
-            u[k] += (amp * exp(-d2 / 0.012)).toFloat()
+            u[k] += (amp * exp(-d2 / wide)).toFloat()
         }
     }
 
@@ -118,14 +149,18 @@ class WaterSim(private val extent: Double) {
             val k = j * N + i
             if (!inside[k] || xs[i] * xs[i] + xs[j] * xs[j] > r2) { next[k] = 0f; continue }
             val c = u[k]
-            // 벽 밖 이웃은 자기 값 (반사)
+            // 벽 밖 이웃 = 자기 값 + 벽에서의 경사 × 간격 (가속이 벽에서 물을 민다)
             fun at(ii: Int, jj: Int): Float {
-                if (ii < 0 || jj < 0 || ii >= N || jj >= N) return c
+                val ghost = c + sx * (ii - i) * cell + sy * (jj - j) * cell
+                if (ii < 0 || jj < 0 || ii >= N || jj >= N) return ghost
                 val kk = jj * N + ii
-                return if (inside[kk] && xs[ii] * xs[ii] + xs[jj] * xs[jj] <= r2) u[kk] else c
+                return if (inside[kk] && xs[ii] * xs[ii] + xs[jj] * xs[jj] <= r2) u[kk] else ghost
             }
             val lap = at(i - 1, j) + at(i + 1, j) + at(i, j - 1) + at(i, j + 1) - 4 * c
-            next[k] = (2 * c - prev[k] + C2 * lap) * DAMP
+            // 비선형: 물이 높은 곳에서 물결이 더 빨리 달린다 (얕은 물 c² ∝ g·깊이) → 앞쪽이 가팔라지며 잔물결이 생긴다
+            val local = C2 * (1f + NONLINEAR * (c - planeAt(i, j))).coerceIn(0.5f, 1.6f)
+            // 점성: 아주 잔 굴곡은 금방 매끄러워진다 (큰 물결은 오래 간다)
+            next[k] = (2 * c - prev[k] + local * lap) * DAMP + VISC * lap
             mean += next[k]
             cnt++
         }
@@ -137,10 +172,13 @@ class WaterSim(private val extent: Double) {
         }
     }
 
-    /** 셰이더용 그림: R·G = 16비트 높이 (가운데 0.5 = 0) */
+    /** 셰이더용 그림: R·G = 16비트 높이 (가운데 0.5 = 0). 컵 밖 칸은 수면 경사를 이어 채워 벽에서 높이가 뚝 끊기지 않게 */
     fun encode(): IntArray {
         for (k in 0 until N * N) {
-            val v = ((u[k] / SCALE + 0.5f).coerceIn(0f, 1f) * 65535f).toInt()
+            val i = k % N
+            val j = k / N
+            val h = if (inside[k] && xs[i] * xs[i] + xs[j] * xs[j] <= lastR2) u[k] else sx * xs[i] + sy * xs[j]
+            val v = ((h / SCALE + 0.5f).coerceIn(0f, 1f) * 65535f).toInt()
             argb[k] = (0xFF shl 24) or ((v shr 8) shl 16) or ((v and 0xFF) shl 8)
         }
         return argb
@@ -148,12 +186,18 @@ class WaterSim(private val extent: Double) {
 
     companion object {
         const val N = 48
-        /** 담을 수 있는 물결 높이 ±SCALE/2 */
-        const val SCALE = 0.5f
-        private const val SUB = 1.0 / 60
-        private const val C2 = 0.22f
-        private const val DAMP = 0.994f
-        private const val FORCE = 2.2f
+        /** 담을 수 있는 수면 높이 ±SCALE/2 (기울기 포함) */
+        const val SCALE = 1.4f
+        private const val SUB = 1.0 / 120
+        /** (c·dt/h)²: 물결 속도 약 1.9 단위/초 (컵 지름을 1초 남짓에 건넌다) */
+        private const val C2 = 0.15f
+        private const val DAMP = 0.997f
+        /** 비선형 세기 (물결 높이에 따른 속도 변화) */
+        private const val NONLINEAR = 1.2f
+        /** 이보다 가파르면 부서진다 (평면 대비 경사) */
+        private const val BREAK_STEEP = 2.0f
+        private const val VISC = 0.03f
+        private const val BREAK_SAMPLES = 24
 
         fun clampSize(v: Int) = max(1, min(v, N))
     }
@@ -171,6 +215,7 @@ uniform float uPx;
 uniform float uPy;
 uniform float uTime;
 uniform float3 uWater;
+uniform float uAgit;
 uniform shader heights;
 
 const float RB = ${RB_};
@@ -193,9 +238,33 @@ float wave(float2 xy) {
     return ((float(c.r) * 255.0 * 256.0 + float(c.g) * 255.0) / 65535.0 - 0.5) * SCALE;
 }
 
-float surf(float2 xy) { return uH0 + uPx * xy.x + uPy * xy.y + wave(xy); }
-
 float innerR(float z) { return RBI + CONE * z; }
+
+// 잔물결: 방향이 다른 짧은 물결 몇 개 (흔들릴수록 크다) — 빛이 반짝이는 수면
+float ripple(float2 xy) {
+    float a = 0.002 + 0.007 * uAgit;
+    return a * (sin(dot(xy, float2(23.0, 9.0)) + uTime * 5.1)
+              + 0.8 * sin(dot(xy, float2(-11.0, 21.0)) + uTime * 4.3)
+              + 0.6 * sin(dot(xy, float2(17.0, -19.0)) - uTime * 6.2)
+              + 0.4 * sin(dot(xy, float2(-29.0, -7.0)) + uTime * 7.7));
+}
+
+// 잔물결을 뺀 매끄러운 수면 (벽 쪽 판정·밝은 띠용)
+float surfSmooth(float2 xy) { return uH0 + wave(xy); }
+
+// 벽에 닿은 물 높이: 둘레 방향으로 고르게 (유리에 붙은 물 가장자리는 매끄럽다) + 메니스커스
+float wallLevel(float2 xy) {
+    float2 t = float2(-xy.y, xy.x) * 0.08;
+    float2 inw = xy * 0.96;
+    return (surfSmooth(inw) * 2.0 + surfSmooth(inw + t) + surfSmooth(inw - t)) * 0.25 + 0.02;
+}
+
+// 수면: 시뮬레이션(기울기·출렁임·간섭) + 잔물결 + 벽에서 말려 올라간 메니스커스
+float surf(float2 xy) {
+    float r = length(xy);
+    float men = 0.022 * exp(-max(innerR(uH0) - r, 0.0) / 0.022);
+    return uH0 + wave(xy) + ripple(xy) + men;
+}
 
 bool inWater(float3 p) {
     return p.z >= BASE && length(p.xy) <= innerR(p.z) && p.z <= surf(p.xy);
@@ -225,29 +294,51 @@ float2 coneHits(float3 ro, float3 rd, float r0) {
     return float2((-b - s) / (2.0 * a), (-b + s) / (2.0 * a));
 }
 
-// 광선이 수면(평면 + 물결)과 만나는 t: 평면과의 교점에서 시작해 뉴턴법으로 물결을 맞춘다
+// 광선이 수면과 만나는 t: 평면 교점 근처를 짧게 훑어 위→아래로 바뀌는 곳을 찾고 이분법으로 좁힌다
+// (잔물결이 촘촘해도 빗나가지 않는다)
 float surfaceHit(float3 ro, float3 rd) {
     float den = rd.z - uPx * rd.x - uPy * rd.y;
     if (abs(den) < 1e-5) return -1.0;
-    float t = (uH0 + uPx * ro.x + uPy * ro.y - ro.z) / den;
-    for (int k = 0; k < 4; k++) {
-        float3 p = ro + rd * t;
-        float e = 0.02;
-        float wx = (wave(p.xy + float2(e, 0.0)) - wave(p.xy - float2(e, 0.0))) / (2.0 * e);
-        float wy = (wave(p.xy + float2(0.0, e)) - wave(p.xy - float2(0.0, e))) / (2.0 * e);
-        float f = p.z - surf(p.xy);
-        float d = rd.z - (uPx + wx) * rd.x - (uPy + wy) * rd.y;
-        if (abs(d) < 1e-5) break;
-        t -= f / d;
+    float t0 = (uH0 + uPx * ro.x + uPy * ro.y - ro.z) / den;
+    // 수면 높이 차 ±0.35 만큼 광선을 앞뒤로
+    float span = 0.35 / max(abs(rd.z), 0.2);
+    float a = t0 - span;
+    float prevT = a;
+    float3 p = ro + rd * a;
+    bool prevAbove = p.z > surf(p.xy);
+    for (int k = 1; k <= 32; k++) {
+        float t = a + 2.0 * span * float(k) / 32.0;
+        p = ro + rd * t;
+        bool above = p.z > surf(p.xy);
+        if (prevAbove && !above) {
+            float lo = prevT;
+            float hi = t;
+            for (int m = 0; m < 6; m++) {
+                float mid = (lo + hi) * 0.5;
+                float3 q = ro + rd * mid;
+                if (q.z > surf(q.xy)) lo = mid; else hi = mid;
+            }
+            return hi;
+        }
+        prevAbove = above;
+        prevT = t;
     }
-    return t;
+    return -1.0;
 }
 
+// 법선: 시뮬레이션 물결은 격자 간격(0.05)으로 매끄럽게, 잔물결·메니스커스는 촘촘하게 (격자 모서리가 비치지 않게)
 float3 surfNormal(float2 xy) {
-    float e = 0.06;
-    float hx = surf(xy + float2(e, 0.0)) - surf(xy - float2(e, 0.0));
-    float hy = surf(xy + float2(0.0, e)) - surf(xy - float2(0.0, e));
-    return normalize(float3(-hx / (2.0 * e), -hy / (2.0 * e), 1.0));
+    float e1 = 0.05;
+    float e2 = 0.008;
+    float wx = (wave(xy + float2(e1, 0.0)) - wave(xy - float2(e1, 0.0))) / (2.0 * e1);
+    float wy = (wave(xy + float2(0.0, e1)) - wave(xy - float2(0.0, e1))) / (2.0 * e1);
+    float rest0x = surf(xy + float2(e2, 0.0)) - wave(xy + float2(e2, 0.0));
+    float rest1x = surf(xy - float2(e2, 0.0)) - wave(xy - float2(e2, 0.0));
+    float rest0y = surf(xy + float2(0.0, e2)) - wave(xy + float2(0.0, e2));
+    float rest1y = surf(xy - float2(0.0, e2)) - wave(xy - float2(0.0, e2));
+    float rx = (rest0x - rest1x) / (2.0 * e2);
+    float ry = (rest0y - rest1y) / (2.0 * e2);
+    return normalize(float3(-(wx + rx), -(wy + ry), 1.0));
 }
 
 // 물속에서 [dir] 로 나아가 벽·바닥에 닿기까지의 거리
@@ -291,12 +382,13 @@ half4 main(float2 fc) {
     // 1) 위에서 수면에 닿는가
     float tS = surfaceHit(ro, rd);
     float3 pS = ro + rd * tS;
-    bool surfHit = tS > 0.0 && pS.z >= BASE && pS.z <= H && length(pS.xy) <= innerR(pS.z);
+    bool surfHit = tS > 0.0 && pS.z >= BASE && pS.z <= H && length(pS.xy) <= innerR(pS.z) + 0.03;
     // 2) 옆 유리를 지나 물에 들어가는가 (안쪽 벽 앞면이 수면 아래)
     float2 gi = coneHits(ro, rd, RBI);
     float3 pW = ro + rd * gi.x;
-    bool wallHit = gi.x > 0.0 && pW.z >= BASE && pW.z <= H && pW.z <= surf(pW.xy);
-    if (surfHit && wallHit) { if (gi.x < tS) surfHit = false; else wallHit = false; }
+    // 벽 앞면을 먼저 본다: 벽에 닿은 물 높이보다 아래면 옆에서 본 물
+    bool wallHit = gi.x > 0.0 && pW.z >= BASE && pW.z <= H && pW.z <= wallLevel(pW.xy);
+    if (wallHit) surfHit = false;
 
     if (surfHit) {
         float3 n = surfNormal(pS.xy);
@@ -323,7 +415,7 @@ half4 main(float2 fc) {
         // 위쪽(빛이 드는 쪽)이 밝고 두꺼울수록 물 색이 진하다
         float3 body = uWater * (0.30 + 0.55 * lift) * (0.65 + 0.45 * thick) + float3(0.06, 0.09, 0.12);
         // 수면 바로 아래의 밝은 띠 (전반사)
-        float meniscus = smoothstep(0.06, 0.0, surf(pW.xy) - pW.z);
+        float meniscus = smoothstep(0.06, 0.0, wallLevel(pW.xy) - pW.z);
         col = body + float3(0.85, 0.95, 1.0) * meniscus * 0.5;
         alpha = 0.95;
     }

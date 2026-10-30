@@ -106,6 +106,7 @@ fun CupView(
             val (rx, ry) = realSlope(tiltX, tiltY)
             uniforms.h0 = h0.toFloat(); uniforms.slopeX = rx.toFloat(); uniforms.slopeY = ry.toFloat()
             uniforms.time = time
+            uniforms.agitation = sim.agitation.toFloat()
             uniforms.r = c.red; uniforms.g = c.green; uniforms.b = c.blue
             water.setUniforms(uniforms)
             water.setHeights(sim.encode(), WaterSim.N)

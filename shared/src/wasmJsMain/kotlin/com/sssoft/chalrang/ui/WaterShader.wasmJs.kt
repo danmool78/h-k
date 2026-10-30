@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ShaderBrush
 import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.FilterMipmap
 import org.jetbrains.skia.FilterMode
 import org.jetbrains.skia.FilterTileMode
@@ -53,6 +54,7 @@ actual class WaterShader actual constructor() {
         b.uniform("uPy", u.slopeY)
         b.uniform("uTime", u.time)
         b.uniform("uWater", u.r, u.g, u.b)
+        b.uniform("uAgit", u.agitation)
     }
 
     private val bytes = ByteArray(WaterSim.N * WaterSim.N * 4)
@@ -60,10 +62,10 @@ actual class WaterShader actual constructor() {
     actual fun setHeights(argb: IntArray, size: Int) {
         val b = builder ?: return
         if (this.size != size) {
-            bitmap.allocPixels(ImageInfo.makeN32(size, size, ColorAlphaType.PREMUL))
+            bitmap.allocPixels(ImageInfo(size, size, ColorType.RGBA_8888, ColorAlphaType.PREMUL))
             this.size = size
         }
-        // N32 (웹 Skia 는 RGBA) 바이트로
+        // RGBA 순서로 (N32 는 플랫폼마다 BGRA 일 수 있어 직접 정한다)
         for (k in 0 until size * size) {
             val c = argb[k]
             bytes[k * 4] = (c shr 16 and 0xFF).toByte()

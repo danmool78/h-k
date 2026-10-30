@@ -42,6 +42,7 @@ actual class WaterShader actual constructor() {
         s.setFloatUniform("uPy", u.slopeY)
         s.setFloatUniform("uTime", u.time)
         s.setFloatUniform("uWater", u.r, u.g, u.b)
+        s.setFloatUniform("uAgit", u.agitation)
     }
 
     actual fun setHeights(argb: IntArray, size: Int) {
