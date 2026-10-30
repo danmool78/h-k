@@ -29,6 +29,7 @@ pleos-navihelper = { group = "ai.pleos.playground", name = "NaviHelper", version
 pleos-fusedlocation = { group = "ai.pleos.playground", name = "FusedLocation", version.ref = "pleosFusedLocation" }
 
 compose-icons-extended = { group = "org.jetbrains.compose.material", name = "material-icons-extended", version = "1.7.3" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version = "1.9.0" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 
 [plugins]

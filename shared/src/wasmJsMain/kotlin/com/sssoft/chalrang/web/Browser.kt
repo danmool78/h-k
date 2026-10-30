@@ -15,7 +15,10 @@ private fun jsSay(text: String): Unit = js(
     }""",
 )
 
-/** 앱(Voice.kt)과 같은 "찰랑": 위로 미끄러지는 맑은 음 두 번 */
+/**
+ * 앱(Voice.kt)과 같은 "찰랑" 물소리: 잡음을 공명 필터(450 → 1300Hz)에 통과시킨 출렁임 + 작은 물방울.
+ * 오디오 장치는 소리를 낼 때 열고, 5초 동안 더 없으면 닫아 반납한다.
+ */
 private fun jsChime(): Unit = js(
     """{
         const AC = window.AudioContext || window.webkitAudioContext;
@@ -23,19 +26,28 @@ private fun jsChime(): Unit = js(
         const ctx = window.__chalrangAudio || (window.__chalrangAudio = new AC());
         if (ctx.state === 'suspended') ctx.resume();
         const t0 = ctx.currentTime;
-        [[0, 1250], [0.13, 1650]].forEach(([d, f]) => {
-            const o = ctx.createOscillator();
-            const g = ctx.createGain();
-            o.type = 'sine';
-            o.frequency.setValueAtTime(f, t0 + d);
-            o.frequency.exponentialRampToValueAtTime(f * 1.6, t0 + d + 0.08);
-            g.gain.setValueAtTime(0.0001, t0 + d);
-            g.gain.exponentialRampToValueAtTime(0.25, t0 + d + 0.005);
-            g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.45);
-            o.connect(g).connect(ctx.destination);
-            o.start(t0 + d);
-            o.stop(t0 + d + 0.5);
+        const len = Math.floor(ctx.sampleRate * 0.7);
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+        const src = ctx.createBufferSource(); src.buffer = buf;
+        const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 6;
+        bp.frequency.setValueAtTime(450, t0); bp.frequency.exponentialRampToValueAtTime(1300, t0 + 0.4);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(0.5, t0 + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.7);
+        src.connect(bp).connect(g).connect(ctx.destination);
+        src.start(t0); src.stop(t0 + 0.7);
+        [[0.05, 520], [0.16, 760], [0.27, 610], [0.38, 900]].forEach(([dt, f]) => {
+            const o = ctx.createOscillator(); const og = ctx.createGain();
+            o.frequency.setValueAtTime(f, t0 + dt); o.frequency.linearRampToValueAtTime(f * 2.8, t0 + dt + 0.09);
+            og.gain.setValueAtTime(0.0001, t0 + dt); og.gain.exponentialRampToValueAtTime(0.08, t0 + dt + 0.004);
+            og.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.09);
+            o.connect(og).connect(ctx.destination); o.start(t0 + dt); o.stop(t0 + dt + 0.1);
         });
+        clearTimeout(window.__chalrangAudioClose);
+        window.__chalrangAudioClose = setTimeout(() => { ctx.close(); window.__chalrangAudio = null; }, 5000);
     }""",
 )
 

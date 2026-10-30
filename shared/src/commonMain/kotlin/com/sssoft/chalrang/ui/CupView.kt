@@ -76,11 +76,14 @@ fun CupView(
         }
     }
 
+    // 매 프레임 새로 만들지 않고 재사용하는 경로·좌표 (메모리)
+    val pen = remember { Pen() }
+
     Canvas(modifier.clipToBounds()) {
         val cam = Camera(size.width, size.height)
         val c = waterColor(dose)
         val h0 = BASE + shownLevel * (H - BASE)
-        // 넘친 뒤에는 수면이 가장자리에 닿은 채로 둔다 (그 이상은 물방울로 보여 준다)
+        // 넘친 뒤에는 수면이 가장자리 가까이에서 멈춘다 (그 이상은 물방울로 보여 준다)
         val (px, py) = slope(tiltX, tiltY).let { (sx, sy) ->
             val m = hypot(sx, sy)
             val limit = (H - h0) / RTI * 0.85
@@ -88,27 +91,34 @@ fun CupView(
         }
         val ripple = 0.012f * sin(time * 2.4f)
 
-        drawFloor(cam, c, puddle, stage)
-        drawGlassBack(cam)
+        drawFloor(cam, pen, c, puddle, stage)
+        drawGlassBack(cam, pen)
 
         // 수면이 벽과 만나는 높이 (원뿔 벽 위에서 풀기)
-        val n = 96
-        val surf = Array(n + 1) { i ->
-            val th = 2 * PI * i / n
+        var zMin = Double.MAX_VALUE
+        var zMax = -Double.MAX_VALUE
+        for (i in 0..Pen.N) {
+            val th = 2 * PI * i / Pen.N
             val g = px * cos(th) + py * sin(th)
-            val z = ((h0 + RBI * g) / (1 - CONE * g)).coerceIn(BASE.toDouble(), H.toDouble()) + ripple * sin(th * 3 + time * 2)
+            val z = ((h0 + RBI * g) / (1 - CONE * g)).coerceIn(BASE, H.toDouble()) + ripple * sin(th * 3 + time * 2)
             val r = innerRadiusAt(z)
-            P3(r * cos(th), r * sin(th), z)
+            pen.sx[i] = r * cos(th); pen.sy[i] = r * sin(th); pen.sz[i] = z
+            if (z < zMin) zMin = z
+            if (z > zMax) zMax = z
         }
         // 뒤쪽 물 (벽 안쪽에서 보이는 부분)
-        drawWaterSide(cam, surf, back = true, color = c)
+        drawWaterSide(cam, pen, back = true, color = c)
         // 수면
-        val top = Path().apply {
-            surf.forEachIndexed { i, p -> val o = cam.project(p); if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
+        val top = pen.a.apply {
+            reset()
+            for (i in 0..Pen.N) {
+                val o = cam.project(pen.sx[i], pen.sy[i], pen.sz[i])
+                if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y)
+            }
             close()
         }
-        val hiA = cam.project(P3(-0.6 * RT, 0.4 * RT, h0))
-        val hiB = cam.project(P3(0.6 * RT, -0.4 * RT, h0))
+        val hiA = cam.project(-0.6 * RT, 0.4 * RT, h0)
+        val hiB = cam.project(0.6 * RT, -0.4 * RT, h0)
         // 잔잔하면 위에서 빛을 받아 밝고, 가파르게 서면 몸통 색에 가까운 반투명 (빛나는 가장자리만)
         val steep = (hypot(px, py) / 1.2).coerceIn(0.0, 1.0).toFloat()
         val light = 0.5f - 0.42f * steep
@@ -119,25 +129,35 @@ fun CupView(
         if (m > 0.05) {
             val dx = px / m
             val dy = py / m
-            val zs = surf.map { it.z }
-            val zMin = zs.min()
-            val zMax = zs.max()
             for (k in 1..5) {
                 val zk = zMin + (zMax - zMin) * k / 6
                 val d = (zk - h0) / m
                 val r = innerRadiusAt(zk) * 0.98
                 if (r <= abs(d)) continue
                 val half = sqrt(r * r - d * d)
-                val a = cam.project(P3(dx * d - dy * half, dy * d + dx * half, zk))
-                val b = cam.project(P3(dx * d + dy * half, dy * d - dx * half, zk))
+                val a = cam.project(dx * d - dy * half, dy * d + dx * half, zk)
+                val b = cam.project(dx * d + dy * half, dy * d - dx * half, zk)
                 drawLine(Color.White.copy(alpha = 0.10f + 0.12f * steep), a, b, strokeWidth = cam.unit * 0.008f)
             }
         }
         // 앞쪽 물 (유리 너머로 보이는 몸통)
-        drawWaterSide(cam, surf, back = false, color = c)
+        drawWaterSide(cam, pen, back = false, color = c)
 
-        drawGlassFront(cam)
+        drawGlassFront(cam, pen)
         drops.draw(this, cam, c)
+    }
+}
+
+/** 그리기용 재사용 객체: 경로 2개와 수면선 좌표 */
+private class Pen {
+    val a = Path()
+    val b = Path()
+    val sx = DoubleArray(N + 1)
+    val sy = DoubleArray(N + 1)
+    val sz = DoubleArray(N + 1)
+
+    companion object {
+        const val N = 96
     }
 }
 
@@ -187,9 +207,12 @@ private class Camera(w: Float, h: Float) {
         cy = (h / 2 - unit * (minY + maxY) / 2).toFloat()
     }
 
-    fun project(p: P3): Offset {
-        val (x, y) = raw(p)
-        return Offset(cx + (x * unit).toFloat(), cy + (y * unit).toFloat())
+    /** 3D 점 → 화면 (객체를 만들지 않는다) */
+    fun project(x: Double, y: Double, z: Double): Offset {
+        val up = z * cos(PITCH) + y * sin(PITCH)
+        val depth = y * cos(PITCH) - z * sin(PITCH) + DIST
+        val s = DIST / depth
+        return Offset(cx + (x * s * unit).toFloat(), cy - (up * s * unit).toFloat())
     }
 
     companion object {
@@ -219,100 +242,146 @@ private class Camera(w: Float, h: Float) {
     }
 }
 
+// 바닥 그리기 값 (반지름 배율 to 진하기)
+private val FLOOR_GLOW = listOf(1.75 to 0.04f, 1.45 to 0.06f, 1.2 to 0.08f)
+private val FLOOR_RINGS = listOf(1.2 to 0.6f, 1.45 to 0.35f, 1.72 to 0.18f)
+private val CONTACT_SHADOW = listOf(1.12 to 0.12f, 1.05 to 0.18f, 1.0 to 0.25f)
+private val PUDDLE_LAYERS = listOf(1.0 to 0.22f, 0.82 to 0.14f, 0.64 to 0.14f)
+
 /** 바닥에 그리는 것(받침 고리·물웅덩이)의 가장 큰 반지름 */
 private const val FLOOR_R = RB * 1.8
 
-private fun ring(cam: Camera, r: Double, z: Double, from: Double = 0.0, to: Double = 2 * PI, n: Int = 72): List<Offset> =
-    (0..n).map { i -> val th = from + (to - from) * i / n; cam.project(P3(r * cos(th), r * sin(th), z)) }
+/** 높이 [z], 반지름 [r] 원의 [from]~[to] 호를 경로에 이어 그린다 ([start] 면 새로 시작) */
+private fun Path.arc(cam: Camera, r: Double, z: Double, from: Double = 0.0, to: Double = 2 * PI, n: Int = 72, start: Boolean = true) {
+    for (i in 0..n) {
+        val th = from + (to - from) * i / n
+        val o = cam.project(r * cos(th), r * sin(th), z)
+        if (start && i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y)
+    }
+}
 
-private fun Path.addPoly(points: List<Offset>, close: Boolean = true) {
-    points.forEachIndexed { i, o -> if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
-    if (close) close()
+/** 재사용 경로에 원 하나 */
+private fun Path.ellipse(cam: Camera, r: Double, z: Double = 0.0): Path {
+    reset()
+    arc(cam, r, z)
+    close()
+    return this
 }
 
 /**
  * 넘친 물웅덩이: 가장자리가 고르지 않은 얇은 물 막. 안쪽이 진하고, 가장자리에 빛이 맺히고, 뒤쪽에 반사광.
  */
-private fun DrawScope.drawPuddle(cam: Camera, c: Color, radius: Double) {
-    fun blob(scale: Double) = Path().apply {
+private fun DrawScope.drawPuddle(cam: Camera, pen: Pen, c: Color, radius: Double) {
+    fun blob(scale: Double) = pen.a.apply {
+        reset()
         val n = 96
         for (i in 0..n) {
             val th = 2 * PI * i / n
             val r = radius * scale * (1 + 0.07 * sin(3 * th + 1.1) + 0.05 * sin(5 * th + 2.3) + 0.03 * sin(8 * th + 0.4))
-            val o = cam.project(P3(r * cos(th), r * sin(th), 0.0))
+            val o = cam.project(r * cos(th), r * sin(th), 0.0)
             if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y)
         }
         close()
     }
-    for ((k, a) in listOf(1.0 to 0.22f, 0.82 to 0.14f, 0.64 to 0.14f)) drawPath(blob(k), c.copy(alpha = a))
+    for ((k, a) in PUDDLE_LAYERS) drawPath(blob(k), c.copy(alpha = a))
     drawPath(blob(1.0), Color.White.copy(alpha = 0.28f), style = Stroke(cam.unit * 0.008f))
     // 뒤쪽 반사광 (위에서 오는 빛)
-    val shine = ring(cam, radius * 0.86, 0.0, PI * 0.58, PI * 0.82, 12)
-    drawPath(Path().apply { addPoly(shine, close = false) }, Color.White.copy(alpha = 0.35f), style = Stroke(cam.unit * 0.014f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+    pen.b.reset()
+    pen.b.arc(cam, radius * 0.86, 0.0, PI * 0.58, PI * 0.82, 12)
+    drawPath(pen.b, Color.White.copy(alpha = 0.35f), style = Stroke(cam.unit * 0.014f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
 }
 
 /**
  * 컵이 놓인 바닥 (z = 0 평면): 빛나는 받침 고리, 접촉 그림자, 넘친 물웅덩이.
  * 컵·물과 같은 카메라로 그려 원근이 맞고 컵 바닥이 바닥에 붙는다.
  */
-private fun DrawScope.drawFloor(cam: Camera, c: Color, puddle: Float, stage: Boolean) {
-    fun ellipse(r: Double) = Path().apply { addPoly(ring(cam, r, 0.0)) }
+private fun DrawScope.drawFloor(cam: Camera, pen: Pen, c: Color, puddle: Float, stage: Boolean) {
+    fun ellipse(r: Double) = pen.a.ellipse(cam, r)
     if (stage) {
         // 바닥 빛 (안쪽이 밝다)
-        for ((k, a) in listOf(1.75 to 0.04f, 1.45 to 0.06f, 1.2 to 0.08f)) drawPath(ellipse(RB * k), Color(0xFF29C4F6).copy(alpha = a))
-        for ((k, a) in listOf(1.2 to 0.6f, 1.45 to 0.35f, 1.72 to 0.18f)) {
+        for ((k, a) in FLOOR_GLOW) drawPath(ellipse(RB * k), Color(0xFF29C4F6).copy(alpha = a))
+        for ((k, a) in FLOOR_RINGS) {
             val e = ellipse(RB * k)
             drawPath(e, Color(0xFF29C4F6).copy(alpha = a * 0.25f), style = Stroke(cam.unit * 0.05f))
             drawPath(e, Color(0xFF29C4F6).copy(alpha = a), style = Stroke(cam.unit * 0.012f))
         }
     }
-    if (puddle > 0.005f) drawPuddle(cam, c, RB * (1.12 + 0.48 * puddle))
+    if (puddle > 0.005f) drawPuddle(cam, pen, c, RB * (1.12 + 0.48 * puddle))
     // 접촉 그림자: 바닥에 가까울수록 진하다
-    for ((k, a) in listOf(1.12 to 0.12f, 1.05 to 0.18f, 1.0 to 0.25f)) drawPath(ellipse(RB * k), Color.Black.copy(alpha = a))
+    for ((k, a) in CONTACT_SHADOW) drawPath(ellipse(RB * k), Color.Black.copy(alpha = a))
 }
 
-private fun DrawScope.drawGlassBack(cam: Camera) {
-    val back = Path().apply {
-        addPoly(ring(cam, RB.toDouble(), 0.0, 0.0, PI, 36) + ring(cam, RT.toDouble(), H.toDouble(), PI, 0.0, 36))
+private fun DrawScope.drawGlassBack(cam: Camera, pen: Pen) {
+    val back = pen.a.apply {
+        reset()
+        arc(cam, RB.toDouble(), 0.0, 0.0, PI, 36)
+        arc(cam, RT.toDouble(), H.toDouble(), PI, 0.0, 36, start = false)
+        close()
     }
     drawPath(back, Color.White.copy(alpha = 0.05f))
-    drawPath(Path().apply { addPoly(ring(cam, RT.toDouble(), H.toDouble(), 0.0, PI, 36), close = false) }, GlassEdge.copy(alpha = 0.35f), style = Stroke(cam.unit * 0.012f))
+    pen.b.reset()
+    pen.b.arc(cam, RT.toDouble(), H.toDouble(), 0.0, PI, 36)
+    drawPath(pen.b, GlassEdge.copy(alpha = 0.35f), style = Stroke(cam.unit * 0.012f))
 }
 
 /** 물 몸통: 유리 바닥 위 원호와 수면선 사이 (뒤쪽 반 또는 앞쪽 반) */
-private fun DrawScope.drawWaterSide(cam: Camera, surf: Array<P3>, back: Boolean, color: Color) {
-    val n = surf.size - 1
-    val idx = if (back) (0..n / 2) else (n / 2..n)
-    val bottom = idx.map { i -> val th = 2 * PI * i / n; cam.project(P3(RBI * cos(th), RBI * sin(th), BASE)) }
-    val top = idx.reversed().map { cam.project(surf[it]) }
-    val path = Path().apply { addPoly(bottom + top) }
-    val yTop = top.minOf { it.y }
-    val yBot = bottom.maxOf { it.y }
+private fun DrawScope.drawWaterSide(cam: Camera, pen: Pen, back: Boolean, color: Color) {
+    val n = Pen.N
+    val from = if (back) 0 else n / 2
+    val to = if (back) n / 2 else n
+    var yTop = Float.MAX_VALUE
+    val path = pen.b.apply {
+        reset()
+        arc(cam, RBI, BASE, 2 * PI * from / n, 2 * PI * to / n, to - from)
+        for (i in to downTo from) {
+            val o = cam.project(pen.sx[i], pen.sy[i], pen.sz[i])
+            lineTo(o.x, o.y)
+            if (o.y < yTop) yTop = o.y
+        }
+        close()
+    }
     if (back) {
         drawPath(path, lerp(color, Color.Black, 0.45f), alpha = 0.9f)
     } else {
+        val yBot = cam.project(0.0, -RBI, BASE).y
         drawPath(path, Brush.verticalGradient(listOf(color.copy(alpha = 0.78f), lerp(color, Color.Black, 0.35f).copy(alpha = 0.9f)), yTop, yBot))
     }
 }
 
-private fun DrawScope.drawGlassFront(cam: Camera) {
+private fun DrawScope.drawGlassFront(cam: Camera, pen: Pen) {
     val w = cam.unit * 0.022f
     // 두꺼운 유리 바닥: 바닥 원(z=0)과 안쪽 바닥(z=BASE) 사이의 앞쪽 띠, 아래 가장자리는 빛을 모은다
-    val slab = ring(cam, RB.toDouble(), 0.0, PI, 2 * PI, 48) + ring(cam, radiusAt(BASE), BASE, 2 * PI, PI, 48)
-    drawPath(Path().apply { addPoly(slab) }, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.30f)), slab.minOf { it.y }, slab.maxOf { it.y }))
-    drawPath(Path().apply { addPoly(ring(cam, RBI, BASE, PI, 2 * PI, 48), close = false) }, Color.White.copy(alpha = 0.35f), style = Stroke(w * 0.6f))
-    drawPath(Path().apply { addPoly(ring(cam, RB.toDouble(), 0.0, PI, 2 * PI, 48), close = false) }, GlassEdge, style = Stroke(w))
+    val slab = pen.a.apply {
+        reset()
+        arc(cam, RB.toDouble(), 0.0, PI, 2 * PI, 48)
+        arc(cam, radiusAt(BASE), BASE, 2 * PI, PI, 48, start = false)
+        close()
+    }
+    val slabTop = cam.project(-RB.toDouble(), 0.0, BASE).y
+    val slabBottom = cam.project(0.0, -RB.toDouble(), 0.0).y
+    drawPath(slab, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.30f)), slabTop, slabBottom))
+    pen.b.reset()
+    pen.b.arc(cam, RBI, BASE, PI, 2 * PI, 48)
+    drawPath(pen.b, Color.White.copy(alpha = 0.35f), style = Stroke(w * 0.6f))
+    pen.b.reset()
+    pen.b.arc(cam, RB.toDouble(), 0.0, PI, 2 * PI, 48)
+    drawPath(pen.b, GlassEdge, style = Stroke(w))
     // 옆 윤곽 (보이는 가장자리: 좌우 끝)
-    for (th in listOf(0.0, PI)) {
-        drawLine(GlassEdge, cam.project(P3(RB * cos(th), 0.0, 0.0)), cam.project(P3(RT * cos(th), 0.0, H.toDouble())), strokeWidth = w)
+    for (side in intArrayOf(1, -1)) {
+        drawLine(GlassEdge, cam.project(RB * side.toDouble(), 0.0, 0.0), cam.project(RT * side.toDouble(), 0.0, H.toDouble()), strokeWidth = w)
     }
     // 반사광: 앞쪽 왼편 세로 띠
     val a0 = PI * 1.18
     val a1 = PI * 1.26
-    val band = ring(cam, RB * 1.001, BASE + 0.05, a0, a1, 6) + ring(cam, RT * 1.001, H - 0.12, a1, a0, 6)
-    drawPath(Path().apply { addPoly(band) }, Color.White.copy(alpha = 0.22f))
+    pen.a.reset()
+    pen.a.arc(cam, RB * 1.001, BASE + 0.05, a0, a1, 6)
+    pen.a.arc(cam, RT * 1.001, H - 0.12, a1, a0, 6, start = false)
+    pen.a.close()
+    drawPath(pen.a, Color.White.copy(alpha = 0.22f))
     // 가장자리 (앞쪽은 두껍게)
-    drawPath(Path().apply { addPoly(ring(cam, RT.toDouble(), H.toDouble(), PI, 2 * PI, 36), close = false) }, GlassEdge, style = Stroke(w * 1.3f))
+    pen.b.reset()
+    pen.b.arc(cam, RT.toDouble(), H.toDouble(), PI, 2 * PI, 36)
+    drawPath(pen.b, GlassEdge, style = Stroke(w * 1.3f))
 }
 
 // ---- 넘친 물방울 ----
@@ -359,7 +428,7 @@ private class Drops {
 
     fun draw(scope: DrawScope, cam: Camera, c: Color) {
         for (d in list) {
-            val o = cam.project(P3(d.x, d.y, max(d.z, 0.0)))
+            val o = cam.project(d.x, d.y, max(d.z, 0.0))
             scope.drawCircle(c, radius = cam.unit * (0.018f + 0.012f * (d.life / 1.4).toFloat()), center = o, alpha = (d.life / 1.4).toFloat().coerceIn(0.2f, 1f))
         }
     }

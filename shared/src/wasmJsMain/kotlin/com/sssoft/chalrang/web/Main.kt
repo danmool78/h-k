@@ -85,8 +85,8 @@ fun main() {
     val engine = ChalrangEngine(car, SimNavi(), voice, BrowserChildRepo())
     ComposeViewport("chalrang") {
         ChalrangTheme {
-            val scope = rememberCoroutineScope()
-            LaunchedEffect(Unit) { engine.start(scope) }
+            // 화면이 떠 있는 동안만 돈다
+            LaunchedEffect(Unit) { engine.run() }
             WebApp(engine, car, voice)
         }
     }

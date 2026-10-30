@@ -33,6 +33,7 @@ kotlin {
             implementation(compose.components.resources)
             implementation(libs.compose.icons.extended)
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.serialization.json)
         }
         androidUnitTest.dependencies {
             implementation(libs.junit)

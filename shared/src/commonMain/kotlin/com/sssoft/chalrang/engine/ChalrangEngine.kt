@@ -20,6 +20,7 @@ import com.sssoft.chalrang.core.TiltLog
 import com.sssoft.chalrang.core.WaterCup
 import com.sssoft.chalrang.core.Window
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,6 +52,8 @@ data class UiState(
     val raining: Boolean = false,
     /** 창문을 열지 묻는 중이면 그 창문들 */
     val askWindows: List<Window>? = null,
+    /** 휴대폰 시연 중 */
+    val remote: Boolean = false,
 )
 
 /**
@@ -65,7 +68,12 @@ class ChalrangEngine(
     private val store: ChildRepo,
     /** 실제 주행에서 차량·내비 신호로 가속도를 추정하는 곳 (차량 연결 쪽이 값을 넣는다) */
     val motion: MotionEstimator = MotionEstimator(),
+    /** 휴대폰 시연: 관리자가 휴대폰을 흔들면 그 가속도를 받아 차 흔들림 대신 쓴다 */
+    private val remote: RemoteFeed? = RemoteFeed(),
 ) {
+    /** 휴대폰 시연 시각 (받은 시료 수 × 간격) */
+    private var remoteT = 0.0
+    private var remoteWas = false
 
     private val cup = WaterCup()
     private var policy = CarePolicy()
@@ -89,9 +97,13 @@ class ChalrangEngine(
         var pending = 0.0
     }
 
-    /** [scope] 가 살아 있는 동안 20Hz 로 돈다 */
-    fun start(scope: CoroutineScope) {
-        scope.launch { loop() }
+    /**
+     * 처리 루프(20Hz)와 휴대폰 시연 확인을 돌린다. 화면이 보이는 동안만 부르고(앱: Activity STARTED),
+     * 호출한 쪽이 취소하면 둘 다 멈춘다. 끝없이 도는 루프를 남기지 않는다.
+     */
+    suspend fun run() = coroutineScope {
+        launch { loop() }
+        remote?.let { launch { it.run() } }
     }
 
     private suspend fun CoroutineScope.loop() {
@@ -151,7 +163,41 @@ class ChalrangEngine(
                 stopDemo()
                 return
             }
+        } else if (remote != null && remote.active) {
+            // 휴대폰 시연: 받은 휴대폰 가속도를 차 흔들림으로
+            if (!remoteWas) {
+                resetTrip()
+                remoteT = 0.0
+                remoteWas = true
+            }
+            val step = remote.sampleDt
+            var spillStarted = false
+            for ((ax, ay) in remote.take(dt)) {
+                remoteT += step
+                val before = cup.spillCount
+                cup.step(ax, ay, step)
+                log.add(cup.tilt, step)
+                if (cup.spillCount > before) {
+                    spillStarted = true
+                    trace.event(remoteT, TraceKind.SPILL)
+                }
+                trace.record(remoteT, ax, ay, cup.tiltX, cup.tiltY, REMOTE_KMH, cup.dose, cup.level, cup.spilling)
+            }
+            clock = remoteT
+            if (seats.values.none { it.riding } && children.isNotEmpty()) {
+                seats = mapOf(children.first().seat to SeatState(true, true))
+                assumed = true
+            }
+            val setup = applySetup(CupSetup.choose(seats, children))
+            input = CareInput(
+                nowSec = remoteT, setup = setup, dose = cup.dose, spillStarted = spillStarted,
+                speedKmh = REMOTE_KMH, raining = car.raining.value, sickNow = takeSick(), windowAnswer = takeAnswer(),
+            )
         } else {
+            if (remoteWas) {
+                remoteWas = false
+                resetTrip()
+            }
             motion.update(now)
             clock = now
             val before = cup.spillCount
@@ -173,7 +219,7 @@ class ChalrangEngine(
                 tiltX = cup.tiltX, tiltY = cup.tiltY, level = input.setup.level ?: ALONE_LEVEL,
                 dose = cup.dose, spilling = cup.spilling, setup = input.setup, car = car.status.value,
                 demoProgress = demo?.let { dm -> ((dm.frame?.t ?: 0.0) / dm.scenario.durationSec).toFloat() } ?: 0f,
-                assumedSeat = assumed, raining = input.raining,
+                assumedSeat = assumed, raining = input.raining, remote = remoteWas,
             )
         }
     }
@@ -316,6 +362,8 @@ class ChalrangEngine(
         const val SCENARIO_DT = 0.1
         /** 시연 배속 (13분 경로 → 약 2분 10초) */
         const val DEMO_SPEED = 6.0
+        /** 휴대폰 시연에서 쓰는 속도 (창문 판단용) */
+        const val REMOTE_KMH = 40.0
         /** 혼자 주행일 때 그리는 물 높이 */
         const val ALONE_LEVEL = 0.3
     }

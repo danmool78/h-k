@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.EventSeat
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WaterDrop
@@ -258,6 +259,13 @@ private fun BigChoice(label: String, primary: Boolean, modifier: Modifier, onCli
 
 @Composable
 private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
+    if (s.remote) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.PhoneAndroid, null, tint = Neon.Cyan, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("휴대폰 시연 중 · 휴대폰을 2~10초에 한 번씩 앞뒤·좌우로 움직여 보세요", color = Neon.Cyan, fontSize = 14.sp, lineHeight = 19.sp)
+        }
+    }
     if (s.demo != null) {
         Text("시연 · ${s.demo}", color = Neon.Dim, fontSize = 14.sp)
         Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(Color(0x332A8BE0))) {
