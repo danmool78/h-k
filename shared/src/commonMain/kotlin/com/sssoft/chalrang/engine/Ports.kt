@@ -1,6 +1,7 @@
 package com.sssoft.chalrang.engine
 
 import com.sssoft.chalrang.core.Child
+import com.sssoft.chalrang.core.TripSummary
 import com.sssoft.chalrang.core.Seat
 import com.sssoft.chalrang.core.SeatState
 import com.sssoft.chalrang.core.Upcoming
@@ -62,4 +63,7 @@ interface VoicePort {
 interface ChildRepo {
     fun load(): List<Child>
     fun save(children: List<Child>)
+    /** 지난 주행 평가 (최근 [TripSummary.KEEP] 개, 오래된 것부터) */
+    fun loadTrips(): List<TripSummary> = emptyList()
+    fun saveTrips(trips: List<TripSummary>) {}
 }

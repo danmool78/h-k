@@ -9,6 +9,8 @@ import com.sssoft.chalrang.core.CupSetup
 import com.sssoft.chalrang.core.DriveScenario
 import com.sssoft.chalrang.core.DriveTrace
 import com.sssoft.chalrang.core.TraceKind
+import com.sssoft.chalrang.core.TripReport
+import com.sssoft.chalrang.core.TripSummary
 import com.sssoft.chalrang.core.DriverStyle
 import com.sssoft.chalrang.core.Frame
 import com.sssoft.chalrang.core.MotionEstimator
@@ -59,6 +61,10 @@ data class UiState(
     val askWindows: List<Window>? = null,
     /** 휴대폰 시연 중 */
     val remote: Boolean = false,
+    /** 방금 끝난 주행의 평가 (닫으면 null) */
+    val report: TripReport? = null,
+    /** 그 전 주행 점수 (비교용) */
+    val previousScore: Int? = null,
 )
 
 /**
@@ -91,6 +97,12 @@ class ChalrangEngine(
 
     private val _ui = MutableStateFlow(UiState(children = store.load()))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
+
+    /** 지난 주행 평가 (최근 것이 끝) */
+    private val trips = store.loadTrips().toMutableList()
+    /** 실제 주행: 달린 시간·멈춰 있는 시간 (주행이 끝났는지 보려고) */
+    private var liveMoving = 0.0
+    private var liveStopped = 0.0
 
     private var demo: Demo? = null
     private var sickPending = false
@@ -206,6 +218,14 @@ class ChalrangEngine(
         } else {
             if (remoteWas) {
                 remoteWas = false
+                finishTrip()
+                resetTrip()
+            }
+            // 실제 주행: 2분 넘게 달린 뒤 3분 넘게 서 있으면 (도착·주차) 이번 주행을 평가하고 새로 시작
+            val kmh = motion.speedKmh ?: 0.0
+            if (kmh >= 5) { liveMoving += dt; liveStopped = 0.0 } else if (kmh < 1) liveStopped += dt
+            if (liveMoving >= TRIP_MIN_SEC && liveStopped >= PARKED_SEC) {
+                finishTrip()
                 resetTrip()
             }
             motion.update(now)
@@ -338,12 +358,30 @@ class ChalrangEngine(
 
     fun stopDemo() {
         demo = null
+        finishTrip()
         resetTrip()
         _ui.update { it.copy(demo = null, demoProgress = 0f, assumedSeat = false) }
     }
 
+    /** 주행이 끝났을 때: 기록으로 평가하고, 저장하고, 한 줄로 말한다 (너무 짧으면 하지 않음) */
+    private fun finishTrip() {
+        val r = TripReport.evaluate(trace, cup.spillCount) ?: return
+        val prev = trips.lastOrNull()?.score
+        trips += TripSummary.of(r)
+        while (trips.size > TripSummary.KEEP) trips.removeAt(0)
+        store.saveTrips(trips)
+        val text = r.spoken(prev)
+        voice.say(text)
+        _ui.update { it.copy(report = r, previousScore = prev, lastSaid = text) }
+    }
+
+    /** 평가 창 닫기 */
+    fun dismissReport() = _ui.update { it.copy(report = null) }
+
     /** 새 주행: 하던 차량 조치를 되돌리고 물컵·기록을 비운다 */
     private fun resetTrip() {
+        liveMoving = 0.0
+        liveStopped = 0.0
         if (policy.windowsOpen) car.closeWindows()
         if (policy.ventilating) car.freshAir(false)
         policy = CarePolicy()
@@ -377,5 +415,9 @@ class ChalrangEngine(
         const val REMOTE_KMH = 40.0
         /** 혼자 주행일 때 그리는 물 높이 */
         const val ALONE_LEVEL = 0.3
+        /** 실제 주행 평가: 이만큼 달린 뒤 (초) */
+        const val TRIP_MIN_SEC = 120.0
+        /** 이만큼 서 있으면 주행이 끝난 것으로 (초): 신호 대기보다 길게 */
+        const val PARKED_SEC = 180.0
     }
 }

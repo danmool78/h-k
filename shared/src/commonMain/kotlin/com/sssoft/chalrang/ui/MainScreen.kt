@@ -123,6 +123,8 @@ fun MainScreen(vm: ChalrangEngine) {
                 Controls(s, vm, onEdit = { editing = true })
             }
         }
+        // 주행이 끝나면 평가를 덮어 보여 준다
+        s.report?.let { TripReportOverlay(it, s.previousScore, onClose = vm::dismissReport) }
     }
     }
     if (editing) ChildrenDialog(s.children, vm, onDismiss = { editing = false })

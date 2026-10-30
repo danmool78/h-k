@@ -4,6 +4,7 @@ import android.content.Context
 import com.sssoft.chalrang.core.Child
 import com.sssoft.chalrang.core.Seat
 import com.sssoft.chalrang.core.Sensitivity
+import com.sssoft.chalrang.core.TripSummary
 import com.sssoft.chalrang.engine.ChildRepo
 import org.json.JSONArray
 import org.json.JSONObject
@@ -19,8 +20,15 @@ class ChildStore(context: Context) : ChildRepo {
         prefs.edit().putString(KEY, encode(children)).apply()
     }
 
+    override fun loadTrips(): List<TripSummary> = TripSummary.decode(prefs.getString(TRIPS, null))
+
+    override fun saveTrips(trips: List<TripSummary>) {
+        prefs.edit().putString(TRIPS, TripSummary.encode(trips)).apply()
+    }
+
     companion object {
         private const val KEY = "list"
+        private const val TRIPS = "trips"
 
         fun encode(children: List<Child>): String = JSONArray().apply {
             children.forEach {
