@@ -1,5 +1,6 @@
 package com.sssoft.chalrang.ui
 
+import androidx.compose.material.icons.filled.Route
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
@@ -104,6 +105,7 @@ fun MainScreen(vm: ChalrangEngine) {
                 ) {
                     RidersCard(s)
                     CarCard(s)
+                    RouteCard(s)
                     Said(s)
                     Spacer(Modifier.weight(1f))
                     Controls(s, vm, onEdit = { editing = true })
@@ -119,6 +121,7 @@ fun MainScreen(vm: ChalrangEngine) {
                     RidersCard(s, Modifier.weight(1f).fillMaxHeight())
                     CarCard(s, Modifier.weight(1f).fillMaxHeight())
                 }
+                RouteCard(s)
                 Said(s)
                 Controls(s, vm, onEdit = { editing = true })
             }
@@ -233,6 +236,31 @@ private fun CarCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier, 
     }
     if (s.raining) Text("비 · 창문은 닫아 둬요", color = Dim, fontSize = 15.sp)
     car.lastAction?.let { Text(it, color = Dim, fontSize = 15.sp) }
+}
+
+/** 가는 길: 멀미 위험 구간 요약과 경로 띠 (주황 = 조심, 빨강 = 위험, 흰 점 = 지금) */
+@Composable
+private fun RouteCard(s: UiState, modifier: Modifier = Modifier) {
+    val r = s.route ?: return
+    Card(modifier, Icons.Filled.Route, "가는 길") {
+        Text(r.summary, color = Color.White, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        Canvas(Modifier.fillMaxWidth().height(22.dp)) {
+            val y = size.height / 2
+            val h = 8.dp.toPx()
+            val total = r.totalM.coerceAtLeast(1.0)
+            fun x(m: Double) = (m / total * size.width).toFloat().coerceIn(0f, size.width)
+            drawRoundRect(Neon.Grid, Offset(0f, y - h / 2), Size(size.width, h), CornerRadius(h / 2))
+            for (seg in r.segments) {
+                val c = if (seg.level >= 2) Neon.Red else Neon.Amber
+                drawRoundRect(c, Offset(x(seg.startM), y - h / 2), Size((x(seg.endM) - x(seg.startM)).coerceAtLeast(3f), h), CornerRadius(h / 2))
+            }
+            for (rest in r.restAreaM) drawCircle(Neon.Green, 3.dp.toPx(), Offset(x(rest), y))
+            val cx = x(s.routeAtM)
+            drawCircle(Neon.Cyan.copy(alpha = 0.35f), 9.dp.toPx(), Offset(cx, y))
+            drawCircle(Neon.White, 5.dp.toPx(), Offset(cx, y))
+        }
+        r.restAdvice?.let { Text(it, color = Neon.Green, fontSize = 13.sp) }
+    }
 }
 
 /** 창문을 열지 묻기. 운전 중에도 누르기 쉽게 크게, 동승자가 눌러도 된다 */

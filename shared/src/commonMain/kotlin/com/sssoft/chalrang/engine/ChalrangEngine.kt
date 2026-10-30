@@ -10,6 +10,10 @@ import com.sssoft.chalrang.core.DriveScenario
 import com.sssoft.chalrang.core.DriveTrace
 import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TripReport
+import com.sssoft.chalrang.core.RoutePlanner
+import com.sssoft.chalrang.core.RoutePoint
+import com.sssoft.chalrang.core.RoutePreview
+import com.sssoft.chalrang.core.Terrain
 import com.sssoft.chalrang.core.TripSummary
 import com.sssoft.chalrang.core.DriverStyle
 import com.sssoft.chalrang.core.Frame
@@ -30,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import kotlin.random.Random
 import kotlin.time.TimeSource
 
@@ -65,6 +70,9 @@ data class UiState(
     val report: TripReport? = null,
     /** 그 전 주행 점수 (비교용) */
     val previousScore: Int? = null,
+    /** 가는 길 미리보기 (길 안내·시연 중일 때) 와 지금까지 온 거리 (m) */
+    val route: RoutePreview? = null,
+    val routeAtM: Double = 0.0,
 )
 
 /**
@@ -120,6 +128,7 @@ class ChalrangEngine(
      */
     suspend fun run() = coroutineScope {
         launch { loop() }
+        launch { routeLoop() }
         remote?.let { launch { it.run() } }
     }
 
@@ -352,12 +361,17 @@ class ChalrangEngine(
         // 시연 시간은 배속으로 흐르므로 창문 질문은 실제 20초 동안 기다린다
         policy = CarePolicy(askTimeoutSec = CarePolicy.ASK_TIMEOUT * DEMO_SPEED)
         val s = DriveScenario.weekendTrip(style)
+        clearRoute()
+        // 시연 경로 미리보기: 시나리오의 안내·방지턱·굽은 길과 길 높이로 (시연 시간은 배속)
+        demoRoute = RoutePlanner.plan(s.routePoints(), s.totalM, s.durationSec, s.terrain())
         demo = Demo(s, s.frames(SCENARIO_DT).iterator())
         _ui.update { it.copy(demo = style.name, demoProgress = 0f) }
     }
 
     fun stopDemo() {
         demo = null
+        demoRoute = null
+        clearRoute()
         finishTrip()
         resetTrip()
         _ui.update { it.copy(demo = null, demoProgress = 0f, assumedSeat = false) }
@@ -373,6 +387,96 @@ class ChalrangEngine(
         val text = r.spoken(prev)
         voice.say(text)
         _ui.update { it.copy(report = r, previousScore = prev, lastSaid = text) }
+    }
+
+    // ---- 가는 길 미리보기 ----
+
+    private var routeKey: String? = null
+    private var routeD0 = 0.0
+    private val known = HashMap<String, RoutePoint>()
+    private var terrain: Terrain? = null
+    private var terrainTried = false
+    private var routeSpoken = false
+    private val announced = HashSet<Int>()
+    private var demoRoute: RoutePreview? = null
+
+    /** 1초마다: 길 안내(또는 시연 경로)로 위험 구간을 다시 보고, 출발 때 요약을 말하고, 구간 1km 앞에서 알린다 */
+    private suspend fun routeLoop() {
+        while (true) {
+            delay(1_000)
+            val d = demo
+            if (d != null) {
+                val plan = demoRoute ?: continue
+                route(plan, d.frame?.distM ?: 0.0)
+                continue
+            }
+            val a = navi.ahead.value
+            val remain = a.remainM
+            if (remain == null) {
+                if (routeKey != null) clearRoute()
+                continue
+            }
+            if (a.routeId != routeKey || remain > routeD0 + 2_000) {
+                clearRoute()
+                routeKey = a.routeId
+                routeD0 = remain
+            }
+            val travelled = (routeD0 - remain).coerceAtLeast(0.0)
+            var changed = false
+            for (u in a.points) {
+                val at = travelled + u.distanceM
+                val key = "${u.kind}@${(at / 200).roundToInt()}"
+                if (key !in known) { known[key] = RoutePoint(u.kind, at); changed = true }
+            }
+            if (!terrainTried && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
+                terrainTried = true
+                terrain = Elevation.along(a.hereLat, a.hereLng, a.destLat, a.destLng, remain)
+                changed = true
+            }
+            val current = _ui.value.route
+            val plan = if (changed || current == null) RoutePlanner.plan(known.values.toList(), routeD0, a.remainSec, terrain) else current
+            route(plan, travelled)
+        }
+    }
+
+    private fun route(plan: RoutePreview, atM: Double) {
+        if (_ui.value.route !== plan || _ui.value.routeAtM != atM) _ui.update { it.copy(route = plan, routeAtM = atM) }
+        // 아이가 탔을 때만 말한다
+        if (!_ui.value.setup.active) return
+        if (!routeSpoken) {
+            routeSpoken = true
+            say(plan.summary + (plan.restAdvice?.let { " $it." } ?: ""))
+            return
+        }
+        for (seg in plan.segments) {
+            val key = (seg.startM / 100).roundToInt()
+            val ahead = seg.startM - atM
+            if (key in announced || ahead > ANNOUNCE_M || seg.endM < atM) continue
+            announced += key
+            val len = RoutePreview.fmtKm(seg.lengthM)
+            val why = seg.reasons.take(2).joinToString("·")
+            say(
+                if (seg.level >= 2) "곧 멀미 위험 구간이에요. 앞으로 $len, $why. 천천히 부드럽게 가 주세요"
+                else "곧 $why 구간이에요. 앞으로 $len, 부드럽게 가 주세요",
+            )
+            break
+        }
+    }
+
+    private fun say(text: String) {
+        voice.say(text)
+        trace.event(clock, TraceKind.SAY, text)
+        _ui.update { it.copy(lastSaid = text) }
+    }
+
+    private fun clearRoute() {
+        routeKey = null
+        known.clear()
+        terrain = null
+        terrainTried = false
+        routeSpoken = false
+        announced.clear()
+        _ui.update { it.copy(route = null, routeAtM = 0.0) }
     }
 
     /** 평가 창 닫기 */
@@ -417,6 +521,8 @@ class ChalrangEngine(
         const val ALONE_LEVEL = 0.3
         /** 실제 주행 평가: 이만큼 달린 뒤 (초) */
         const val TRIP_MIN_SEC = 120.0
+        /** 위험 구간을 이만큼 앞에서 알린다 (m) */
+        const val ANNOUNCE_M = 1_200.0
         /** 이만큼 서 있으면 주행이 끝난 것으로 (초): 신호 대기보다 길게 */
         const val PARKED_SEC = 180.0
     }

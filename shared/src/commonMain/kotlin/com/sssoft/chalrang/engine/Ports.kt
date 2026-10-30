@@ -45,6 +45,18 @@ data class RoadAhead(
     val next: Upcoming? = null,
     /** 경로상 다음 휴게소까지 (km) */
     val restAreaKm: Double? = null,
+    /** 알고 있는 앞쪽 안내·주의 지점 전부 (지금 위치부터 m). 경로 미리보기에 쓴다 */
+    val points: List<Upcoming> = emptyList(),
+    /** 목적지까지 남은 거리 (m)·시간 (초). 길 안내 중이 아니면 null */
+    val remainM: Double? = null,
+    val remainSec: Double? = null,
+    /** 경로가 바뀌면 달라진다 */
+    val routeId: String? = null,
+    /** 지금 위치·목적지 (지형 미리보기용) */
+    val hereLat: Double? = null,
+    val hereLng: Double? = null,
+    val destLat: Double? = null,
+    val destLng: Double? = null,
 )
 
 interface NaviPort {

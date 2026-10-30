@@ -49,6 +49,8 @@ data class Frame(
     val az: Double = 0.0,
     /** 길 경사 (rad, + 오르막) */
     val grade: Double = 0.0,
+    /** 출발점부터 거리 (m) */
+    val distM: Double = 0.0,
 )
 
 class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
@@ -98,7 +100,7 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
                     t = t, ax = ax, ay = ay + weave, speedKmh = v * 3.6, next = upcoming,
                     restAreaKm = rest, raining = leg.raining,
                     resting = leg.maneuver == ManeuverKind.REST_AREA && leg.speedKmh == 0.0,
-                    az = az, grade = grade,
+                    az = az, grade = grade, distM = dist,
                 ),
             )
             t += dt
@@ -111,6 +113,32 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
             }
         }
     }
+
+    /** 경로 미리보기용: 안내·방지턱·굽은 길 지점 (출발점부터 m) */
+    fun routePoints(): List<RoutePoint> = buildList {
+        for (i in legs.indices) {
+            val leg = legs[i]
+            leg.maneuver?.let { add(RoutePoint(it, legStartM[i])) }
+            if (leg.bump) add(RoutePoint(ManeuverKind.SPEED_BUMP, legStartM[i] + leg.speedKmh / 3.6 * 2.0))
+            if (leg.radiusM != null && abs(leg.radiusM) < 100) add(RoutePoint(ManeuverKind.CURVE, legStartM[i]))
+        }
+    }
+
+    /** 경로 미리보기용: 100m 마다 길 높이 (둔덕 구간) */
+    fun terrain(): Terrain {
+        val total = legStartM.last()
+        val n = (total / TERRAIN_STEP).toInt() + 1
+        val h = DoubleArray(n) { k ->
+            val d = k * TERRAIN_STEP
+            val i = legs.indices.firstOrNull { d < legStartM[it + 1] } ?: (legs.size - 1)
+            val leg = legs[i]
+            // 산길은 오르막·내리막이 이어지는 언덕 (큰 높이 변화) 위에 작은 둔덕
+            if (leg.hillM > 0) leg.hillM * sin(2 * PI / leg.hillWaveM * d) + 40 * sin(2 * PI * d / 1500) else 0.0
+        }
+        return Terrain(TERRAIN_STEP, h)
+    }
+
+    val totalM: Double get() = legStartM.last()
 
     private fun smoothStart(dv: Double) = (dv / 2.0).coerceIn(0.3, 1.0)
 
@@ -130,6 +158,8 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
     }
 
     companion object {
+        const val TERRAIN_STEP = 100.0
+
         /** 가다 서다 [n] 번 */
         fun stopAndGo(n: Int, topKmh: Double = 40.0, bumps: Boolean = false): List<Leg> =
             (0 until n).flatMap { i -> listOf(Leg(12.0, topKmh, bump = bumps && i % 2 == 1), Leg(8.0, 0.0)) }

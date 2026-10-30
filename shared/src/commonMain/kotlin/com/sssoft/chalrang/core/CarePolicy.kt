@@ -1,14 +1,21 @@
 package com.sssoft.chalrang.core
 
 /** 내비가 알려 준 앞으로 올 움직임 */
-enum class ManeuverKind(val label: String, val shaky: Boolean) {
-    TURN("교차로 회전", false),
-    SHARP_TURN("급한 회전", true),
-    UTURN("유턴", true),
-    IC_EXIT("진출로", true),
-    IC_ENTER("진입로", true),
-    ROUNDABOUT("회전 교차로", true),
-    SPEED_BUMP("과속 방지턱", true),
+/** 내비 안내·주의 지점. [risk] = 경로 미리보기에서 그 지점이 멀미에 보태는 점수 (RoutePreview) */
+enum class ManeuverKind(val label: String, val shaky: Boolean, val risk: Double = 0.0) {
+    TURN("교차로 회전", false, 0.5),
+    SHARP_TURN("급한 회전", true, 1.5),
+    UTURN("유턴", true, 1.5),
+    IC_EXIT("진출로", true, 1.0),
+    IC_ENTER("진입로", true, 1.0),
+    ROUNDABOUT("회전 교차로", true, 1.5),
+    SPEED_BUMP("과속 방지턱", true, 1.0),
+    DOWNHILL("급경사 내리막", true, 1.5),
+    NARROW("좁은 길", true, 1.0),
+    ROAD_DAMAGE("파손된 길", true, 1.0),
+    FALLING_ROCK("낙석 주의 산길", true, 1.0),
+    /** 굽은 길 (시연 시나리오의 산길 굽이. 내비 SDK 는 굽이를 따로 주지 않는다) */
+    CURVE("굽은 길", true, 0.8),
     REST_AREA("휴게소", false),
     OTHER("", false),
 }

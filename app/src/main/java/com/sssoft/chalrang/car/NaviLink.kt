@@ -4,6 +4,9 @@ import ai.pleos.playground.navi.constants.CautionPointType
 import ai.pleos.playground.navi.constants.TurnType
 import ai.pleos.playground.navi.data.CautionPoint
 import ai.pleos.playground.navi.data.CurrentLocationInfo
+import ai.pleos.playground.navi.data.DestinationArrivedInfo
+import ai.pleos.playground.navi.data.DestinationInfo
+import ai.pleos.playground.navi.data.RouteStartInfo
 import ai.pleos.playground.navi.data.TBTInfo
 import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
@@ -35,6 +38,10 @@ class NaviLink(context: Context) : NaviPort {
 
     private var turns: List<TBTInfo> = emptyList()
     private var cautions: List<CautionPoint> = emptyList()
+    private var dest: DestinationInfo? = null
+    private var here: CurrentLocationInfo? = null
+    /** 길 안내를 새로 시작할 때마다 늘린다 (SDK 경로 id 가 없을 때 대신) */
+    private var routeSerial = 0
 
     private val listener = object : NaviHelperEventListener {
         override fun onTBTInfo(info: List<TBTInfo>) {
@@ -49,11 +56,29 @@ class NaviLink(context: Context) : NaviPort {
 
         override fun onCurrentLocationInfo(info: CurrentLocationInfo) {
             motion?.onPosition(clock(), info.latitude, info.longitude, info.heading)
+            val routeChanged = info.routeId != here?.routeId
+            here = info
+            if (routeChanged) publish()
+        }
+
+        override fun onDestinationInfo(info: DestinationInfo) {
+            dest = info
+            publish()
+        }
+
+        override fun onRouteStarted(info: RouteStartInfo) {
+            routeSerial++
+            turns = emptyList(); cautions = emptyList(); dest = null
+            publish()
         }
 
         override fun onRouteEnded() {
-            turns = emptyList(); cautions = emptyList(); publish()
+            turns = emptyList(); cautions = emptyList(); dest = null; publish()
         }
+
+        override fun onRouteCancelled() = onRouteEnded()
+
+        override fun onDestinationArrived(info: DestinationArrivedInfo) = onRouteEnded()
     }
 
     fun start() {
@@ -72,6 +97,7 @@ class NaviLink(context: Context) : NaviPort {
         if (!connected) return
         runCatching { navi.getTBTInfo() }
         runCatching { navi.getCurrentLocationInfo() }
+        runCatching { navi.getDestinationInfo() }
     }
 
     fun stop() {
@@ -84,9 +110,17 @@ class NaviLink(context: Context) : NaviPort {
         val list = turns.mapNotNull { t -> kindOf(t.type)?.let { Upcoming(it, t.distance) } } +
             cautions.mapNotNull { c -> kindOf(c.type)?.let { Upcoming(it, c.remainDistance.toDouble()) } }
         val ahead = list.filter { it.distanceM >= 0 }.sortedBy { it.distanceM }
+        val d = dest
+        val h = here
         _ahead.value = RoadAhead(
             next = ahead.firstOrNull { it.kind != ManeuverKind.REST_AREA },
             restAreaKm = ahead.firstOrNull { it.kind == ManeuverKind.REST_AREA }?.distanceM?.div(1000),
+            points = ahead,
+            remainM = d?.remainDistance?.toDouble()?.takeIf { it > 0 },
+            remainSec = d?.remainTime?.toDouble()?.takeIf { it > 0 },
+            routeId = (h?.routeId ?: "") + "#" + routeSerial,
+            hereLat = h?.latitude, hereLng = h?.longitude,
+            destLat = d?.latitude, destLng = d?.longitude,
         )
     }
 
@@ -108,6 +142,10 @@ class NaviLink(context: Context) : NaviPort {
 
         fun kindOf(t: CautionPointType): ManeuverKind? = when (t) {
             CautionPointType.SPEED_BUMP -> ManeuverKind.SPEED_BUMP
+            CautionPointType.DOWNHILL_CAUTION_AREA -> ManeuverKind.DOWNHILL
+            CautionPointType.NARROW_ROAD -> ManeuverKind.NARROW
+            CautionPointType.ROAD_DAMAGE_ALERT -> ManeuverKind.ROAD_DAMAGE
+            CautionPointType.FALLING_ROCK_AREA -> ManeuverKind.FALLING_ROCK
             else -> null
         }
     }
