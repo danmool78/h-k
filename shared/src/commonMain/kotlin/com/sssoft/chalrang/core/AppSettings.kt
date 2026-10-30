@@ -21,6 +21,8 @@ data class AppSettings(
     val routePreview: Boolean = true,
     /** 지형(고도)을 인터넷에서 받아 오르내림도 보기 */
     val terrain: Boolean = true,
+    /** 길 안내가 시작되면 3D 경로 브리핑 (정차 중일 때만) */
+    val briefing: Boolean = true,
     // 주행
     /** 주행이 끝나면 평가 보여 주기 */
     val tripReport: Boolean = true,
@@ -33,7 +35,7 @@ data class AppSettings(
     fun encode(): String = listOf(
         "voice" to voice, "chime" to chime, "fewerAlerts" to fewerAlerts,
         "autoVent" to autoVent, "askWindow" to askWindow, "windowPercent" to windowPercent,
-        "routePreview" to routePreview, "terrain" to terrain,
+        "routePreview" to routePreview, "terrain" to terrain, "briefing" to briefing,
         "tripReport" to tripReport, "habitFill" to habitFill, "phoneDemo" to phoneDemo,
     ).joinToString("\n") { (k, v) -> "$k=$v" }
 
@@ -48,7 +50,7 @@ data class AppSettings(
                 voice = b("voice", d.voice), chime = b("chime", d.chime), fewerAlerts = b("fewerAlerts", d.fewerAlerts),
                 autoVent = b("autoVent", d.autoVent), askWindow = b("askWindow", d.askWindow),
                 windowPercent = m["windowPercent"]?.toIntOrNull()?.coerceIn(5, 60) ?: d.windowPercent,
-                routePreview = b("routePreview", d.routePreview), terrain = b("terrain", d.terrain),
+                routePreview = b("routePreview", d.routePreview), terrain = b("terrain", d.terrain), briefing = b("briefing", d.briefing),
                 tripReport = b("tripReport", d.tripReport), habitFill = b("habitFill", d.habitFill), phoneDemo = b("phoneDemo", d.phoneDemo),
             )
         }

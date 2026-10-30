@@ -107,7 +107,7 @@ class NaviLink(context: Context) : NaviPort {
     }
 
     private fun publish() {
-        val list = turns.mapNotNull { t -> kindOf(t.type)?.let { Upcoming(it, t.distance) } } +
+        val list = turns.mapNotNull { t -> kindOf(t.type)?.let { Upcoming(it, t.distance, dirOf(t.type)) } } +
             cautions.mapNotNull { c -> kindOf(c.type)?.let { Upcoming(it, c.remainDistance.toDouble()) } }
         val ahead = list.filter { it.distanceM >= 0 }.sortedBy { it.distanceM }
         val d = dest
@@ -138,6 +138,17 @@ class NaviLink(context: Context) : NaviPort {
             TurnType.TURN_ENTER_ROUNDABOUT_10, TurnType.TURN_ENTER_ROUNDABOUT_12 -> ManeuverKind.ROUNDABOUT
             TurnType.TURN_RESTAREA, TurnType.TURN_ENTER_SERVICEAREA -> ManeuverKind.REST_AREA
             else -> null
+        }
+
+        /** 회전 방향: -1 왼쪽, +1 오른쪽 (유턴은 왼쪽) */
+        fun dirOf(t: TurnType): Int {
+            val n = t.name
+            return when {
+                n == "TURN_UTURN" -> -1
+                n.endsWith("_L") || n.endsWith("LEFT") -> -1
+                n.endsWith("_R") || n.endsWith("RIGHT") -> 1
+                else -> 0
+            }
         }
 
         fun kindOf(t: CautionPointType): ManeuverKind? = when (t) {

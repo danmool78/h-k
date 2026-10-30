@@ -120,7 +120,7 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
             val leg = legs[i]
             leg.maneuver?.let { add(RoutePoint(it, legStartM[i])) }
             if (leg.bump) add(RoutePoint(ManeuverKind.SPEED_BUMP, legStartM[i] + leg.speedKmh / 3.6 * 2.0))
-            if (leg.radiusM != null && abs(leg.radiusM) < 100) add(RoutePoint(ManeuverKind.CURVE, legStartM[i]))
+            if (leg.radiusM != null && abs(leg.radiusM) < 100) add(RoutePoint(ManeuverKind.CURVE, legStartM[i], if (leg.radiusM > 0) -1 else 1))
         }
     }
 

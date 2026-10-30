@@ -6,8 +6,8 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** 경로 위 지점 (출발점부터 거리, m) */
-data class RoutePoint(val kind: ManeuverKind, val atM: Double)
+/** 경로 위 지점 (출발점부터 거리, m). [dir] 회전 방향 -1 왼쪽, +1 오른쪽, 0 모름 */
+data class RoutePoint(val kind: ManeuverKind, val atM: Double, val dir: Int = 0)
 
 /**
  * 가는 길의 지형: 경로를 따라 같은 간격으로 잰 높이 (m).

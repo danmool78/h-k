@@ -121,6 +121,7 @@ fun SettingsScreen(vm: ChalrangEngine, onClose: () -> Unit) {
                     }
                     Section(Icons.Filled.Route, "가는 길") {
                         Toggle("멀미 위험 구간 미리보기", "길 안내가 시작되면 요약하고, 구간 1.2km 앞에서 알려요", set.routePreview) { v -> update { it.copy(routePreview = v) } }
+                        Toggle("3D 경로 브리핑", "길 안내·시연이 시작될 때(정차 중) 파란 3D 선을 따라 가는 길을 훑고, 멀미 위험 구간을 빨갛게 보여 주며 말로 설명해요", set.briefing) { v -> update { it.copy(briefing = v) } }
                         Toggle("지형도 보기 (인터넷)", "고도 정보(Open-Meteo)로 오르내림이 심한 곳도 찾아요", set.terrain) { v -> update { it.copy(terrain = v) } }
                     }
                     Section(Icons.Filled.EmojiEvents, "주행 평가") {

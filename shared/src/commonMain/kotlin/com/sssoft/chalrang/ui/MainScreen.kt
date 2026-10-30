@@ -95,7 +95,11 @@ fun MainScreen(vm: ChalrangEngine) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_MIN && maxWidth > maxHeight
         val sideWidth = minOf(380.dp, maxWidth * 0.38f)
-        if (settingsOpen) {
+        val brief = s.briefing
+        if (brief != null) {
+            // 3D 경로 브리핑 (설정에서 켜면 길 안내·시연이 시작될 때)
+            BriefingScreen(brief, speak = vm::briefSay, onClose = vm::endBriefing)
+        } else if (settingsOpen) {
             SettingsScreen(vm, onClose = { settingsOpen = false })
         } else if (tracing) {
             // 기록 화면이 덮는 동안 아래 물컵 화면은 그리지 않는다 (차량 화면 성능)
@@ -112,7 +116,7 @@ fun MainScreen(vm: ChalrangEngine) {
                 ) {
                     RidersCard(s)
                     CarCard(s)
-                    RouteCard(s)
+                    RouteCard(s, onBrief = vm::startBriefing)
                     Said(s)
                     Spacer(Modifier.weight(1f))
                     Controls(s, vm, onEdit = { settingsOpen = true })
@@ -128,13 +132,13 @@ fun MainScreen(vm: ChalrangEngine) {
                     RidersCard(s, Modifier.weight(1f).fillMaxHeight())
                     CarCard(s, Modifier.weight(1f).fillMaxHeight())
                 }
-                RouteCard(s)
+                RouteCard(s, onBrief = vm::startBriefing)
                 Said(s)
                 Controls(s, vm, onEdit = { settingsOpen = true })
             }
         }
         // 주행이 끝나면 평가를 덮어 보여 준다
-        if (!settingsOpen) s.report?.let { TripReportOverlay(it, s.previousScore, onClose = vm::dismissReport) }
+        if (!settingsOpen && brief == null) s.report?.let { TripReportOverlay(it, s.previousScore, onClose = vm::dismissReport) }
     }
     }
 }
@@ -285,7 +289,7 @@ private fun RoundButton(icon: ImageVector, enabled: Boolean, onClick: () -> Unit
 
 /** 가는 길: 멀미 위험 구간 요약과 경로 띠 (주황 = 조심, 빨강 = 위험, 흰 점 = 지금) */
 @Composable
-private fun RouteCard(s: UiState, modifier: Modifier = Modifier) {
+private fun RouteCard(s: UiState, onBrief: () -> Unit, modifier: Modifier = Modifier) {
     val r = s.route ?: return
     Card(modifier, Icons.Filled.Route, "가는 길") {
         Text(r.summary, color = Color.White, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
@@ -305,6 +309,7 @@ private fun RouteCard(s: UiState, modifier: Modifier = Modifier) {
             drawCircle(Neon.White, 5.dp.toPx(), Offset(cx, y))
         }
         r.restAdvice?.let { Text(it, color = Neon.Green, fontSize = 13.sp) }
+        NeonChip("3D 경로 브리핑", false, onClick = onBrief, icon = Icons.Filled.Route)
     }
 }
 

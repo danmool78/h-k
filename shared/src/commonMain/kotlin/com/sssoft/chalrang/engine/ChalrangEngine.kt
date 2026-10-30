@@ -11,6 +11,7 @@ import com.sssoft.chalrang.core.DriveScenario
 import com.sssoft.chalrang.core.DriveTrace
 import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TripReport
+import com.sssoft.chalrang.core.RoutePath
 import com.sssoft.chalrang.core.RoutePlanner
 import com.sssoft.chalrang.core.RoutePoint
 import com.sssoft.chalrang.core.RoutePreview
@@ -84,6 +85,8 @@ data class UiState(
     /** 가는 길 미리보기 (길 안내·시연 중일 때) 와 지금까지 온 거리 (m) */
     val route: RoutePreview? = null,
     val routeAtM: Double = 0.0,
+    /** 3D 경로 브리핑 중이면 그 경로 */
+    val briefing: RoutePath? = null,
 )
 
 /**
@@ -258,8 +261,8 @@ class ChalrangEngine(
         var assumed = false
         val input: CareInput
         if (d != null) {
-            // 시연: 시나리오 프레임을 DEMO_SPEED 배속으로
-            d.pending += DEMO_SPEED * dt
+            // 시연: 시나리오 프레임을 DEMO_SPEED 배속으로 (브리핑을 보는 동안은 멈춤)
+            if (_ui.value.briefing == null) d.pending += DEMO_SPEED * dt
             var spillStarted = false
             while (d.pending >= SCENARIO_DT && d.frames.hasNext()) {
                 d.pending -= SCENARIO_DT
@@ -467,6 +470,12 @@ class ChalrangEngine(
         // 시연 경로 미리보기: 시나리오의 안내·방지턱·굽은 길과 길 높이로 (시연 시간은 배속)
         demoRoute = RoutePlanner.plan(s.routePoints(), s.totalM, s.durationSec, s.terrain())
         demo = Demo(s, s.frames(SCENARIO_DT).iterator())
+        // 설정에서 브리핑을 켰으면 출발 전에 3D 브리핑 (보는 동안 시연은 멈춤)
+        if (settings.briefing && settings.routePreview) {
+            briefedThisRoute = true
+            routeSpoken = true
+            startBriefing()
+        }
         _ui.update { it.copy(demo = style.name, demoProgress = 0f) }
     }
 
@@ -532,7 +541,7 @@ class ChalrangEngine(
             for (u in a.points) {
                 val at = travelled + u.distanceM
                 val key = "${u.kind}@${(at / 200).roundToInt()}"
-                if (key !in known) { known[key] = RoutePoint(u.kind, at); changed = true }
+                if (key !in known) { known[key] = RoutePoint(u.kind, at, u.dir); changed = true }
             }
             if (!terrainTried && settings.terrain && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
                 terrainTried = true
@@ -547,6 +556,13 @@ class ChalrangEngine(
 
     private fun route(plan: RoutePreview, atM: Double) {
         if (_ui.value.route !== plan || _ui.value.routeAtM != atM) _ui.update { it.copy(route = plan, routeAtM = atM) }
+        if (!routeSpoken && settings.briefing && !briefedThisRoute && stoppedNow()) {
+            // 출발 전(정차 중)이면 3D 브리핑이 요약을 대신한다
+            briefedThisRoute = true
+            routeSpoken = true
+            startBriefing()
+            return
+        }
         // 아이가 탔을 때만 말한다
         if (!_ui.value.setup.active) return
         if (!routeSpoken) {
@@ -575,7 +591,31 @@ class ChalrangEngine(
         _ui.update { it.copy(lastSaid = text) }
     }
 
+    // ---- 3D 경로 브리핑 ----
+
+    private var briefedThisRoute = false
+
+    /** 시연은 시작 전, 실제 주행은 정차 중일 때만 (운전 중 화면을 덮지 않게) */
+    private fun stoppedNow(): Boolean = demo?.let { (it.frame?.t ?: 0.0) < 1.0 } ?: ((motion.speedKmh ?: 0.0) < 5)
+
+    /** 지금 경로(시연 또는 길 안내)로 3D 브리핑을 연다 */
+    fun startBriefing() {
+        val path = demo?.let { d -> demoRoute?.let { RoutePath.of(d.scenario, it) } }
+            ?: _ui.value.route?.let { RoutePath.synthesize(known.values.toList(), it.totalM, terrain, it) }
+            ?: return
+        _ui.update { it.copy(briefing = path) }
+    }
+
+    fun endBriefing() = _ui.update { it.copy(briefing = null) }
+
+    /** 브리핑 화면의 설명 (설정에서 음성을 끄면 글로만) */
+    fun briefSay(text: String) {
+        if (settings.voice) voice.say(text)
+        _ui.update { it.copy(lastSaid = text) }
+    }
+
     private fun clearRoute() {
+        briefedThisRoute = false
         routeKey = null
         known.clear()
         terrain = null
