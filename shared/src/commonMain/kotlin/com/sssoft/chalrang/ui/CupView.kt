@@ -21,6 +21,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import com.sssoft.chalrang.core.WaterCup
 import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sqrt
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -75,8 +77,13 @@ fun CupView(
     Canvas(modifier.clipToBounds()) {
         val cam = Camera(size.width, size.height)
         val c = waterColor(dose)
-        val (px, py) = slope(tiltX, tiltY)
         val h0 = shownLevel * H
+        // 넘친 뒤에는 수면이 가장자리에 닿은 채로 둔다 (그 이상은 물방울로 보여 준다)
+        val (px, py) = slope(tiltX, tiltY).let { (sx, sy) ->
+            val m = hypot(sx, sy)
+            val limit = (H - h0) / RT * 0.85
+            if (m > limit) (sx * limit / m) to (sy * limit / m) else sx to sy
+        }
         val ripple = 0.012f * sin(time * 2.4f)
 
         drawPuddle(cam, c, puddle)
@@ -100,8 +107,30 @@ fun CupView(
         }
         val hiA = cam.project(P3(-0.6 * RT, 0.4 * RT, h0.toDouble()))
         val hiB = cam.project(P3(0.6 * RT, -0.4 * RT, h0.toDouble()))
-        drawPath(top, Brush.linearGradient(listOf(lerp(c, Color.White, 0.55f), lerp(c, Color.White, 0.15f)), hiA, hiB), alpha = 0.95f)
-        drawPath(top, Color.White.copy(alpha = 0.35f), style = Stroke(width = cam.unit * 0.012f))
+        // 잔잔하면 위에서 빛을 받아 밝고, 가파르게 서면 몸통 색에 가까운 반투명 (빛나는 가장자리만)
+        val steep = (hypot(px, py) / 1.2).coerceIn(0.0, 1.0).toFloat()
+        val light = 0.5f - 0.42f * steep
+        drawPath(top, Brush.linearGradient(listOf(lerp(c, Color.White, light), lerp(c, Color.White, light * 0.3f)), hiA, hiB), alpha = 0.92f - 0.35f * steep)
+        drawPath(top, Color.White.copy(alpha = 0.6f * (1 - 0.7f * steep)), style = Stroke(width = cam.unit * 0.012f))
+        // 같은 높이를 잇는 물결선: 수면이 어느 쪽으로 얼마나 기울었는지 보인다
+        val m = hypot(px, py)
+        if (m > 0.05) {
+            val dx = px / m
+            val dy = py / m
+            val zs = surf.map { it.z }
+            val zMin = zs.min()
+            val zMax = zs.max()
+            for (k in 1..5) {
+                val zk = zMin + (zMax - zMin) * k / 6
+                val d = (zk - h0) / m
+                val r = radiusAt(zk) * 0.98
+                if (r <= abs(d)) continue
+                val half = sqrt(r * r - d * d)
+                val a = cam.project(P3(dx * d - dy * half, dy * d + dx * half, zk))
+                val b = cam.project(P3(dx * d + dy * half, dy * d - dx * half, zk))
+                drawLine(Color.White.copy(alpha = 0.10f + 0.12f * steep), a, b, strokeWidth = cam.unit * 0.008f)
+            }
+        }
         // 앞쪽 물 (유리 너머로 보이는 몸통)
         drawWaterSide(cam, surf, back = false, color = c)
 

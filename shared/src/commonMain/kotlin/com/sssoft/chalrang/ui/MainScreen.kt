@@ -1,6 +1,28 @@
 package com.sssoft.chalrang.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Air
+import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.EventSeat
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material3.Icon
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -62,7 +84,8 @@ fun MainScreen(vm: ChalrangEngine) {
     var editing by remember { mutableStateOf(false) }
     var tracing by remember { mutableStateOf(false) }
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(Bg)) {
+    NeonBackground {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_MIN && maxWidth > maxHeight
         val sideWidth = minOf(380.dp, maxWidth * 0.38f)
         if (tracing) {
@@ -100,6 +123,7 @@ fun MainScreen(vm: ChalrangEngine) {
             }
         }
     }
+    }
     if (editing) ChildrenDialog(s.children, vm, onDismiss = { editing = false })
 }
 
@@ -107,16 +131,35 @@ fun MainScreen(vm: ChalrangEngine) {
 private val WIDE_MIN = 900.dp
 
 @Composable
-private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit) = Box(modifier) {
-    CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize())
-    Text("찰랑", color = Dim, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart))
-    TextButton(onClick = onTrace, modifier = Modifier.align(Alignment.TopEnd)) { Text("흔들림 기록", fontSize = 16.sp) }
+private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit) = Box(modifier.neonCard().clip(Neon.CardShape)) {
+    // 받침 고리와 은은한 빛
+    Canvas(Modifier.fillMaxSize()) {
+        drawRect(Brush.radialGradient(listOf(Color(0x3329C4F6), Color.Transparent), center = Offset(size.width * 0.5f, size.height * 0.62f), radius = size.minDimension * 0.7f))
+        val c = Offset(size.width * 0.5f, size.height * 0.86f)
+        for ((k, a) in listOf(1.0f to 0.5f, 1.4f to 0.28f, 1.8f to 0.14f)) {
+            val rw = size.minDimension * 0.26f * k
+            val rh = rw * 0.2f
+            drawOval(Neon.Cyan.copy(alpha = a * 0.25f), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(10f))
+            drawOval(Neon.Cyan.copy(alpha = a), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(1.8f))
+        }
+    }
+    CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 12.dp))
+    Row(Modifier.align(Alignment.TopStart).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.WaterDrop, null, tint = Neon.Cyan, modifier = Modifier.size(26.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("찰랑", color = Neon.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    }
+    NeonChip("흔들림 분석", false, onClick = onTrace, icon = Icons.Filled.ShowChart, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
 }
 
 @Composable
 private fun Said(s: UiState) {
     s.lastSaid?.let {
-        Text("“$it”", color = Dim, fontSize = 17.sp, lineHeight = 24.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(Icons.Filled.Campaign, null, tint = Neon.Cyan, modifier = Modifier.padding(top = 2.dp).size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(it, color = Neon.Text, fontSize = 17.sp, lineHeight = 24.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -124,29 +167,50 @@ private fun Said(s: UiState) {
 @Composable
 private fun Controls(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
     s.askWindows?.let { AskWindowCard(it, vm) }
-    Button(
-        onClick = vm::sickNow,
-        enabled = s.setup.active,
-        colors = ButtonDefaults.buttonColors(containerColor = Sick, contentColor = Color.White),
-        shape = RoundedCornerShape(20.dp),
-        modifier = Modifier.fillMaxWidth().height(88.dp),
+    // "지금 멀미": 빛나는 빨간 버튼 (혼자 주행이면 꺼짐)
+    val on = s.setup.active
+    val shape = RoundedCornerShape(20.dp)
+    Box(
+        Modifier.fillMaxWidth().height(88.dp)
+            .drawBehind {
+                if (on) {
+                    for ((w, a) in listOf(16f to 0.08f, 8f to 0.16f)) {
+                        drawRoundRect(Neon.Red.copy(alpha = a), Offset(-w / 2, -w / 2), Size(size.width + w, size.height + w), CornerRadius(20.dp.toPx() + w / 2), style = Stroke(w))
+                    }
+                }
+            }
+            .clip(shape)
+            .background(if (on) Brush.verticalGradient(listOf(Color(0xFFFF6A5A), Color(0xFFD9283C))) else Brush.verticalGradient(listOf(Color(0xFF243246), Color(0xFF1A2536))), shape)
+            .border(1.5.dp, if (on) Color(0xFFFFA19A) else Neon.Edge.copy(alpha = 0.3f), shape)
+            .clickable(enabled = on, onClick = vm::sickNow),
+        contentAlignment = Alignment.Center,
     ) {
-        Text("지금 멀미", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Text("지금 멀미", color = if (on) Color.White else Neon.Faint, fontSize = 30.sp, fontWeight = FontWeight.Bold)
     }
     DemoRow(s, vm, onEdit)
 }
 
 @Composable
-private fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun Card(modifier: Modifier = Modifier, icon: ImageVector? = null, title: String? = null, content: @Composable () -> Unit) {
     Column(
-        modifier.fillMaxWidth().background(Panel, RoundedCornerShape(16.dp)).padding(16.dp),
+        modifier.fillMaxWidth().neonCard().padding(horizontal = 16.dp, vertical = 13.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) { content() }
+    ) {
+        if (title != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (icon != null) {
+                    Icon(icon, null, tint = Neon.Cyan, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(title, color = Neon.Dim, fontSize = 15.sp)
+            }
+        }
+        content()
+    }
 }
 
 @Composable
-private fun RidersCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier) {
-    Text("탄 사람", color = Dim, fontSize = 15.sp)
+private fun RidersCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier, Icons.Filled.EventSeat, "탄 사람") {
     val setup = s.setup
     when {
         !setup.active -> Text("혼자 주행 · 물컵은 쉬는 중", color = Color.White, fontSize = 20.sp)
@@ -161,12 +225,11 @@ private fun RidersCard(s: UiState, modifier: Modifier = Modifier) = Card(modifie
 }
 
 @Composable
-private fun CarCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier) {
-    Text("차량", color = Dim, fontSize = 15.sp)
+private fun CarCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier, Icons.Filled.DirectionsCar, "차량") {
     val car = s.car
     when {
-        car.dustGuard -> Text("먼지 차단 중", color = Color(0xFFFFCC80), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-        car.freshAir -> Text("환기 중", color = Color(0xFF81D4FA), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        car.dustGuard -> Text("먼지 차단 중", color = Neon.Amber, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        car.freshAir -> Text("환기 중", color = Neon.Cyan, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         else -> Text(if (car.connected) "평소대로" else "차량 연결 안 됨", color = Color.White, fontSize = 20.sp)
     }
     if (car.openWindows.isNotEmpty()) {
@@ -178,35 +241,43 @@ private fun CarCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier) 
 
 /** 창문을 열지 묻기. 운전 중에도 누르기 쉽게 크게, 동승자가 눌러도 된다 */
 @Composable
-private fun AskWindowCard(windows: List<Window>, vm: ChalrangEngine) = Card {
+private fun AskWindowCard(windows: List<Window>, vm: ChalrangEngine) = Card(icon = Icons.Filled.Air, title = "창문") {
     Text(windows.joinToString { it.label } + " 창문을 조금 열까요?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(onClick = { vm.answerWindow(true) }, modifier = Modifier.weight(1f).height(64.dp)) {
-            Text("열기", fontSize = 22.sp)
-        }
-        OutlinedButton(onClick = { vm.answerWindow(false) }, modifier = Modifier.weight(1f).height(64.dp)) {
-            Text("먼지 · 닫기", fontSize = 20.sp, maxLines = 1)
-        }
+        BigChoice("열기", primary = true, modifier = Modifier.weight(1f)) { vm.answerWindow(true) }
+        BigChoice("먼지 · 닫기", primary = false, modifier = Modifier.weight(1f)) { vm.answerWindow(false) }
+    }
+}
+
+@Composable
+private fun BigChoice(label: String, primary: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier.height(60.dp).clip(shape)
+            .background(if (primary) Brush.verticalGradient(listOf(Color(0xFF2A86F0), Color(0xFF1250B0))) else Brush.verticalGradient(listOf(Color(0xCC0B1D36), Color(0xCC06111F))), shape)
+            .border(1.5.dp, if (primary) Neon.Cyan else Neon.Edge.copy(alpha = 0.5f), shape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = Neon.White, fontSize = 21.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }
 }
 
 @Composable
 private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
     if (s.demo != null) {
-        Text("시연 · ${s.demo}", color = Dim, fontSize = 14.sp)
-        LinearProgressIndicator(progress = { s.demoProgress }, modifier = Modifier.fillMaxWidth())
+        Text("시연 · ${s.demo}", color = Neon.Dim, fontSize = 14.sp)
+        Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(Color(0x332A8BE0))) {
+            Box(Modifier.fillMaxWidth(s.demoProgress.coerceIn(0f, 1f)).height(6.dp).background(Brush.horizontalGradient(listOf(Neon.Blue, Neon.Cyan))))
+        }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(onClick = onEdit, modifier = Modifier.weight(1f)) { Text("아이 설정") }
+        NeonChip("아이 설정", false, onClick = onEdit, icon = Icons.Filled.Face, modifier = Modifier.weight(1f))
         if (s.demo == null) {
-            OutlinedButton(onClick = { vm.startDemo(DriverStyle.ROUGH) }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text("시연 거칠게", maxLines = 1)
-            }
-            OutlinedButton(onClick = { vm.startDemo(DriverStyle.SMOOTH) }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text("시연 부드럽게", maxLines = 1)
-            }
+            NeonChip("시연 거칠게", false, onClick = { vm.startDemo(DriverStyle.ROUGH) }, modifier = Modifier.weight(1f))
+            NeonChip("시연 부드럽게", false, onClick = { vm.startDemo(DriverStyle.SMOOTH) }, modifier = Modifier.weight(1f))
         } else {
-            OutlinedButton(onClick = vm::stopDemo, modifier = Modifier.weight(2f)) { Text("시연 끝") }
+            NeonChip("시연 끝", true, onClick = vm::stopDemo, icon = Icons.Filled.Stop, modifier = Modifier.weight(2f))
         }
     }
 }

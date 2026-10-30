@@ -2,6 +2,7 @@ package com.sssoft.chalrang.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -9,72 +10,95 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.filled.Waves
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.State
-import kotlinx.coroutines.delay
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sssoft.chalrang.core.DriveTrace
+import com.sssoft.chalrang.core.Lag
 import com.sssoft.chalrang.core.ShakeAnalysis
 import com.sssoft.chalrang.core.ShakeReport
 import com.sssoft.chalrang.core.TraceEvent
 import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TraceSample
-import com.sssoft.chalrang.core.WaterCup
 import com.sssoft.chalrang.engine.ChalrangEngine
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
-private val Bg = Color(0xFF0E1621)
-private val Panel = Color(0xFF17222F)
-private val Dim = Color(0xFF9FB0C3)
-private val Grid = Color(0x33FFFFFF)
-private val LongColor = Color(0xFFFFB74D)   // 앞뒤
-private val LatColor = Color(0xFF4DD0E1)    // 좌우
-private val SpillColor = Color(0xFFFF7043)
-private val DoseColor = Color(0xFFE1BEE7)
-private val BandColor = Color(0x33B39DDB)
+/** 이 구간의 통계 (0.1초마다) */
+private class WindowStats(val accMax: Double, val accMin: Double, val tiltMax: Double, val spills: Int)
 
 /**
- * 흔들림 기록: 차 흔들림(원인)과 물 출렁임(결과)을 같은 시간축에 겹쳐 지연을 보고,
- * 그래프를 누르거나 끌면 그 순간의 물컵을 다시 그린다. 주행 중에는 열지 않는다(시연은 가능).
+ * 흔들림 분석: 차 흔들림(원인)과 물 출렁임(결과)을 같은 시간축에 실시간으로 흘려 보고,
+ * 멀미 누적량과 흔들림 주기를 함께 본다. 그래프를 누르거나 끌면 그 순간에서 멈추고 물컵을 다시 그린다.
+ * 주행 중에는 열지 않는다(시연은 가능).
  */
 @Composable
 fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
@@ -85,7 +109,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
     LaunchedEffect(Unit) {
         while (true) withFrameNanos { frame.longValue = it }
     }
-    // 수치·물컵·사건 목록: 0.1초마다
+    // 수치·물컵·안내 목록: 0.1초마다
     var version by remember { mutableLongStateOf(trace.version) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -98,326 +122,615 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
     /** 순간을 고르면 그때 화면을 멈춘다 (null = 지금을 따라 흐름) */
     var frozenEnd by remember { mutableStateOf<Double?>(null) }
     val pick: (Double) -> Unit = { t -> if (frozenEnd == null) frozenEnd = trace.endTime; cursor = t }
-    // 그래프가 그릴 때마다 부르는 지금 구간과 고른 시각
     val range: () -> Pair<Double, Double> = {
         val end = frozenEnd ?: trace.endTime
         (windowSec?.let { max(trace.startTime, end - it) } ?: trace.startTime) to end
     }
     val cursorAt: () -> Double = { val (a, b) = range(); cursor?.coerceIn(a, b) ?: b }
+    val following = frozenEnd == null
 
-    // 아래 물컵 화면으로 누름이 새지 않게 막는다
-    Box(Modifier.fillMaxSize().background(Bg).pointerInput(Unit) { detectTapGestures { } }.padding(20.dp)) {
+    NeonBackground(Modifier.pointerInput(Unit) { detectTapGestures { } }) {
         val last = if (trace.size > 0) trace[trace.size - 1] else null
-        val driving = ui.demo == null && (last?.speedKmh ?: 0.0) > 5
-        if (driving) {
+        if (ui.demo == null && (last?.speedKmh ?: 0.0) > 5) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("주행 중에는 기록을 볼 수 없어요", color = Color.White, fontSize = 24.sp)
-                Text("차를 세운 뒤 다시 열어 주세요", color = Dim, fontSize = 17.sp)
-                OutlinedButton(onClick = onClose, modifier = Modifier.padding(top = 16.dp)) { Text("닫기") }
+                Text("주행 중에는 분석을 볼 수 없어요", color = Neon.Text, fontSize = 24.sp)
+                Text("차를 세운 뒤 다시 열어 주세요", color = Neon.Dim, fontSize = 17.sp)
+                Spacer(Modifier.height(16.dp))
+                CloseButton(onClose)
             }
-            return@Box
+            return@NeonBackground
         }
 
-        // version(0.1초) 이 바뀔 때마다 다시 계산
         val (t0, t1) = remember(version, windowSec, frozenEnd) { range() }
-        // 무거운 계산은 기록이 1초 쌓일 때마다
         val lag = remember(trace.size / 10, trace.startTime, windowSec, frozenEnd) { trace.lag(t0, t1) }
-        // 주기 분석은 무거우니 기록이 2초 쌓일 때마다
         val shake = remember(trace.size / 20, trace.startTime, windowSec, frozenEnd) { ShakeAnalysis.analyze(trace, t0, t1) }
         val events = remember(trace.events.size, trace.startTime, t0.toLong(), t1.toLong()) { trace.events.filter { it.t in t0..t1 } }
+        val stats = remember(version, windowSec, frozenEnd) { windowStats(trace, t0, t1, events) }
         val at = cursor?.coerceIn(t0, t1) ?: t1
         val sample = remember(version, at) { trace.indexAt(at).takeIf { it >= 0 }?.let { trace[it] } }
 
-        BoxWithConstraints(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp)) {
             val wide = maxWidth >= 900.dp
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Header(
-                    windowSec, onWindow = { windowSec = it; cursor = null; frozenEnd = null }, following = frozenEnd == null,
+                    wide, windowSec, following,
+                    onWindow = { windowSec = it; cursor = null; frozenEnd = null },
                     onLive = { cursor = null; frozenEnd = null }, onClose = onClose,
                 )
                 if (trace.size < 2) {
-                    Text("아직 기록이 없어요. 주행하거나 시연을 돌려 보세요.", color = Dim, fontSize = 18.sp)
+                    Text("아직 기록이 없어요. 주행하거나 시연을 돌려 보세요.", color = Neon.Dim, fontSize = 18.sp)
                     return@Column
                 }
-                val charts: @Composable (Modifier) -> Unit = { m ->
-                    Charts(trace, frame, range, cursorAt, events, shake, onCursor = pick, modifier = m)
-                }
                 if (wide) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Column(Modifier.width(300.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Replay(sample, Modifier.fillMaxWidth().height(230.dp))
-                            Values(sample, trace.startTime)
-                            LagText(lag)
-                            EventList(events, trace.startTime, onPick = pick, modifier = Modifier.weight(1f))
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Column(Modifier.width(340.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            CupCard(sample, Modifier.fillMaxWidth().height(232.dp))
+                            SummaryCard(sample, trace.startTime, lag, stats, shake)
+                            MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier.weight(1f))
                         }
-                        charts(Modifier.weight(1f))
+                        Charts(trace, frame, range, cursorAt, following, events, shake, sample, stats, pick, Modifier.weight(1f).fillMaxHeight(), null)
                     }
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Replay(sample, Modifier.width(150.dp).height(150.dp))
-                        Column(Modifier.weight(1f)) {
-                            Values(sample, trace.startTime)
-                            LagText(lag)
-                        }
+                    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        CupCard(sample, Modifier.fillMaxWidth().height(220.dp))
+                        SummaryCard(sample, trace.startTime, lag, stats, shake)
+                        Charts(trace, frame, range, cursorAt, following, events, shake, sample, stats, pick, Modifier.fillMaxWidth(), 200.dp)
+                        MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier.height(220.dp))
                     }
-                    charts(Modifier.weight(1f))
                 }
             }
         }
     }
 }
 
+private fun windowStats(trace: DriveTrace, t0: Double, t1: Double, events: List<TraceEvent>): WindowStats {
+    val i0 = trace.indexAt(t0).coerceAtLeast(0)
+    val i1 = trace.indexAt(t1)
+    var aMax = 0.0
+    var aMin = 0.0
+    var tMax = 0.0
+    for (i in i0..i1) {
+        aMax = max(aMax, max(trace.axAt(i), trace.ayAt(i)))
+        aMin = min(aMin, min(trace.axAt(i), trace.ayAt(i)))
+        tMax = max(tMax, hypot(trace.tiltXAt(i), trace.tiltYAt(i)))
+    }
+    return WindowStats(aMax, aMin, tMax, events.count { it.kind == TraceKind.SPILL })
+}
+
+// ---- 머리 ----
+
 @Composable
-private fun Header(windowSec: Double?, onWindow: (Double?) -> Unit, following: Boolean, onLive: () -> Unit, onClose: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("흔들림 기록", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end = 8.dp))
-        listOf(60.0 to "1분", 120.0 to "2분", 300.0 to "5분", null to "전체").forEach { (sec, label) ->
-            FilterChip(selected = windowSec == sec, onClick = { onWindow(sec) }, label = { Text(label) })
+private fun Header(
+    wide: Boolean, windowSec: Double?, following: Boolean,
+    onWindow: (Double?) -> Unit, onLive: () -> Unit, onClose: () -> Unit,
+) {
+    Row(Modifier.fillMaxWidth().height(if (wide) 58.dp else 52.dp), verticalAlignment = Alignment.CenterVertically) {
+        GlowIcon(Icons.Filled.ShowChart, Neon.Cyan, 32.dp)
+        Spacer(Modifier.width(10.dp))
+        Text("흔들림 분석", color = Neon.White, fontSize = if (wide) 30.sp else 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        if (wide) {
+            Box(Modifier.padding(horizontal = 16.dp).width(1.dp).height(34.dp).background(Neon.Faint))
+            Text("차의 움직임이 물의 출렁임과\n멀미에 미치는 영향을 분석합니다", color = Neon.Dim, fontSize = 13.sp, lineHeight = 18.sp)
         }
-        FilterChip(selected = following, onClick = onLive, label = { Text("지금") })
-        Box(Modifier.weight(1f))
-        OutlinedButton(onClick = onClose) { Text("닫기") }
-    }
-}
-
-/** 고른 순간의 물컵 (3D) */
-@Composable
-private fun Replay(s: TraceSample?, modifier: Modifier) {
-    Box(modifier.background(Panel, RoundedCornerShape(14.dp))) {
-        if (s != null) CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(8.dp))
-    }
-}
-
-@Composable
-private fun Values(s: TraceSample?, start: Double) {
-    if (s == null) return
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text("${clock(s.t - start)} · ${s.speedKmh.roundToInt()}km/h", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-        Text("차 흔들림  앞뒤 ${signed(s.ax)} · 좌우 ${signed(s.ay)} m/s²", color = Dim, fontSize = 14.sp)
-        val tilt = hypot(s.tiltX, s.tiltY)
-        Text(
-            "물 기울기 ${fmt(tilt, 2)}g / 넘침 ${fmt(s.freeboard, 2)}g" + if (s.spilling) "  넘침!" else "",
-            color = if (s.spilling) SpillColor else Dim, fontSize = 14.sp,
+        Spacer(Modifier.weight(1f))
+        Segmented(
+            listOf(60.0 to "1분", 120.0 to "2분", 300.0 to "5분", null to "전체"),
+            selected = windowSec, following = following, compact = !wide, onPick = onWindow, onLive = onLive,
         )
-        Text("멀미 누적 ${fmt(s.dose, 2)}  (주의 0.6 · 위험 1.0)", color = Dim, fontSize = 14.sp)
+        if (wide) {
+            Canvas(Modifier.padding(horizontal = 14.dp).width(180.dp).height(54.dp)) { carSilhouette(Neon.Cyan) }
+        } else {
+            Spacer(Modifier.width(8.dp))
+        }
+        CloseButton(onClose, compact = !wide)
     }
 }
 
 @Composable
-private fun LagText(lag: com.sssoft.chalrang.core.Lag?) {
-    val text = if (lag == null) {
-        "기록이 더 쌓이면 지연을 계산해요"
+private fun Segmented(
+    items: List<Pair<Double?, String>>, selected: Double?, following: Boolean, compact: Boolean,
+    onPick: (Double?) -> Unit, onLive: () -> Unit,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        Modifier.height(44.dp).background(Color(0x99091A30), shape).border(1.dp, Neon.Edge.copy(alpha = 0.45f), shape).padding(3.dp),
+    ) {
+        val w = if (compact) 44.dp else 64.dp
+        items.forEach { (sec, label) -> SegmentItem(label, sec == selected, w) { onPick(sec) } }
+        SegmentItem("지금", following, w, onLive)
+    }
+}
+
+@Composable
+private fun SegmentItem(label: String, on: Boolean, width: Dp, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(9.dp)
+    val look = if (on) {
+        Modifier.background(Brush.verticalGradient(listOf(Color(0xFF1C64C8), Color(0xFF0E3A80))), shape).border(1.5.dp, Neon.Cyan, shape)
     } else {
-        "물은 차 흔들림보다 약 ${fmt(lag.lagSec, 1)}초 늦게 따라와요 (상관 ${fmt(lag.correlation, 2)})"
+        Modifier
     }
-    Text(text, color = Color.White, fontSize = 15.sp, lineHeight = 21.sp)
-    Text(
-        "물컵은 2~10초 주기 흔들림에 가장 크게 출렁여요. 멀미를 가장 잘 일으키는 흔들림이에요 (ISO 2631-1).",
-        color = Dim, fontSize = 12.sp, lineHeight = 17.sp,
-    )
+    Box(
+        Modifier.fillMaxHeight().width(width).clip(shape).then(look).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (on) Neon.White else Neon.Dim, fontSize = 16.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+    }
 }
 
 @Composable
-private fun EventList(events: List<TraceEvent>, start: Double, onPick: (Double) -> Unit, modifier: Modifier) {
-    val shown = events.filter { it.kind != TraceKind.SPILL }.asReversed()
-    LazyColumn(modifier.fillMaxWidth().background(Panel, RoundedCornerShape(14.dp)).padding(8.dp)) {
-        items(shown) { e ->
-            Row(Modifier.fillMaxWidth().clickable { onPick(e.t) }.padding(vertical = 4.dp)) {
-                Text(clock(e.t - start), color = Dim, fontSize = 13.sp, modifier = Modifier.width(48.dp))
-                Text("${e.kind.label} · ${e.text}", color = kindColor(e.kind), fontSize = 13.sp, lineHeight = 17.sp)
+private fun CloseButton(onClose: () -> Unit, compact: Boolean = false) {
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        Modifier.height(44.dp).clip(shape).background(Color(0x99091A30), shape).border(1.dp, Neon.Edge.copy(alpha = 0.55f), shape)
+            .clickable(onClick = onClose).padding(horizontal = if (compact) 10.dp else 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Close, "닫기", tint = Neon.Text, modifier = Modifier.size(22.dp))
+        if (!compact) {
+            Spacer(Modifier.width(8.dp))
+            Text("닫기", color = Neon.Text, fontSize = 17.sp)
+        }
+    }
+}
+
+@Composable
+private fun GlowIcon(icon: ImageVector, color: Color, size: Dp) {
+    Box(contentAlignment = Alignment.Center) {
+        Box(Modifier.size(size * 1.5f).background(Brush.radialGradient(listOf(color.copy(alpha = 0.35f), Color.Transparent)), CircleShape))
+        Icon(icon, null, tint = color, modifier = Modifier.size(size))
+    }
+}
+
+// ---- 왼쪽: 물컵·요약·안내 ----
+
+/** 고른 순간(또는 지금)의 3D 물컵, 앞뒤·좌우 물 기울기 */
+@Composable
+private fun CupCard(s: TraceSample?, modifier: Modifier) {
+    Box(modifier.neonCard().clip(Neon.CardShape)) {
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(Brush.radialGradient(listOf(Color(0x3329C4F6), Color.Transparent), center = Offset(size.width * 0.58f, size.height * 0.6f), radius = size.width * 0.6f))
+            // 옅은 격자
+            val step = 26.dp.toPx()
+            var gx = 0f
+            while (gx < size.width) { drawLine(Color(0x0F4FA3E0), Offset(gx, 0f), Offset(gx, size.height)); gx += step }
+            var gy = 0f
+            while (gy < size.height) { drawLine(Color(0x0F4FA3E0), Offset(0f, gy), Offset(size.width, gy)); gy += step }
+            // 받침 고리
+            val c = Offset(size.width * 0.6f, size.height * 0.88f)
+            for ((k, a) in listOf(1.0f to 0.55f, 1.35f to 0.3f, 1.7f to 0.15f)) {
+                val rw = size.width * 0.24f * k
+                val rh = rw * 0.2f
+                drawOval(Neon.Cyan.copy(alpha = a * 0.25f), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(9f))
+                drawOval(Neon.Cyan.copy(alpha = a), Offset(c.x - rw, c.y - rh), Size(rw * 2, rh * 2), style = Stroke(1.6f))
+            }
+        }
+        if (s != null) {
+            CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(start = 92.dp, end = 24.dp, top = 22.dp, bottom = 10.dp))
+        }
+        Column(Modifier.align(Alignment.CenterStart).padding(start = 14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Gauge("앞뒤", s?.let { -it.tiltX })
+            Gauge("좌우", s?.let { -it.tiltY })
+        }
+        Text("LIQUID\nDYNAMICS", color = Neon.Faint, fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
+    }
+}
+
+@Composable
+private fun Gauge(label: String, g: Double?) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Canvas(Modifier.size(32.dp)) {
+            val c = center
+            val r = size.minDimension * 0.28f
+            drawCircle(Neon.Cyan.copy(alpha = 0.25f), r * 1.6f, c, style = Stroke(4f))
+            drawCircle(Neon.Cyan, r, c, style = Stroke(1.6f))
+            drawCircle(Neon.Cyan, r * 0.3f, c)
+            drawLine(Neon.Cyan, Offset(0f, c.y), Offset(c.x - r, c.y), 1.3f)
+            drawLine(Neon.Cyan, Offset(c.x + r, c.y), Offset(size.width, c.y), 1.3f)
+            drawLine(Neon.Cyan, Offset(c.x, 0f), Offset(c.x, c.y - r), 1.3f)
+            drawLine(Neon.Cyan, Offset(c.x, c.y + r), Offset(c.x, size.height), 1.3f)
+        }
+        Text(label, color = Neon.Dim, fontSize = 12.sp)
+        Text(g?.let { "${signed(it, 2)} g" } ?: "-", color = Neon.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: WindowStats, shake: ShakeReport?, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().neonCard().padding(horizontal = 16.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Speed, null, tint = Neon.Cyan, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("실시간 요약", color = Neon.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            if (s != null) Text("${clock(s.t - start)}  |  ${s.speedKmh.roundToInt()} km/h", color = Neon.Text, fontSize = 14.sp)
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Brush.horizontalGradient(listOf(Neon.Edge.copy(alpha = 0.6f), Color.Transparent))))
+        if (s == null) return@Column
+        val tilt = hypot(s.tiltX, s.tiltY)
+        SummaryRow(Icons.Filled.DirectionsCar, "차 흔들림", "${signed(s.ax, 1)} | ${signed(s.ay, 1)}", "m/s² 앞뒤|좌우")
+        SummaryRow(Icons.Filled.WaterDrop, "물 출렁임", "${fmt(tilt, 2)} g", "넘침 ${fmt(s.freeboard, 2)} g", if (s.spilling) Neon.Red else Neon.White)
+        SummaryRow(
+            Icons.Filled.Warning, "멀미 누적", fmt(s.dose, 2), "주의 0.6 · 위험 1.0",
+            when { s.dose >= 1.0 -> Neon.Red; s.dose >= 0.6 -> Neon.Amber; else -> Neon.White },
+        )
+        SummaryRow(Icons.Filled.Waves, "넘침 횟수", "${stats.spills}회", if (s.spilling) "지금 넘침" else "여유 ${fmt(max(0.0, s.freeboard - tilt), 2)} g")
+        SummaryRow(Icons.Filled.Timer, "반응 지연", lag?.let { "약 ${fmt(it.lagSec, 1)}초" } ?: "-", "물이 늦게 따라옴")
+        SummaryRow(
+            Icons.Filled.Hub, "차량-물 상관", lag?.let { fmt(it.correlation, 2) } ?: "-",
+            lag?.let { when { it.correlation >= 0.6 -> "높음"; it.correlation >= 0.3 -> "보통"; else -> "낮음" } } ?: "",
+        )
+        if (shake != null) SummaryRow(Icons.Filled.GraphicEq, "멀미 주기", "${fmt(shake.sicknessPeriod, 1)}초", "MSDV ${fmt(shake.msdv, 1)}")
+    }
+}
+
+@Composable
+private fun SummaryRow(icon: ImageVector, label: String, value: String, sub: String, valueColor: Color = Neon.White) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = Neon.Cyan, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(label, color = Neon.Text, fontSize = 14.sp, modifier = Modifier.width(92.dp), maxLines = 1)
+        Text(value, color = valueColor, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Spacer(Modifier.width(8.dp))
+        Text(sub, color = Neon.Dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun MessagesCard(events: List<TraceEvent>, start: Double, onPick: (Double) -> Unit, modifier: Modifier) {
+    var all by remember { mutableStateOf(false) }
+    val shown = events.filter { it.kind != TraceKind.SPILL }.asReversed().let { if (all) it else it.take(5) }
+    Column(modifier.fillMaxWidth().neonCard().padding(horizontal = 16.dp, vertical = 11.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Campaign, null, tint = Neon.Cyan, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("안내 · 조치", color = Neon.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            Text(if (all) "접기 ‹" else "더보기 ›", color = Neon.Dim, fontSize = 13.sp, modifier = Modifier.clickable { all = !all }.padding(4.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        if (shown.isEmpty()) Text("이 구간에는 안내가 없어요", color = Neon.Faint, fontSize = 13.sp)
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            shown.forEachIndexed { k, e ->
+                val c = if (k == 0) Neon.Amber else kindColor(e.kind)
+                Row(Modifier.fillMaxWidth().clickable { onPick(e.t) }, verticalAlignment = Alignment.Top) {
+                    Box(Modifier.padding(top = 5.dp).size(9.dp).border(1.6.dp, c, CircleShape))
+                    Spacer(Modifier.width(8.dp))
+                    Text(clock(e.t - start), color = Neon.Dim, fontSize = 13.sp, modifier = Modifier.width(40.dp))
+                    Text(
+                        e.text.ifEmpty { e.kind.label }, color = if (k == 0) Neon.Amber else Neon.Text, fontSize = 13.sp, lineHeight = 18.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
 }
 
-/** 세 그래프: 차 흔들림(원인), 물 출렁임(결과), 멀미 누적량 */
+// ---- 오른쪽: 그래프 ----
+
 @Composable
 private fun Charts(
-    trace: DriveTrace, frame: State<Long>, range: () -> Pair<Double, Double>, cursorAt: () -> Double,
-    events: List<TraceEvent>, shake: ShakeReport?, onCursor: (Double) -> Unit, modifier: Modifier,
+    trace: DriveTrace, frame: State<Long>, range: () -> Pair<Double, Double>, cursorAt: () -> Double, following: Boolean,
+    events: List<TraceEvent>, shake: ShakeReport?, s: TraceSample?, stats: WindowStats,
+    onCursor: (Double) -> Unit, modifier: Modifier, fixedHeight: Dp?,
 ) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Legend("차 흔들림 (원인) m/s²", listOf("앞뒤" to LongColor, "좌우" to LatColor))
-        Chart(
-            trace, frame, range, cursorAt, events, onCursor, Modifier.weight(1f),
-            series = listOf(Series(LongColor) { t, i -> t.axAt(i) }, Series(LatColor) { t, i -> t.ayAt(i) }),
-            range = 5.0, guides = listOf(0.0),
-        )
-        Legend("물 출렁임 (결과) g · 차 흔들림과 같은 방향 · 빨간 띠 = 넘침", listOf("앞뒤" to LongColor, "좌우" to LatColor, "크기" to Color.White))
-        Chart(
-            trace, frame, range, cursorAt, events, onCursor, Modifier.weight(1f),
-            series = listOf(
-                Series(LongColor) { t, i -> -t.tiltXAt(i) },
-                Series(LatColor) { t, i -> -t.tiltYAt(i) },
-                Series(Color.White, width = 1.2f) { t, i -> hypot(t.tiltXAt(i), t.tiltYAt(i)) },
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        @Composable
+        fun ColumnScope.slot(weight: Float): Modifier = if (fixedHeight != null) Modifier.height(fixedHeight) else Modifier.weight(weight)
+
+        ChartCard(
+            Icons.Filled.DirectionsCar, "차 흔들림", "(가속도) m/s²",
+            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan),
+            stat(
+                "최대" to signed(stats.accMax, 1), "최소" to signed(stats.accMin, 1),
+                "현재" to (s?.let { signed(if (abs(it.ax) > abs(it.ay)) it.ax else it.ay, 1) + " m/s²" } ?: "-"),
             ),
-            range = WaterCup.MAX_FREEBOARD * 0.9, guides = listOf(0.0), threshold = { t, i -> t.freeboardAt(i) }, shadeSpill = true,
-        )
-        Legend("멀미 누적량", listOf("누적" to DoseColor))
-        Chart(
-            trace, frame, range, cursorAt, events, onCursor, Modifier.weight(0.55f),
-            series = listOf(Series(DoseColor, width = 2.5f) { t, i -> t.doseAt(i) }),
-            range = null, guides = listOf(0.6, 1.0),
-        )
-        if (shake != null) {
-            Text(
-                "흔들림 주기 · 가장 센 흔들림 ${fmt(shake.peakPeriod, 1)}초 · 멀미에 가장 영향 ${fmt(shake.sicknessPeriod, 1)}초 · " +
-                    "멀미 주기(2~10초) ${(shake.bandShare * 100).roundToInt()}% · MSDV ${fmt(shake.msdv, 1)} m/s^1.5",
-                color = Dim, fontSize = 13.sp,
+            slot(1f),
+        ) {
+            TimeChart(
+                trace, frame, range, cursorAt, following, events, onCursor,
+                series = listOf(Series(Neon.Amber, fill = true) { t, i -> t.axAt(i) }, Series(Neon.Cyan, fill = true) { t, i -> t.ayAt(i) }),
+                yRange = -4.0 to 4.0, yTicks = listOf(3.0, 0.0, -3.0),
             )
-            SpectrumChart(shake, Modifier.weight(0.9f))
-        } else {
-            Text("흔들림 주기 · 30초 넘게 기록되면 분석해요", color = Dim, fontSize = 13.sp)
+        }
+        ChartCard(
+            Icons.Filled.WaterDrop, "물 출렁임", "(기울기) g",
+            listOf("앞뒤 성분" to Neon.Amber, "좌우 성분" to Neon.Cyan, "합계" to Neon.White),
+            stat("최대" to "${fmt(stats.tiltMax, 2)} g", "현재" to (s?.let { "${fmt(hypot(it.tiltX, it.tiltY), 2)} g" } ?: "-"), "넘침" to "${stats.spills}회"),
+            slot(1f),
+        ) {
+            TimeChart(
+                trace, frame, range, cursorAt, following, events, onCursor,
+                series = listOf(
+                    Series(Neon.Amber) { t, i -> abs(t.tiltXAt(i)) },
+                    Series(Neon.Cyan) { t, i -> abs(t.tiltYAt(i)) },
+                    Series(Neon.White, width = 2f, fill = true) { t, i -> hypot(t.tiltXAt(i), t.tiltYAt(i)) },
+                ),
+                yRange = 0.0 to 0.32, yTicks = listOf(0.3, 0.15, 0.0),
+                threshold = Threshold("넘침 기준", Neon.Red) { t, i -> t.freeboardAt(i) }, shadeSpill = true,
+            )
+        }
+        val dose = s?.dose ?: 0.0
+        ChartCard(
+            Icons.Filled.Warning, "멀미 누적량", "",
+            listOf("누적량" to Neon.Purple, "위험 기준" to Neon.Red),
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = Neon.Dim)) { append("현재 ") }
+                val c = when { dose >= 1.0 -> Neon.Red; dose >= 0.6 -> Neon.Amber; else -> Neon.White }
+                withStyle(SpanStyle(color = c, fontWeight = FontWeight.Bold)) {
+                    append(fmt(dose, 2) + when { dose >= 1.0 -> " (위험)"; dose >= 0.6 -> " (주의)"; else -> "" })
+                }
+            },
+            slot(0.85f),
+        ) {
+            TimeChart(
+                trace, frame, range, cursorAt, following, events, onCursor,
+                series = listOf(Series(Neon.Purple, width = 2.5f, fill = true) { t, i -> t.doseAt(i) }),
+                yRange = null, yTicks = listOf(2.0, 1.0, 0.0),
+                guides = listOf(Guide(1.0, Neon.Red, "위험 1.0"), Guide(0.6, Neon.Amber, "주의 0.6")),
+            )
+        }
+        ChartCard(
+            Icons.Filled.GraphicEq, "흔들림 주기", "",
+            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "Wf 가중" to Neon.Dim),
+            if (shake == null) {
+                buildAnnotatedString { withStyle(SpanStyle(color = Neon.Dim)) { append("30초 넘게 기록되면 분석해요") } }
+            } else {
+                stat(
+                    "가장 센 주기" to "${fmt(shake.peakPeriod, 1)}초", "멀미 주기" to "${fmt(shake.sicknessPeriod, 1)}초",
+                    "2~10초" to "${(shake.bandShare * 100).roundToInt()}%",
+                )
+            },
+            slot(0.95f),
+        ) {
+            if (shake != null) SpectrumChart(shake)
         }
     }
 }
 
-/**
- * 흔들림 주기 스펙트럼: 가로 = 주기 (왼쪽 50초 → 오른쪽 1초, 로그), 세로 = 흔들림 세기 (가장 센 것 = 1).
- * 보라 띠 = 멀미 주기(2~10초), 흰 점선 = ISO 2631-1 Wf 가중, 빨간 선 = 멀미에 가장 영향을 준 주기.
- */
-@Composable
-private fun SpectrumChart(r: ShakeReport, modifier: Modifier) {
-    val measurer = rememberTextMeasurer()
-    val labels = remember(measurer) {
-        listOf(50.0, 20.0, 10.0, 5.0, 2.0, 1.0).map { it to measurer.measure("${it.roundToInt()}초", TextStyle(color = Dim, fontSize = 10.sp)) }
-    }
-    Canvas(modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp))) {
-        val fLo = ShakeAnalysis.F_MIN
-        val fHi = ShakeAnalysis.F_MAX
-        val labelH = 18f
-        val h = size.height - labelH
-        fun x(f: Double) = (ln(f / fLo) / ln(fHi / fLo) * size.width).toFloat()
-        fun y(v: Double) = (h * (1 - v.coerceIn(0.0, 1.05) / 1.05)).toFloat()
-        drawRect(BandColor, topLeft = Offset(x(ShakeAnalysis.BAND_LO), 0f), size = Size(x(ShakeAnalysis.BAND_HI) - x(ShakeAnalysis.BAND_LO), h))
-        val top = max(1e-9, r.freqs.indices.maxOf { max(r.longAmp[it], r.latAmp[it]) })
-        fun line(values: DoubleArray, scale: Double, color: Color, width: Float, dash: Boolean = false) {
-            val p = Path()
-            values.forEachIndexed { k, v -> val o = Offset(x(r.freqs[k]), y(v / scale)); if (k == 0) p.moveTo(o.x, o.y) else p.lineTo(o.x, o.y) }
-            drawPath(p, color, style = Stroke(width, pathEffect = if (dash) PathEffect.dashPathEffect(floatArrayOf(8f, 6f)) else null))
-        }
-        line(r.wf, 1.0, Color.White.copy(alpha = 0.7f), 1.5f, dash = true)
-        line(r.longAmp, top, LongColor, 2f)
-        line(r.latAmp, top, LatColor, 2f)
-        val xs = x(1 / r.sicknessPeriod)
-        drawLine(SpillColor, Offset(xs, 0f), Offset(xs, h), strokeWidth = 2f)
-        for ((period, text) in labels) {
-            val px = x(1 / period)
-            drawLine(Grid, Offset(px, h), Offset(px, h + 4), strokeWidth = 1f)
-            drawText(text, topLeft = Offset((px - text.size.width / 2f).coerceIn(0f, size.width - text.size.width), h + 3))
-        }
+/** 오른쪽 위 통계: "최대 +2.6 | 최소 -2.8 | 현재 -1.8 m/s²" */
+private fun stat(vararg parts: Pair<String, String>): AnnotatedString = buildAnnotatedString {
+    parts.forEachIndexed { k, (label, value) ->
+        if (k > 0) withStyle(SpanStyle(color = Neon.Faint)) { append("  |  ") }
+        withStyle(SpanStyle(color = Neon.Dim)) { append("$label ") }
+        withStyle(SpanStyle(color = Neon.White, fontWeight = FontWeight.SemiBold)) { append(value) }
     }
 }
 
 @Composable
-private fun Legend(title: String, items: List<Pair<String, Color>>) {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = Dim, fontSize = 13.sp)
-        items.forEach { (label, c) ->
-            Box(Modifier.width(14.dp).height(3.dp).background(c))
-            Text(label, color = Dim, fontSize = 12.sp)
-        }
-    }
-}
-
-private class Series(val color: Color, val width: Float = 1.8f, val value: (DriveTrace, Int) -> Double)
-
-/**
- * 시간축 그래프. [range] 가 있으면 ±range, 없으면 0 ~ max(1.2, 최대값).
- * [frame] 이 바뀔 때마다(화면 프레임) 지금 구간을 다시 읽어 그린다 → 실시간으로 흐른다.
- * 누르거나 가로로 끌면 [onCursor] 로 그 시각을 알린다.
- */
-@Composable
-private fun Chart(
-    trace: DriveTrace, frame: State<Long>, timeRange: () -> Pair<Double, Double>, cursorAt: () -> Double,
-    events: List<TraceEvent>, onCursor: (Double) -> Unit, modifier: Modifier,
-    series: List<Series>, range: Double?, guides: List<Double>,
-    threshold: ((DriveTrace, Int) -> Double)? = null, shadeSpill: Boolean = false,
+private fun ChartCard(
+    icon: ImageVector, title: String, unit: String, legend: List<Pair<String, Color>>,
+    stats: AnnotatedString, modifier: Modifier, content: @Composable () -> Unit,
 ) {
-    fun timeAtX(x: Float, width: Int): Double {
-        val (t0, t1) = timeRange()
-        return t0 + (t1 - t0) * (x / width).coerceIn(0f, 1f)
+    Column(modifier.fillMaxWidth().neonCard().padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = Neon.Cyan, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(title, color = Neon.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            if (unit.isNotEmpty()) {
+                Spacer(Modifier.width(6.dp))
+                Text(unit, color = Neon.Dim, fontSize = 13.sp, maxLines = 1)
+            }
+            Spacer(Modifier.width(14.dp))
+            legend.forEach { (label, c) ->
+                Box(Modifier.size(9.dp).border(2.dp, c, CircleShape))
+                Spacer(Modifier.width(5.dp))
+                Text(label, color = Neon.Text, fontSize = 13.sp, maxLines = 1)
+                Spacer(Modifier.width(10.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            Text(stats, fontSize = 14.sp, maxLines = 1)
+        }
+        Box(Modifier.fillMaxWidth().weight(1f).padding(top = 4.dp)) { content() }
     }
+}
+
+private class Series(val color: Color, val width: Float = 1.8f, val fill: Boolean = false, val value: (DriveTrace, Int) -> Double)
+private class Threshold(val label: String, val color: Color, val value: (DriveTrace, Int) -> Double)
+private class Guide(val value: Double, val color: Color, val label: String)
+
+/** 글자 측정 결과를 기억해 매 프레임 다시 재지 않는다 */
+private class Labels(private val measurer: TextMeasurer, private val size: TextUnit, private val color: Color) {
+    private val cache = HashMap<String, TextLayoutResult>()
+    operator fun get(text: String): TextLayoutResult {
+        cache[text]?.let { return it }
+        if (cache.size > 200) cache.clear()
+        return measurer.measure(text, TextStyle(color = color, fontSize = size)).also { cache[text] = it }
+    }
+}
+
+/**
+ * 시간축 그래프. 화면 프레임마다 지금 구간을 다시 읽어 그린다 → 실시간으로 흐른다.
+ * 왼쪽 세로 눈금, 아래 시간 눈금("1분 전 … 지금"), 빛나는 선과 아래 채움, 기준선, 안내 표시, 고른 시각.
+ */
+@Composable
+private fun TimeChart(
+    trace: DriveTrace, frame: State<Long>, timeRange: () -> Pair<Double, Double>, cursorAt: () -> Double, following: Boolean,
+    events: List<TraceEvent>, onCursor: (Double) -> Unit,
+    series: List<Series>, yRange: Pair<Double, Double>?, yTicks: List<Double>,
+    threshold: Threshold? = null, shadeSpill: Boolean = false, guides: List<Guide> = emptyList(),
+) {
+    val measurer = rememberTextMeasurer()
+    val labels = remember(measurer) { Labels(measurer, 11.sp, Neon.Dim) }
+    val tagLabels = remember(measurer) { HashMap<Color, Labels>() }
     val spillPath = remember { Path() }
     val linePath = remember { Path() }
+    val fillPath = remember { Path() }
+    val left = 34f
+    val bottom = 18f
+    fun timeAtX(x: Float, width: Int): Double {
+        val (t0, t1) = timeRange()
+        return t0 + (t1 - t0) * ((x - left) / (width - left)).coerceIn(0f, 1f)
+    }
     Canvas(
-        modifier
-            .fillMaxWidth()
-            .background(Panel, RoundedCornerShape(10.dp))
+        Modifier.fillMaxSize()
             .pointerInput(Unit) { detectTapGestures { o -> onCursor(timeAtX(o.x, size.width)) } }
             .pointerInput(Unit) { detectHorizontalDragGestures { change, _ -> onCursor(timeAtX(change.position.x, size.width)) } },
     ) {
         frame.value   // 프레임마다 다시 그리기
         val (t0, t1) = timeRange()
         val span = (t1 - t0).coerceAtLeast(1e-6)
+        val w = size.width - left
+        val h = size.height - bottom
         val i0 = trace.indexAt(t0).coerceAtLeast(0)
         val i1 = trace.indexAt(t1)
-        if (i1 <= i0) return@Canvas
-        val step = max(1, (i1 - i0) / max(1, size.width.toInt()))
-        val (lo, hi) = if (range != null) {
-            -range to range
-        } else {
+        val step = max(1, (i1 - i0) / max(1, w.toInt()))
+        val (lo, hi) = yRange ?: run {
             var m = 0.0
             var i = i0
             while (i <= i1) { for (sr in series) m = max(m, sr.value(trace, i)); i += step }
-            0.0 to max(1.2, m * 1.1)
+            0.0 to max(1.5, m * 1.15)
         }
-        fun x(t: Double) = ((t - t0) / span * size.width).toFloat()
-        fun y(v: Double) = (size.height * (1 - (v.coerceIn(lo, hi) - lo) / (hi - lo))).toFloat()
-        fun trace(value: (DriveTrace, Int) -> Double): Path {
+        fun x(t: Double) = left + ((t - t0) / span * w).toFloat()
+        fun y(v: Double) = (h * (1 - (v.coerceIn(lo, hi) - lo) / (hi - lo))).toFloat()
+
+        // 격자와 눈금
+        for (v in yTicks) if (v in lo..hi) {
+            drawLine(Neon.Grid, Offset(left, y(v)), Offset(size.width, y(v)), 1f, pathEffect = if (v == 0.0) null else PathEffect.dashPathEffect(floatArrayOf(3f, 5f)))
+            val l = labels[fmtTick(v)]
+            drawText(l, topLeft = Offset(left - l.size.width - 6, (y(v) - l.size.height / 2f).coerceIn(0f, h - l.size.height)))
+        }
+        for (k in 0..6) {
+            val f = k / 6.0
+            val px = left + (f * w).toFloat()
+            drawLine(Neon.Grid, Offset(px, 0f), Offset(px, h), 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 5f)))
+            val ago = span * (1 - f)
+            val text = when {
+                k == 6 && following -> "지금"
+                !following -> clock(t0 + span * f - trace.startTime)
+                ago >= 60 && (ago % 60) < 0.5 -> "${(ago / 60).roundToInt()}분 전"
+                else -> "${ago.roundToInt()}초"
+            }
+            val l = labels[text]
+            drawText(l, topLeft = Offset((px - l.size.width / 2f).coerceIn(left, size.width - l.size.width), h + 3))
+        }
+        if (i1 <= i0) return@Canvas
+
+        // 넘친 구간
+        if (shadeSpill) {
+            spillPath.reset()
+            val bw = max(2f, w * step / (i1 - i0 + 1) + 1)
+            var i = i0
+            while (i <= i1) {
+                if (trace.spillingAt(i)) spillPath.addRect(Rect(Offset(x(trace.timeAt(i)) - 1, 0f), Size(bw, h)))
+                i += step
+            }
+            drawPath(spillPath, Neon.Red.copy(alpha = 0.14f))
+        }
+        fun build(value: (DriveTrace, Int) -> Double): Path {
             linePath.reset()
             var i = i0
             var first = true
             while (i <= i1) {
-                val px = x(trace.timeAt(i)); val py = y(value(trace, i))
+                val px = x(trace.timeAt(i))
+                val py = y(value(trace, i))
                 if (first) { linePath.moveTo(px, py); first = false } else linePath.lineTo(px, py)
                 i += step
             }
             return linePath
         }
-
-        // 넘친 구간 (한 경로로)
-        if (shadeSpill) {
-            spillPath.reset()
-            val w = max(2f, size.width * step / (i1 - i0 + 1) + 1)
-            var i = i0
-            while (i <= i1) {
-                if (trace.spillingAt(i)) spillPath.addRect(androidx.compose.ui.geometry.Rect(Offset(x(trace.timeAt(i)) - 1, 0f), Size(w, size.height)))
-                i += step
-            }
-            drawPath(spillPath, SpillColor.copy(alpha = 0.22f))
-        }
         // 기준선
-        for (g in guides) drawLine(Grid, Offset(0f, y(g)), Offset(size.width, y(g)), strokeWidth = 1f, pathEffect = if (g == 0.0) null else PathEffect.dashPathEffect(floatArrayOf(8f, 6f)))
+        for (g in guides) if (g.value in lo..hi) {
+            drawLine(g.color.copy(alpha = 0.85f), Offset(left, y(g.value)), Offset(size.width, y(g.value)), 1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(9f, 6f)))
+            val l = tagLabels.getOrPut(g.color) { Labels(measurer, 11.sp, g.color) }[g.label]
+            drawText(l, topLeft = Offset(size.width - l.size.width - 4, y(g.value) - l.size.height - 1))
+        }
         if (threshold != null) {
-            drawPath(trace(threshold), SpillColor, style = Stroke(1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f))))
+            glowPath(build(threshold.value), threshold.color, 1.5f, dash = true)
+            val l = tagLabels.getOrPut(threshold.color) { Labels(measurer, 11.sp, threshold.color) }[threshold.label]
+            drawText(l, topLeft = Offset(size.width - l.size.width - 4, (y(threshold.value(trace, i1)) - l.size.height - 1).coerceAtLeast(0f)))
         }
-        // 사건
+        // 안내 표시
         for (e in events) if (e.kind != TraceKind.SPILL && e.t in t0..t1) {
-            drawLine(kindColor(e.kind).copy(alpha = 0.6f), Offset(x(e.t), 0f), Offset(x(e.t), size.height), strokeWidth = 1.5f)
+            drawLine(kindColor(e.kind).copy(alpha = 0.45f), Offset(x(e.t), 0f), Offset(x(e.t), h), 1.2f)
         }
-        // 값
-        for (sr in series) drawPath(trace(sr.value), sr.color, style = Stroke(sr.width))
+        // 값: 아래 채움 + 빛나는 선
+        val base = y(if (0.0 in lo..hi) 0.0 else lo)
+        for (sr in series) {
+            val line = build(sr.value)
+            if (sr.fill) {
+                fillPath.reset()
+                fillPath.addPath(line)
+                fillPath.lineTo(x(trace.timeAt(i1)), base)
+                fillPath.lineTo(x(trace.timeAt(i0)), base)
+                fillPath.close()
+                drawPath(fillPath, Brush.verticalGradient(listOf(sr.color.copy(alpha = 0.28f), sr.color.copy(alpha = 0.02f)), startY = 0f, endY = h))
+            }
+            glowPath(line, sr.color, sr.width)
+        }
         // 고른 시각
-        drawCursor(x(cursorAt()))
+        val cx = x(cursorAt())
+        glowLine(Neon.White, Offset(cx, 0f), Offset(cx, h), 1.5f)
     }
 }
 
-private fun DrawScope.drawCursor(x: Float) {
-    drawLine(Color.White, Offset(x, 0f), Offset(x, size.height), strokeWidth = 2f)
+/**
+ * 흔들림 주기 스펙트럼: 가로 = 주기 (왼쪽 50초 → 오른쪽 1초, 로그), 세로 = 흔들림 세기 (가장 센 것 = 1).
+ * 보라 띠 = 멀미 주기(2~10초), 점선 = ISO 2631-1 Wf 가중, 빨간 선 = 멀미에 가장 영향을 준 주기.
+ */
+@Composable
+private fun SpectrumChart(r: ShakeReport) {
+    val measurer = rememberTextMeasurer()
+    val labels = remember(measurer) { Labels(measurer, 11.sp, Neon.Dim) }
+    val bandLabel = remember(measurer) { Labels(measurer, 11.sp, Neon.Purple) }
+    Canvas(Modifier.fillMaxSize()) {
+        val left = 34f
+        val bottom = 18f
+        val w = size.width - left
+        val h = size.height - bottom
+        val fLo = ShakeAnalysis.F_MIN
+        val fHi = ShakeAnalysis.F_MAX
+        fun x(f: Double) = left + (ln(f / fLo) / ln(fHi / fLo) * w).toFloat()
+        fun y(v: Double) = (h * (1 - v.coerceIn(0.0, 1.1) / 1.1)).toFloat()
+        val bx0 = x(ShakeAnalysis.BAND_LO)
+        val bx1 = x(ShakeAnalysis.BAND_HI)
+        drawRect(Brush.verticalGradient(listOf(Neon.Purple.copy(alpha = 0.22f), Neon.Purple.copy(alpha = 0.06f))), Offset(bx0, 0f), Size(bx1 - bx0, h))
+        val bl = bandLabel["멀미 주기 2~10초"]
+        drawText(bl, topLeft = Offset((bx0 + bx1) / 2 - bl.size.width / 2f, 2f))
+        for (v in listOf(1.0, 0.5, 0.0)) {
+            drawLine(Neon.Grid, Offset(left, y(v)), Offset(size.width, y(v)), 1f, pathEffect = if (v == 0.0) null else PathEffect.dashPathEffect(floatArrayOf(3f, 5f)))
+            val l = labels[fmtTick(v)]
+            drawText(l, topLeft = Offset(left - l.size.width - 6, (y(v) - l.size.height / 2f).coerceIn(0f, h - l.size.height)))
+        }
+        for (period in listOf(50.0, 30.0, 20.0, 10.0, 5.0, 2.0, 1.0)) {
+            val px = x(1 / period)
+            drawLine(Neon.Grid, Offset(px, 0f), Offset(px, h), 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 5f)))
+            val l = labels["${period.roundToInt()}초"]
+            drawText(l, topLeft = Offset((px - l.size.width / 2f).coerceIn(left, size.width - l.size.width), h + 3))
+        }
+        val top = max(1e-9, r.freqs.indices.maxOf { max(r.longAmp[it], r.latAmp[it]) })
+        fun path(values: DoubleArray, scale: Double): Path = Path().apply {
+            values.forEachIndexed { k, v ->
+                val px = x(r.freqs[k])
+                val py = y(v / scale)
+                if (k == 0) moveTo(px, py) else lineTo(px, py)
+            }
+        }
+        glowPath(path(r.wf, 1.0), Neon.Dim, 1.3f, dash = true)
+        for ((amp, c) in listOf(r.longAmp to Neon.Amber, r.latAmp to Neon.Cyan)) {
+            val line = path(amp, top)
+            val fill = Path().apply { addPath(line); lineTo(x(r.freqs.last()), h); lineTo(x(r.freqs.first()), h); close() }
+            drawPath(fill, Brush.verticalGradient(listOf(c.copy(alpha = 0.3f), c.copy(alpha = 0.02f)), startY = 0f, endY = h))
+            glowPath(line, c, 1.8f)
+        }
+        val sx = x(1 / r.sicknessPeriod)
+        glowLine(Neon.Red, Offset(sx, 0f), Offset(sx, h), 1.6f)
+    }
 }
 
 private fun kindColor(k: TraceKind): Color = when (k) {
-    TraceKind.SPILL -> SpillColor
-    TraceKind.SAY -> Color(0xFFFFF59D)
-    TraceKind.CAR -> Color(0xFF81D4FA)
-    TraceKind.SICK -> Color(0xFFEF5350)
+    TraceKind.SPILL -> Neon.Red
+    TraceKind.SAY -> Color(0xFFFFE082)
+    TraceKind.CAR -> Neon.Cyan
+    TraceKind.SICK -> Neon.Red
 }
 
 private fun clock(sec: Double): String {
     val s = sec.coerceAtLeast(0.0).toInt()
     return "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
 }
+
+private fun fmtTick(v: Double): String = if (v == 0.0) "0" else if (abs(v) >= 1 && v % 1.0 == 0.0) fmt(v, 1) else fmt(v, 2)
 
 private fun fmt(v: Double, digits: Int): String {
     var m = 1.0
@@ -428,4 +741,4 @@ private fun fmt(v: Double, digits: Int): String {
     return (if (v < 0 && r != 0) "-" else "") + if (digits == 0) "$whole" else "$whole.$frac"
 }
 
-private fun signed(v: Double): String = (if (v >= 0) "+" else "") + fmt(v, 1)
+private fun signed(v: Double, digits: Int): String = (if (v >= 0) "+" else "") + fmt(v, digits)
