@@ -56,17 +56,36 @@ data class TripReport(
     /** 가장 영향을 준 흔들림 주기 (초), 없으면 null */
     val sicknessPeriod: Double?,
     val tips: List<String>,
+    /** 물: 출발할 때 채운 양, 끝에 남은 양, 평소 운전 습관만큼의 양 (0~1) */
+    val startWater: Double = WaterCup.DEFAULT_LEVEL,
+    val endWater: Double = WaterCup.DEFAULT_LEVEL,
+    val habitWater: Double = WaterCup.DEFAULT_LEVEL,
 ) {
+    /** 평소보다 물을 더 채우고 출발했나 */
+    val challenge: Boolean get() = startWater > habitWater + 0.01
+    /** 도전 성공: 물을 거의 지켰다 */
+    val challengeWon: Boolean get() = challenge && startWater - endWater <= CHALLENGE_LOSS
+
     /** 음성 한 줄 */
     fun spoken(previous: Int?): String {
         val base = "이번 주행은 ${score}점, ${grade.label}이에요."
         val top = jolts.entries.filter { it.value > 0 }.maxByOrNull { it.value }
         val cause = top?.let { " ${it.key.label}이 ${it.value}번 있었어요." } ?: ""
         val diff = previous?.let { p -> val d = score - p; if (d >= 3) " 지난번보다 ${d}점 올랐어요." else if (d <= -3) " 지난번보다 ${-d}점 낮아요." else "" } ?: ""
-        return base + cause + diff
+        val water = when {
+            challengeWon -> " 도전 성공! 물을 지켰어요."
+            challenge -> " 도전 실패, 물이 ${pct(startWater - endWater)} 줄었어요."
+            else -> ""
+        }
+        return base + water + cause + diff
     }
 
     companion object {
+        /** 도전 성공: 줄어든 물이 이만큼 이하 */
+        const val CHALLENGE_LOSS = 0.03
+
+        fun pct(v: Double): String = "${(v * 100).roundToInt()}%"
+
         /** 이보다 짧게 달렸으면 평가하지 않는다 (초) */
         const val MIN_MOVING_SEC = 60.0
         const val MOVING_KMH = 3.0

@@ -47,10 +47,18 @@ class RemoteFeed {
      * 화면이 보이는 동안만 부른다 (앱: Activity STARTED, 웹: 화면). 취소되면 멈춘다.
      * 시연 중이 아니면 확인 간격을 2초 → 최대 10초로 늘려 쓸데없는 요청을 줄인다.
      */
+    /** 설정에서 끄면 서버를 보지 않는다 */
+    var enabled = true
+
     suspend fun run() {
         var idleMs = STATE_MS
         var sinceState = Long.MAX_VALUE / 2
         while (currentCoroutineContext().isActive) {
+            if (!enabled) {
+                if (active || session != null) stop()
+                delay(IDLE_MAX_MS)
+                continue
+            }
             if (sinceState >= (if (session != null) STATE_MS else idleMs)) {
                 sinceState = 0
                 pollState()

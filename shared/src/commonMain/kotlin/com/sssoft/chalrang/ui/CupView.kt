@@ -59,11 +59,14 @@ fun CupView(
     stage: Boolean = false,
     /** 위아래 출렁임 (g, + 위로): 3D 물이 눌리고 튄다 */
     heave: Double = 0.0,
+    /** 넘치기 시작하는 기울기 (g). 기본은 물 높이에서 */
+    freeboard: Double = WaterCup.freeboardOf(level),
 ) {
     val puddle by animateFloatAsState((dose / 1.4).coerceIn(0.0, 1.0).toFloat(), label = "puddle")
     val shownLevel by animateFloatAsState(level.toFloat(), label = "level")
     val state by rememberUpdatedState(Triple(tiltX, tiltY, spilling))
     val heaveNow by rememberUpdatedState(heave)
+    val fbNow by rememberUpdatedState(freeboard)
     val drops = remember { Drops() }
     var time by remember { mutableFloatStateOf(0f) }
     // 3D 물: GPU 셰이더 + 물결 시뮬레이션 (안 되면 2D 그림)
@@ -81,7 +84,7 @@ fun CupView(
                 last = now
                 time += dt
                 val (tx, ty, sp) = state
-                drops.step(dt, if (sp) slope(tx, ty) else null, shownLevel)
+                drops.step(dt, if (sp) slope(tx, ty, BASE + shownLevel * (H - BASE), fbNow) else null, shownLevel)
                 if (water.supported && dt > 0) {
                     val h0 = BASE + shownLevel * (H - BASE)
                     val (px, py) = realSlope(tx, ty)
@@ -98,7 +101,7 @@ fun CupView(
         val cam = Camera(size.width, size.height)
         val c = waterColor(dose)
         val h0 = BASE + shownLevel * (H - BASE)
-        val (px, py) = limitedSlope(tiltX, tiltY, h0)
+        val (px, py) = limitedSlope(tiltX, tiltY, h0, freeboard)
         val ripple = 0.012f * sin(time * 2.4f)
 
         drawFloor(cam, pen, c, puddle, stage)
@@ -238,17 +241,17 @@ private fun realSlope(tiltX: Double, tiltY: Double): Pair<Double, Double> {
 }
 
 /** 넘친 뒤에는 수면이 가장자리 가까이에서 멈춘다 (그 이상은 물방울로 보여 준다) */
-private fun limitedSlope(tiltX: Double, tiltY: Double, h0: Double): Pair<Double, Double> {
-    val (sx, sy) = slope(tiltX, tiltY)
+private fun limitedSlope(tiltX: Double, tiltY: Double, h0: Double, freeboard: Double): Pair<Double, Double> {
+    val (sx, sy) = slope(tiltX, tiltY, h0, freeboard)
     val m = hypot(sx, sy)
     val limit = (H - h0) / RTI * 0.85
     return if (m > limit) (sx * limit / m) to (sy * limit / m) else sx to sy
 }
 
 /** 모델 기울기(g) → 수면 경사 (dz/dx, dz/dy). x 오른쪽, y 앞(화면 안쪽) */
-private fun slope(tiltX: Double, tiltY: Double): Pair<Double, Double> {
-    // 넘치는 기울기 (1-물 높이)×여유 에서 가장자리 높이 차 (1-물 높이)×(물이 담기는 높이) 가 되도록
-    val k = (H - BASE) / (RTI * WaterCup.MAX_FREEBOARD)
+private fun slope(tiltX: Double, tiltY: Double, h0: Double, freeboard: Double): Pair<Double, Double> {
+    // 넘치는 기울기 [freeboard] 에서 수면이 가장자리(남은 높이 H - h0)에 닿도록
+    val k = (H - h0) / (RTI * freeboard.coerceAtLeast(0.01))
     return (-tiltY * k) to (tiltX * k)
 }
 

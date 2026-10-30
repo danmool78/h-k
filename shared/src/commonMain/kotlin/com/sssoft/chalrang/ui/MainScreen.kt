@@ -1,5 +1,10 @@
 package com.sssoft.chalrang.ui
 
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
+import kotlin.math.roundToInt
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
@@ -83,14 +88,16 @@ private val Sick = Color(0xFFE5533D)
 @Composable
 fun MainScreen(vm: ChalrangEngine) {
     val s by vm.ui.collectAsState()
-    var editing by remember { mutableStateOf(false) }
     var tracing by remember { mutableStateOf(false) }
+    var settingsOpen by remember { mutableStateOf(false) }
 
     NeonBackground {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_MIN && maxWidth > maxHeight
         val sideWidth = minOf(380.dp, maxWidth * 0.38f)
-        if (tracing) {
+        if (settingsOpen) {
+            SettingsScreen(vm, onClose = { settingsOpen = false })
+        } else if (tracing) {
             // 기록 화면이 덮는 동안 아래 물컵 화면은 그리지 않는다 (차량 화면 성능)
             TraceScreen(vm, onClose = { tracing = false })
         } else if (wide) {
@@ -98,7 +105,7 @@ fun MainScreen(vm: ChalrangEngine) {
                 Modifier.fillMaxSize().padding(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                Cup(s, Modifier.weight(1f).fillMaxHeight(), onTrace = { tracing = true })
+                Cup(s, Modifier.weight(1f).fillMaxHeight(), onTrace = { tracing = true }, onAdjust = vm::adjustWater)
                 Column(
                     Modifier.width(sideWidth).fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -108,7 +115,7 @@ fun MainScreen(vm: ChalrangEngine) {
                     RouteCard(s)
                     Said(s)
                     Spacer(Modifier.weight(1f))
-                    Controls(s, vm, onEdit = { editing = true })
+                    Controls(s, vm, onEdit = { settingsOpen = true })
                 }
             }
         } else {
@@ -116,33 +123,33 @@ fun MainScreen(vm: ChalrangEngine) {
                 Modifier.fillMaxSize().padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Cup(s, Modifier.weight(1f).fillMaxWidth(), onTrace = { tracing = true })
+                Cup(s, Modifier.weight(1f).fillMaxWidth(), onTrace = { tracing = true }, onAdjust = vm::adjustWater)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.height(IntrinsicSize.Min)) {
                     RidersCard(s, Modifier.weight(1f).fillMaxHeight())
                     CarCard(s, Modifier.weight(1f).fillMaxHeight())
                 }
                 RouteCard(s)
                 Said(s)
-                Controls(s, vm, onEdit = { editing = true })
+                Controls(s, vm, onEdit = { settingsOpen = true })
             }
         }
         // 주행이 끝나면 평가를 덮어 보여 준다
-        s.report?.let { TripReportOverlay(it, s.previousScore, onClose = vm::dismissReport) }
+        if (!settingsOpen) s.report?.let { TripReportOverlay(it, s.previousScore, onClose = vm::dismissReport) }
     }
     }
-    if (editing) ChildrenDialog(s.children, vm, onDismiss = { editing = false })
 }
 
 /** 이보다 넓은 가로 화면이면 좌우 배치 */
 private val WIDE_MIN = 900.dp
 
 @Composable
-private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit) = Box(modifier.neonCard().clip(Neon.CardShape)) {
+private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit, onAdjust: (Double) -> Unit) = Box(modifier.neonCard().clip(Neon.CardShape)) {
     // 은은한 빛 (고리·그림자는 CupView 가 같은 3D 바닥에 그린다)
     Canvas(Modifier.fillMaxSize()) {
         drawRect(Brush.radialGradient(listOf(Color(0x3329C4F6), Color.Transparent), center = Offset(size.width * 0.5f, size.height * 0.62f), radius = size.minDimension * 0.7f))
     }
-    CupView(s.tiltX - s.gradeX, s.tiltY - s.gradeY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 8.dp), stage = true, heave = s.tiltZ)
+    CupView(s.tiltX - s.gradeX, s.tiltY - s.gradeY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 8.dp), stage = true, heave = s.tiltZ, freeboard = s.freeboard)
+    WaterButtons(s, onAdjust, Modifier.align(Alignment.CenterEnd).padding(end = 14.dp))
     Row(Modifier.align(Alignment.TopStart).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Filled.WaterDrop, null, tint = Neon.Cyan, modifier = Modifier.size(26.dp))
         Spacer(Modifier.width(6.dp))
@@ -238,6 +245,44 @@ private fun CarCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier, 
     car.lastAction?.let { Text(it, color = Dim, fontSize = 15.sp) }
 }
 
+/**
+ * 물 양: 평소 운전 습관만큼 채워져 있고, 출발 전에 더 채우거나(도전) 덜어 낼 수 있다.
+ * 물이 많을수록 작은 쏠림에도 넘친다 — 가득 채우고도 지키면 젠틀 운전.
+ */
+@Composable
+private fun WaterButtons(s: UiState, onAdjust: (Double) -> Unit, modifier: Modifier) {
+    val diff = s.level - s.habitWater
+    Column(modifier.width(76.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        RoundButton(Icons.Filled.Add, s.canAdjust) { onAdjust(ChalrangEngine.WATER_STEP) }
+        Text("${(s.level * 100).roundToInt()}%", color = Neon.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(
+            when {
+                !s.canAdjust && s.level < s.startWater - 0.005 -> "넘쳐서 -${((s.startWater - s.level) * 100).roundToInt()}%"
+                diff > 0.005 -> "도전 +${(diff * 100).roundToInt()}%"
+                diff < -0.005 -> "덜어 냄"
+                s.habitScore != null -> "평소 ${s.habitScore}점"
+                else -> "기본"
+            },
+            color = when { diff > 0.005 -> Neon.Amber; !s.canAdjust && s.level < s.startWater - 0.005 -> Neon.Red; else -> Neon.Dim },
+            fontSize = 12.sp, maxLines = 1,
+        )
+        RoundButton(Icons.Filled.Remove, s.canAdjust) { onAdjust(-ChalrangEngine.WATER_STEP) }
+    }
+}
+
+@Composable
+private fun RoundButton(icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.size(52.dp).clip(CircleShape)
+            .background(Brush.verticalGradient(listOf(Color(0xCC0B1D36), Color(0xCC06111F))))
+            .border(1.5.dp, if (enabled) Neon.Cyan else Neon.Edge.copy(alpha = 0.3f), CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, null, tint = if (enabled) Neon.White else Neon.Faint, modifier = Modifier.size(28.dp))
+    }
+}
+
 /** 가는 길: 멀미 위험 구간 요약과 경로 띠 (주황 = 조심, 빨강 = 위험, 흰 점 = 지금) */
 @Composable
 private fun RouteCard(s: UiState, modifier: Modifier = Modifier) {
@@ -303,7 +348,7 @@ private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        NeonChip("아이 설정", false, onClick = onEdit, icon = Icons.Filled.Face, modifier = Modifier.weight(1f))
+        NeonChip("설정", false, onClick = onEdit, icon = Icons.Filled.Settings, modifier = Modifier.weight(1f))
         if (s.demo == null) {
             NeonChip("시연 거칠게", false, onClick = { vm.startDemo(DriverStyle.ROUGH) }, modifier = Modifier.weight(1f))
             NeonChip("시연 부드럽게", false, onClick = { vm.startDemo(DriverStyle.SMOOTH) }, modifier = Modifier.weight(1f))
@@ -314,7 +359,7 @@ private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
 }
 
 @Composable
-private fun ChildrenDialog(children: List<Child>, vm: ChalrangEngine, onDismiss: () -> Unit) {
+internal fun ChildrenDialog(children: List<Child>, vm: ChalrangEngine, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var seat by remember { mutableStateOf(Seat.REAR_LEFT) }
     AlertDialog(

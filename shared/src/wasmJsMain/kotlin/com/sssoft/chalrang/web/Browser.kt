@@ -92,8 +92,15 @@ class BrowserChildRepo : ChildRepo {
         runCatching { lsSet(TRIPS, TripSummary.encode(trips)) }
     }
 
+    override fun loadSettings(): String? = runCatching { lsGet(SETTINGS) }.getOrNull()
+
+    override fun saveSettings(text: String) {
+        runCatching { lsSet(SETTINGS, text) }
+    }
+
     private companion object {
         const val KEY = "chalrang.children"
         const val TRIPS = "chalrang.trips"
+        const val SETTINGS = "chalrang.settings"
     }
 }

@@ -26,9 +26,16 @@ class ChildStore(context: Context) : ChildRepo {
         prefs.edit().putString(TRIPS, TripSummary.encode(trips)).apply()
     }
 
+    override fun loadSettings(): String? = prefs.getString(SETTINGS, null)
+
+    override fun saveSettings(text: String) {
+        prefs.edit().putString(SETTINGS, text).apply()
+    }
+
     companion object {
         private const val KEY = "list"
         private const val TRIPS = "trips"
+        private const val SETTINGS = "settings"
 
         fun encode(children: List<Child>): String = JSONArray().apply {
             children.forEach {

@@ -74,6 +74,15 @@ data class CareInput(
 /** [askTimeoutSec]: 창문 질문에 답이 없으면 열지 않는 시간 (시연은 배속만큼 늘린다) */
 class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
 
+    // 설정 (AppSettings): 주행 중에 바꿔도 바로 따른다
+    /** 자동 환기 (외기 유입·에어컨) */
+    var ventilate = true
+    /** 창문을 열지 묻기 (끄면 창문은 건드리지 않는다) */
+    var askWindow = true
+    var windowPercent = WINDOW_PERCENT
+    /** 안내 적게: "부드럽게" 주의·내비 예고 음성을 하지 않는다 (위험·휴게소 안내는 한다) */
+    var fewerAlerts = false
+
     var ventilating = false; private set
     var windowsOpen = false; private set
     /** 창문 질문을 띄운 시각 (답을 기다리는 중) */
@@ -125,7 +134,7 @@ class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
                 out += CareAction.AskDone
                 if (windowOk(input)) {
                     windowsOpen = true
-                    out += CareAction.OpenWindows(input.setup.windows, WINDOW_PERCENT)
+                    out += CareAction.OpenWindows(input.setup.windows, windowPercent)
                 }
             } else if (answer == false) {
                 askingSince = null
@@ -141,7 +150,7 @@ class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
         }
 
         // 환기 시작
-        if (frequent && !ventilating) {
+        if (frequent && !ventilating && ventilate) {
             ventilating = true
             out += CareAction.FreshAir(true)
             if (windowOk(input) && input.setup.windows.isNotEmpty()) {
@@ -157,7 +166,7 @@ class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
             } else if (!windowsOpen && windowOk(input) && input.setup.windows.isNotEmpty() && input.dose >= VENTILATE) {
                 if (windowApproved) {
                     windowsOpen = true
-                    out += CareAction.OpenWindows(input.setup.windows, WINDOW_PERCENT)
+                    out += CareAction.OpenWindows(input.setup.windows, windowPercent)
                 } else if (!windowDeclined && askingSince == null) {
                     ask(now, input, out, "$who 쪽 창문을 조금 열까요?")
                 }
@@ -184,13 +193,13 @@ class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
                 )
             }
             // 지금 찰랑거릴 때만 (누적량은 천천히 줄어서, 잔잔해진 뒤에도 한동안 0.6 위에 남는다)
-            input.dose >= CAUTION && now - lastSpill <= CAUTION_RECENT && now - lastCaution >= CAUTION_GAP -> {
+            !fewerAlerts && input.dose >= CAUTION && now - lastSpill <= CAUTION_RECENT && now - lastCaution >= CAUTION_GAP -> {
                 lastCaution = now
                 out += CareAction.Say("물이 찰랑거려요. 다음 구간은 부드럽게 가 주세요")
             }
             else -> {
                 val next = input.next
-                if (next != null && next.kind.shaky && next.distanceM <= PREVIEW_M &&
+                if (!fewerAlerts && next != null && next.kind.shaky && next.distanceM <= PREVIEW_M &&
                     input.dose >= PREVIEW_DOSE && now - lastPreview >= PREVIEW_GAP
                 ) {
                     lastPreview = now
@@ -202,6 +211,7 @@ class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
     }
 
     private fun windowOk(input: CareInput, closing: Boolean = false): Boolean {
+        if (!closing && !askWindow) return false
         if (input.raining) return false
         // 속도를 모르면 새로 열지는 않고, 이미 열려 있으면 둔다
         val v = input.speedKmh ?: return closing

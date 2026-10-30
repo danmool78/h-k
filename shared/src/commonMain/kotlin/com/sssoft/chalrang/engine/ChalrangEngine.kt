@@ -1,5 +1,6 @@
 package com.sssoft.chalrang.engine
 
+import com.sssoft.chalrang.core.AppSettings
 import com.sssoft.chalrang.core.Calibration
 import com.sssoft.chalrang.core.CareAction
 import com.sssoft.chalrang.core.CareInput
@@ -46,8 +47,18 @@ data class UiState(
     /** 길 경사 (rad): 화면 수면 = 출렁임 - 경사 */
     val gradeX: Double = 0.0,
     val gradeY: Double = 0.0,
-    /** 화면에 그릴 물 높이 */
+    /** 화면에 그릴 물 높이 = 남은 물 (평소 운전 습관으로 채우고, 넘친 만큼 줄어든다) */
     val level: Double = WaterCup.DEFAULT_LEVEL,
+    val settings: AppSettings = AppSettings(),
+    /** 넘치기 시작하는 기울기 (g): 물 양 기준 (화면 그림용) */
+    val freeboard: Double = WaterCup.freeboardOf(WaterCup.DEFAULT_LEVEL),
+    /** 이번 주행을 시작할 때 채운 물과 그 근거 (최근 주행 점수, 없으면 null) */
+    val startWater: Double = WaterCup.DEFAULT_LEVEL,
+    val habitScore: Int? = null,
+    /** 평소 운전 습관만큼의 물 (이보다 많이 채우면 도전) */
+    val habitWater: Double = WaterCup.DEFAULT_LEVEL,
+    /** 지금 물을 채우거나 덜 수 있는지 (출발 전) */
+    val canAdjust: Boolean = true,
     val dose: Double = 0.0,
     val spilling: Boolean = false,
     val setup: CupSetup = CupSetup(emptyList(), emptyList(), null, emptyList()),
@@ -108,9 +119,97 @@ class ChalrangEngine(
 
     /** 지난 주행 평가 (최근 것이 끝) */
     private val trips = store.loadTrips().toMutableList()
+    private var settings = AppSettings.decode(store.loadSettings())
+    /** 남은 물 (0~1): 주행을 시작할 때 평소 운전 습관만큼 채우고, 넘친 만큼 줄어든다 */
+    private var water = habitWater()
+    private var startWater = water
+
+    /** 평소 운전 습관: 최근 5번 점수 (최근일수록 무겁게) */
+    private fun habitScore(): Int? {
+        val recent = trips.takeLast(HABIT_TRIPS)
+        if (recent.isEmpty()) return null
+        var sum = 0.0
+        var w = 0.0
+        recent.forEachIndexed { i, t -> val k = (i + 1).toDouble(); sum += t.score * k; w += k }
+        return (sum / w).roundToInt()
+    }
+
+    /** 점수 → 처음 채우는 물: 100점이면 0.9, 0점이면 0.35 (기록이 없으면 보통 0.6). 젠틀할수록 가득 */
+    private fun habitWater(): Double = if (!settings.habitFill) WaterCup.DEFAULT_LEVEL else habitScore()?.let { WATER_MIN_FILL + (WATER_MAX_FILL - WATER_MIN_FILL) * it / 100.0 } ?: WaterCup.DEFAULT_LEVEL
+
+    /** 물 양을 조절한 만큼 (+ 도전, - 쉽게). 다음 주행을 시작할 때 평소 물에 더한다 */
+    private var waterAdjust = 0.0
+    /** 물컵 넘침 (물 양 기준, 화면·평가): 아이 멀미 기준과 따로 */
+    private var waterSpilling = false
+    private var waterSpills = 0
+
+    /**
+     * 물 양 기준 넘침: 물이 많을수록 작은 쏠림에도 넘치고, 넘친 만큼 물이 준다.
+     * (아이 멀미 누적·경고는 [cup] 이 아이 기준으로 따로 계산한다)
+     */
+    private fun pour(dt: Double) {
+        val tilt = cup.tilt
+        val fb = WaterCup.freeboardOf(water)
+        val now = tilt > fb
+        if (now && !waterSpilling) waterSpills++
+        waterSpilling = now
+        if (now) water = (water - WaterCup.spillRate(tilt, water) * dt * WATER_PER_DOSE).coerceAtLeast(WATER_LEFT_MIN)
+    }
+
+    /** 출발 전에만 물을 더 채우거나(도전) 덜어 낸다 */
+    fun adjustWater(delta: Double) {
+        if (!canAdjustWater()) return
+        val base = habitWater()
+        val target = (water + delta).coerceIn(WATER_MIN, WaterCup.MAX_LEVEL)
+        waterAdjust = target - base
+        water = target
+        startWater = target
+        _ui.update { it.copy(level = water, startWater = water, habitWater = base, canAdjust = true) }
+    }
+
+    private fun canAdjustWater(): Boolean = demo == null && liveMoving < 5 && (motion.speedKmh ?: 0.0) < 3 && !remoteWas
+
     /** 실제 주행: 달린 시간·멈춰 있는 시간 (주행이 끝났는지 보려고) */
     private var liveMoving = 0.0
     private var liveStopped = 0.0
+
+    init {
+        remote?.enabled = settings.phoneDemo
+        applySettings(policy)
+        _ui.update { it.copy(level = water, startWater = water, habitScore = habitScore(), habitWater = water, settings = settings) }
+    }
+
+    // ---- 설정 ----
+
+    fun updateSettings(s: AppSettings) {
+        val fillChanged = s.habitFill != settings.habitFill
+        settings = s
+        store.saveSettings(s.encode())
+        applySettings(policy)
+        remote?.enabled = s.phoneDemo
+        if (!s.routePreview) clearRoute()
+        if (fillChanged && canAdjustWater()) {
+            waterAdjust = 0.0
+            water = habitWater()
+            startWater = water
+        }
+        _ui.update { it.copy(settings = s, level = water, startWater = startWater, habitWater = habitWater()) }
+    }
+
+    private fun applySettings(p: CarePolicy) {
+        p.ventilate = settings.autoVent
+        p.askWindow = settings.askWindow
+        p.windowPercent = settings.windowPercent
+        p.fewerAlerts = settings.fewerAlerts
+    }
+
+    /** 지난 주행 평가 지우기 (평소 습관도 처음부터) */
+    fun clearTrips() {
+        trips.clear()
+        store.saveTrips(trips)
+        if (canAdjustWater()) { waterAdjust = 0.0; water = habitWater(); startWater = water }
+        _ui.update { it.copy(habitScore = null, habitWater = habitWater(), level = water, startWater = startWater) }
+    }
 
     private var demo: Demo? = null
     private var sickPending = false
@@ -168,6 +267,7 @@ class ChalrangEngine(
                 val before = cup.spillCount
                 cup.gradeX = f.grade
                 if (f.resting) cup.rest(SCENARIO_DT) else cup.step(f.ax, f.ay, SCENARIO_DT, f.az)
+                pour(SCENARIO_DT)
                 log.add(cup.tilt, SCENARIO_DT)
                 if (cup.spillCount > before) {
                     spillStarted = true
@@ -193,7 +293,7 @@ class ChalrangEngine(
                 stopDemo()
                 return
             }
-        } else if (remote != null && remote.active) {
+        } else if (remote != null && remote.active && settings.phoneDemo) {
             // 휴대폰 시연: 받은 휴대폰 가속도를 차 흔들림으로
             if (!remoteWas) {
                 resetTrip()
@@ -207,6 +307,7 @@ class ChalrangEngine(
                 val before = cup.spillCount
                 cup.gradeX = r.gradeX; cup.gradeY = r.gradeY
                 cup.step(r.ax, r.ay, step, r.az)
+                pour(step)
                 log.add(cup.tilt, step)
                 if (cup.spillCount > before) {
                     spillStarted = true
@@ -242,6 +343,7 @@ class ChalrangEngine(
             val before = cup.spillCount
             cup.gradeX = motion.gradeX; cup.gradeY = motion.gradeY
             cup.step(motion.ax, motion.ay, dt, motion.az)
+            pour(dt)
             log.add(cup.tilt, dt)
             if (cup.spillCount > before) trace.event(now, TraceKind.SPILL)
             trace.record(now, motion.ax, motion.ay, cup.tiltX, cup.tiltY, motion.speedKmh ?: 0.0, cup.dose, cup.level, cup.spilling, motion.az, cup.tiltZ, cup.gradeX, cup.gradeY)
@@ -256,8 +358,8 @@ class ChalrangEngine(
         perform(policy.decide(input))
         _ui.update {
             it.copy(
-                tiltX = cup.tiltX, tiltY = cup.tiltY, tiltZ = cup.tiltZ, gradeX = cup.gradeX, gradeY = cup.gradeY, level = input.setup.level ?: ALONE_LEVEL,
-                dose = cup.dose, spilling = cup.spilling, setup = input.setup, car = car.status.value,
+                tiltX = cup.tiltX, tiltY = cup.tiltY, tiltZ = cup.tiltZ, gradeX = cup.gradeX, gradeY = cup.gradeY, level = water, freeboard = WaterCup.freeboardOf(water), canAdjust = canAdjustWater(),
+                dose = cup.dose, spilling = waterSpilling, setup = input.setup, car = car.status.value,
                 demoProgress = demo?.let { dm -> ((dm.frame?.t ?: 0.0) / dm.scenario.durationSec).toFloat() } ?: 0f,
                 assumedSeat = assumed, raining = input.raining, remote = remoteWas,
             )
@@ -278,9 +380,9 @@ class ChalrangEngine(
     private fun perform(actions: List<CareAction>) {
         for (a in actions) {
             when (a) {
-                CareAction.Chime -> voice.chime()
+                CareAction.Chime -> if (settings.chime) voice.chime()
                 is CareAction.Say -> {
-                    voice.say(a.text)
+                    if (settings.voice) voice.say(a.text)
                     trace.event(clock, TraceKind.SAY, a.text)
                     _ui.update { it.copy(lastSaid = a.text) }
                 }
@@ -330,7 +432,7 @@ class ChalrangEngine(
                 else -> ""
             }
             val text = "${child.name} 기준을 맞췄어요. 다음에는 멀미하기 전에 알려 드릴게요." + pattern
-            voice.say(text)
+            if (settings.voice) voice.say(text)
             _ui.update { it.copy(lastSaid = text) }
         }
         trace.event(clock, TraceKind.SICK, child?.let { "${it.name} 기준 맞춤" } ?: "")
@@ -359,7 +461,7 @@ class ChalrangEngine(
     fun startDemo(style: DriverStyle) {
         resetTrip()
         // 시연 시간은 배속으로 흐르므로 창문 질문은 실제 20초 동안 기다린다
-        policy = CarePolicy(askTimeoutSec = CarePolicy.ASK_TIMEOUT * DEMO_SPEED)
+        policy = CarePolicy(askTimeoutSec = CarePolicy.ASK_TIMEOUT * DEMO_SPEED).also { applySettings(it) }
         val s = DriveScenario.weekendTrip(style)
         clearRoute()
         // 시연 경로 미리보기: 시나리오의 안내·방지턱·굽은 길과 길 높이로 (시연 시간은 배속)
@@ -379,13 +481,15 @@ class ChalrangEngine(
 
     /** 주행이 끝났을 때: 기록으로 평가하고, 저장하고, 한 줄로 말한다 (너무 짧으면 하지 않음) */
     private fun finishTrip() {
-        val r = TripReport.evaluate(trace, cup.spillCount) ?: return
+        val r = TripReport.evaluate(trace, waterSpills)?.copy(startWater = startWater, endWater = water, habitWater = habitWater()) ?: return
+        waterAdjust = 0.0
         val prev = trips.lastOrNull()?.score
         trips += TripSummary.of(r)
         while (trips.size > TripSummary.KEEP) trips.removeAt(0)
         store.saveTrips(trips)
+        if (!settings.tripReport) return
         val text = r.spoken(prev)
-        voice.say(text)
+        if (settings.voice) voice.say(text)
         _ui.update { it.copy(report = r, previousScore = prev, lastSaid = text) }
     }
 
@@ -406,10 +510,12 @@ class ChalrangEngine(
             delay(1_000)
             val d = demo
             if (d != null) {
+                if (!settings.routePreview) continue
                 val plan = demoRoute ?: continue
                 route(plan, d.frame?.distM ?: 0.0)
                 continue
             }
+            if (!settings.routePreview) continue
             val a = navi.ahead.value
             val remain = a.remainM
             if (remain == null) {
@@ -428,7 +534,7 @@ class ChalrangEngine(
                 val key = "${u.kind}@${(at / 200).roundToInt()}"
                 if (key !in known) { known[key] = RoutePoint(u.kind, at); changed = true }
             }
-            if (!terrainTried && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
+            if (!terrainTried && settings.terrain && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
                 terrainTried = true
                 terrain = Elevation.along(a.hereLat, a.hereLng, a.destLat, a.destLng, remain)
                 changed = true
@@ -464,7 +570,7 @@ class ChalrangEngine(
     }
 
     private fun say(text: String) {
-        voice.say(text)
+        if (settings.voice) voice.say(text)
         trace.event(clock, TraceKind.SAY, text)
         _ui.update { it.copy(lastSaid = text) }
     }
@@ -488,7 +594,13 @@ class ChalrangEngine(
         liveStopped = 0.0
         if (policy.windowsOpen) car.closeWindows()
         if (policy.ventilating) car.freshAir(false)
-        policy = CarePolicy()
+        policy = CarePolicy().also { applySettings(it) }
+        // 새 주행: 평소 운전 습관만큼 물을 채운다
+        water = (habitWater() + waterAdjust).coerceIn(WATER_MIN, WaterCup.MAX_LEVEL)
+        startWater = water
+        waterSpilling = false
+        waterSpills = 0
+        _ui.update { it.copy(level = water, startWater = water, habitScore = habitScore(), habitWater = habitWater()) }
         windowAnswer = null
         _ui.update { it.copy(askWindows = null) }
         cup.reset()
@@ -521,6 +633,19 @@ class ChalrangEngine(
         const val ALONE_LEVEL = 0.3
         /** 실제 주행 평가: 이만큼 달린 뒤 (초) */
         const val TRIP_MIN_SEC = 120.0
+        /** 평소 운전 습관 = 최근 몇 번의 주행 */
+        const val HABIT_TRIPS = 5
+        const val WATER_MIN_FILL = 0.35
+        const val WATER_MAX_FILL = 0.9
+        /** 넘친 양(멀미 누적 단위) 1 에 줄어드는 물 */
+        const val WATER_PER_DOSE = 0.12
+        /** 아무리 넘쳐도 이만큼은 남긴다 (컵이 비어 보이지 않게) */
+        const val WATER_LEFT_MIN = 0.12
+        /** 덜어 낼 수 있는 한도 */
+        const val WATER_MIN = 0.2
+        /** 버튼 한 번에 */
+        const val WATER_STEP = 0.05
+
         /** 위험 구간을 이만큼 앞에서 알린다 (m) */
         const val ANNOUNCE_M = 1_200.0
         /** 이만큼 서 있으면 주행이 끝난 것으로 (초): 신호 대기보다 길게 */

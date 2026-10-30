@@ -78,4 +78,7 @@ interface ChildRepo {
     /** 지난 주행 평가 (최근 [TripSummary.KEEP] 개, 오래된 것부터) */
     fun loadTrips(): List<TripSummary> = emptyList()
     fun saveTrips(trips: List<TripSummary>) {}
+    /** 설정 ([AppSettings.encode] 글) */
+    fun loadSettings(): String? = null
+    fun saveSettings(text: String) {}
 }
