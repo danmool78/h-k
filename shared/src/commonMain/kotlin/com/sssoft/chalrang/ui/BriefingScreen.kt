@@ -51,66 +51,51 @@ import com.sssoft.chalrang.core.RiskSegment
 import com.sssoft.chalrang.core.RoutePath
 import com.sssoft.chalrang.core.RoutePreview
 import com.sssoft.chalrang.core.TerrainGrid
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * 경로 브리핑: 가는 길을 파란 3D 선으로 그리고, 빛나는 포인터가 그 선을 빠르게 따라가며(카메라가 뒤에서 따라감)
- * 멀미 위험 구간은 빨갛게(조심 구간은 주황) 보여 주고 말로 설명한다. 위험 구간에서는 천천히 지나간다.
+ * 경로 브리핑: 가는 길을 파란 3D 선으로 그리고 멀미 위험 구간은 빨갛게(조심 구간은 주황).
+ * 1) 전체 길을 한 바퀴 돌며 보여 주고 요약,
+ * 2) 위험 구간마다 차례로 "여기서 여기까지" 짚고 → 그 구간으로 쏙 빨려 들어가 그 구간만 달려 보고 → 다시 위로,
+ * 3) 마무리. 안전한 길을 따라 계속 달리지 않아 덜 어지럽다.
  */
 @Composable
 fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit) {
-    var at by remember { mutableDoubleStateOf(0.0) }
+    var t by remember { mutableDoubleStateOf(0.0) }
     var caption by remember { mutableStateOf("") }
     val speakNow by rememberUpdatedState(speak)
     val close by rememberUpdatedState(onClose)
-    val pv = path.preview
-    val pace = remember(path) { BriefPace.of(path) }
+    val plan = remember(path) { BriefPlan(path) }
 
-    LaunchedEffect(path) {
-        val intro = intro(pv)
-        caption = intro
-        speakNow(intro)
-        // 첫 설명을 들을 시간
-        var wait = 2.0
+    LaunchedEffect(plan) {
         var last = 0L
-        val told = HashSet<Int>()
-        var ended = false
-        var endHold = 0.0
+        var told = -1
         while (true) {
             withFrameNanos { now ->
-                val dt = if (last == 0L) 0.0 else ((now - last) / 1e9).coerceAtMost(0.2)
+                val dt = if (last == 0L) 0.0 else ((now - last) / 1e9).coerceAtMost(0.25)
                 last = now
-                if (wait > 0) { wait -= dt; return@withFrameNanos }
-                if (!ended) {
-                    // 위험 구간 300m 앞에서 그 구간을 설명
-                    pv.segments.forEachIndexed { i, seg ->
-                        if (i !in told && at >= seg.startM - 300) {
-                            told += i
-                            val line = segmentLine(i, seg)
-                            caption = line
-                            speakNow(line)
-                        }
-                    }
-                    at = pace.advance(path, at, dt)
-                    if (at >= path.lengthM) {
-                        ended = true
-                        val outro = "브리핑을 마쳤어요." + (pv.restAdvice?.let { " $it." } ?: "") + " 안전하게 다녀오세요."
-                        caption = outro
-                        speakNow(outro)
-                    }
-                } else {
-                    endHold += dt
+                t += dt
+                // 장면이 바뀔 때 한 줄씩 말한다
+                val i = plan.stepIndex(t)
+                if (i != told) {
+                    told = i
+                    plan.line(i)?.let { caption = it; speakNow(it) }
                 }
             }
-            if (ended && endHold > 4.0) { close(); break }
+            if (t >= plan.total) { close(); break }
         }
     }
 
+    val step = plan.steps[plan.stepIndex(t)]
+    val at = plan.pointerAt(t)
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF050B18), Color(0xFF0A1A33), Color(0xFF040A16))))) {
-        RouteScene(path, at, Modifier.fillMaxSize())
+        RouteScene(plan, t, Modifier.fillMaxSize())
         // 위: 제목·거리·닫기
         Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.Route, null, tint = Neon.Cyan, modifier = Modifier.size(28.dp))
@@ -124,35 +109,32 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
                 )
             }
             Spacer(Modifier.weight(1f))
-            Text("${km(at)} / ${km(path.lengthM)}", color = Neon.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (step.seg >= 0) "${step.seg + 1} / ${plan.segs.size} 구간" else "전체 ${km(path.lengthM)}",
+                color = Neon.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold,
+            )
             Spacer(Modifier.width(16.dp))
             NeonChip("건너뛰기", false, onClick = onClose, icon = Icons.Filled.Close)
         }
         MiniMap(path, at, Modifier.align(Alignment.TopEnd).padding(top = 84.dp, end = 20.dp).size(190.dp))
-        SloshGauge(path, at, Modifier.align(Alignment.CenterStart).padding(start = 20.dp))
-        // 아래: 지금 구간 + 말 + 전체 띠
+        if (step.kind == BriefPlan.Kind.DRIVE) SloshGauge(path, at, Modifier.align(Alignment.CenterStart).padding(start = 20.dp))
+        // 아래: 지금 장면 + 말 + 전체 띠
         Column(
             Modifier.align(Alignment.BottomCenter).padding(20.dp).widthIn(max = 980.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            val risk = path.riskAt(at)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val (label, c) = when (risk) {
-                    2 -> "멀미 위험 구간" to Neon.Red
-                    1 -> "조심할 구간" to Neon.Amber
-                    else -> "편한 길" to Neon.Cyan
+                val seg = plan.segs.getOrNull(step.seg)
+                val (label, c) = when {
+                    seg == null -> "전체 경로" to Neon.Cyan
+                    seg.level >= 2 -> "멀미 위험 구간 ${RoutePreview.place(seg)}" to Neon.Red
+                    else -> "조심할 구간 ${RoutePreview.place(seg)}" to Neon.Amber
                 }
                 Box(Modifier.clip(RoundedCornerShape(8.dp)).background(c.copy(alpha = 0.18f)).padding(horizontal = 12.dp, vertical = 5.dp)) {
                     Text(label, color = c, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.width(12.dp))
-                // 위험 구간을 지나 편한 길이면 다음 구간까지 거리
-                val next = pv.segments.firstOrNull { it.startM - 300 > at }
-                val passed = pv.segments.any { it.endM <= at }
-                val text = if (risk == 0 && passed && !caption.startsWith("브리핑을 마쳤어요")) {
-                    next?.let { "편한 길이에요. 다음 구간 ${RoutePreview.place(it)}, ${km(it.startM - at)} 앞" } ?: "편한 길이에요. 남은 위험 구간은 없어요"
-                } else caption
-                Text(text, color = Neon.Text, fontSize = 18.sp, lineHeight = 25.sp, maxLines = 3)
+                Text(caption, color = Neon.Text, fontSize = 18.sp, lineHeight = 25.sp, maxLines = 3)
             }
             ProgressBar(path, at)
         }
@@ -160,94 +142,137 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
 }
 
 /**
- * 브리핑 빠르기: 전체 [CAP_SEC] 초 안에 (한 번 주행 200km 정도까지).
- * - 안전한 길: 건너뛰듯 — 모두 합쳐 [SAFE_MIN_SEC]~[SAFE_MAX_SEC] 초 (실주행의 100배 넘게)
- * - 위험 구간(150m 앞부터): 그 지점 실제 속도의 [RISK_X] 배로 비교적 천천히 — 굽이가 하나씩 보이는 빠르기.
- *   다 들어가지 않으면 남은 시간에 맞춰 그만큼만 빠르게
+ * 브리핑 순서와 시간: 한 바퀴([ORBIT_SEC]) → 위험 구간마다 짚기([SHOW_SEC]) · 빨려 들어가기([DIVE_SEC]) ·
+ * 그 구간 달리기(실주행의 [RISK_X] 배, 구간당 [DRIVE_MIN]~ 초) · 올라오기([RISE_SEC]) → 마무리([END_SEC]).
+ * 전체가 [CAP_SEC] 를 넘지 않게 달리기 시간을 줄인다. 위험 구간이 많으면 심한 [MAX_SEGS] 곳만.
  */
-internal class BriefPace(val safeMps: Double, val riskX: Double) {
+internal class BriefPlan(val path: RoutePath) {
+    enum class Kind { ORBIT, SHOW, DIVE, DRIVE, RISE, END }
+    class Step(val kind: Kind, val seg: Int, val start: Double, val dur: Double)
 
-    /** [dt] 초 진행. 안전한 길에서 크게 건너뛰어도 위험 구간 앞에서는 꼭 멈춰 그 구간을 천천히 보여 준다 */
-    fun advance(path: RoutePath, from: Double, dt: Double): Double {
-        var at = from
-        var left = dt
-        var guard = 0
-        while (left > 1e-6 && at < path.lengthM && guard++ < 64) {
-            val seg = path.preview.segments.firstOrNull { at + LEAD_M >= it.startM && at < it.endM }
-            if (seg == null) {
-                // 다음 위험 구간 앞(LEAD_M)까지만 빠르게
-                val next = path.preview.segments.firstOrNull { it.startM - LEAD_M > at }?.let { it.startM - LEAD_M } ?: path.lengthM
-                val need = (next - at) / safeMps
-                if (need <= left) { at = next; left -= need } else { at += safeMps * left; left = 0.0 }
-            } else {
-                val v = realMps(path, at) * riskX
-                val end = seg.endM
-                val need = (end - at) / v
-                // 한 번에 너무 멀리 가지 않게 잘게 (그 사이 실제 속도가 바뀐다)
-                val step = min(left, min(need, 0.05))
-                at = min(end, at + v * step)
-                left -= step
-            }
+    val segs: List<RiskSegment> = path.preview.segments
+        .sortedWith(compareByDescending<RiskSegment> { it.level }.thenByDescending { it.lengthM })
+        .take(MAX_SEGS).sortedBy { it.startM }
+    /** 구간마다 시작부터 누적 실제 시간 (5m 마다): 달리기에서 실제처럼 굽이는 느리게, 곧은 데는 빠르게 */
+    private val segReal: List<DoubleArray> = segs.map { s ->
+        val a = path.index(s.startM)
+        val b = path.index(s.endM)
+        val out = DoubleArray(b - a + 1)
+        for (i in 1 until out.size) out[i] = out[i - 1] + RoutePath.STEP / realMps(path, (a + i) * RoutePath.STEP)
+        out
+    }
+    val steps: List<Step>
+    val total: Double
+
+    init {
+        // 구간이 3곳 넘으면 짚기·들어가기·올라오기를 조금 짧게
+        val q = if (segs.size >= 3) 0.8 else 1.0
+        val fixed = ORBIT_SEC + END_SEC + segs.size * (SHOW_SEC + DIVE_SEC + RISE_SEC) * q
+        val ideal = segReal.map { (it.last() / RISK_X).coerceAtLeast(DRIVE_MIN) }
+        val budget = max(segs.size * DRIVE_MIN, CAP_SEC - fixed)
+        val k = if (ideal.sum() > budget) budget / ideal.sum() else 1.0
+        val drive = ideal.map { max(DRIVE_MIN, it * k) }
+        val list = ArrayList<Step>()
+        var at = 0.0
+        fun add(kind: Kind, seg: Int, d: Double) { list += Step(kind, seg, at, d); at += d }
+        add(Kind.ORBIT, -1, ORBIT_SEC)
+        segs.indices.forEach { i ->
+            add(Kind.SHOW, i, SHOW_SEC * q)
+            add(Kind.DIVE, i, DIVE_SEC * q)
+            add(Kind.DRIVE, i, drive[i])
+            add(Kind.RISE, i, RISE_SEC * q)
         }
-        return min(at, path.lengthM)
+        add(Kind.END, -1, END_SEC)
+        steps = list
+        total = at
+    }
+
+    fun stepIndex(t: Double): Int {
+        for (i in steps.indices.reversed()) if (t >= steps[i].start) return i
+        return 0
+    }
+
+    /** 장면 안에서 0~1 */
+    fun progress(t: Double): Double = steps[stepIndex(t)].let { ((t - it.start) / it.dur).coerceIn(0.0, 1.0) }
+
+    /** 달리는 중이면 그 구간 안의 위치: 실제 걸리는 시간에 비례해서 */
+    fun driveAt(seg: Int, u: Double): Double {
+        val real = segReal[seg]
+        val target = real.last() * u
+        var lo = 0
+        var hi = real.size - 1
+        while (lo < hi) { val mid = (lo + hi) / 2; if (real[mid] < target) lo = mid + 1 else hi = mid }
+        return segs[seg].startM + lo * RoutePath.STEP
+    }
+
+    /** 포인터(와 작은 지도·띠)의 위치 */
+    fun pointerAt(t: Double): Double {
+        val st = steps[stepIndex(t)]
+        val u = progress(t)
+        return when (st.kind) {
+            Kind.ORBIT -> 0.0
+            Kind.END -> path.lengthM
+            Kind.SHOW, Kind.DIVE -> segs[st.seg].startM
+            Kind.DRIVE -> driveAt(st.seg, u)
+            Kind.RISE -> segs[st.seg].endM
+        }
+    }
+
+    /** 그 장면을 시작할 때 할 말 */
+    fun line(i: Int): String? {
+        val st = steps[i]
+        return when (st.kind) {
+            Kind.ORBIT -> intro(path.preview, segs.size)
+            Kind.SHOW -> showLine(st.seg, segs[st.seg])
+            Kind.DRIVE -> tipLine(segs[st.seg])
+            Kind.END -> "브리핑을 마쳤어요." + (path.preview.restAdvice?.let { " $it." } ?: "") + " 안전하게 다녀오세요."
+            else -> null
+        }
     }
 
     companion object {
-        const val CAP_SEC = 30.0
-        const val SAFE_MIN_SEC = 1.5
-        const val SAFE_MAX_SEC = 5.0
-        const val SAFE_X = 120.0
+        const val CAP_SEC = 40.0
+        const val ORBIT_SEC = 7.0
+        const val SHOW_SEC = 3.2
+        const val DIVE_SEC = 1.6
+        const val RISE_SEC = 1.4
+        const val END_SEC = 4.0
+        const val DRIVE_MIN = 2.5
         const val RISK_X = 20.0
-        const val LEAD_M = 150.0
+        const val MAX_SEGS = 4
 
         /** 서는 곳·출발 직후에도 멈춰 있지 않게 최소 시속 20km 로 본다 */
         fun realMps(path: RoutePath, m: Double) = max(path.speedKmh[path.index(m)], 20.0) / 3.6
-
-        fun of(path: RoutePath): BriefPace {
-            val segs = path.preview.segments
-            var riskLen = 0.0
-            var riskReal = 0.0
-            var safeReal = 0.0
-            var i = 0
-            while (i < path.size - 1) {
-                val m = i * RoutePath.STEP
-                val inRisk = segs.any { m + LEAD_M >= it.startM && m < it.endM }
-                val t = RoutePath.STEP / realMps(path, m)
-                if (inRisk) { riskLen += RoutePath.STEP; riskReal += t } else safeReal += t
-                i++
-            }
-            val safeLen = path.lengthM - riskLen
-            val safeTime = if (safeLen <= 0) 0.0 else (safeReal / SAFE_X).coerceIn(SAFE_MIN_SEC, SAFE_MAX_SEC)
-            val safeMps = if (safeLen <= 0) 1.0 else safeLen / safeTime
-            val riskX = if (riskReal <= 0) RISK_X else max(RISK_X, riskReal / (CAP_SEC - safeTime))
-            return BriefPace(safeMps, riskX)
-        }
     }
 }
 
-private fun intro(p: RoutePreview): String {
+private fun intro(p: RoutePreview, shown: Int): String {
     val km = RoutePreview.fmtKm(p.totalM)
     val danger = p.segments.count { it.level >= 2 }
     val caution = p.segments.size - danger
     return when {
-        p.segments.isEmpty() -> "가는 길을 미리 볼게요. $km, 멀미 걱정 구간이 없는 편한 길이에요."
-        else -> "가는 길을 미리 볼게요. $km 가운데 " +
-            listOfNotNull(danger.takeIf { it > 0 }?.let { "멀미 위험 구간 ${it}곳" }, caution.takeIf { it > 0 }?.let { "조심할 구간 ${it}곳" }).joinToString(", ") + "이 있어요."
+        p.segments.isEmpty() -> "가는 길을 한 바퀴 둘러볼게요. $km, 멀미 걱정 구간이 없는 편한 길이에요."
+        else -> "가는 길을 한 바퀴 둘러볼게요. $km 가운데 " +
+            listOfNotNull(danger.takeIf { it > 0 }?.let { "멀미 위험 구간 ${it}곳" }, caution.takeIf { it > 0 }?.let { "조심할 구간 ${it}곳" }).joinToString(", ") +
+            "이 있어요." + if (shown < p.segments.size) " 그중 심한 ${shown}곳을 보여 드릴게요." else ""
     }
 }
 
-private fun segmentLine(i: Int, s: RiskSegment): String {
-    val order = listOf("첫 번째", "두 번째", "세 번째", "네 번째", "다섯 번째").getOrElse(i) { "${i + 1}번째" }
+private val ORDER = listOf("첫 번째", "두 번째", "세 번째", "네 번째", "다섯 번째")
+
+/** 짚기: "여기서 여기까지" */
+private fun showLine(i: Int, s: RiskSegment): String {
     val what = if (s.level >= 2) "멀미 위험 구간" else "조심할 구간"
-    val why = s.reasons.take(2).joinToString("·")
-    val tip = when {
-        s.reasons.any { "오르내림" in it } -> "오르내림이 이어져요. 일정한 속도로 부드럽게."
-        s.reasons.any { "굽은 길" in it || "회전" in it } -> "들어가기 전에 속도를 줄이고 핸들은 천천히."
-        s.reasons.any { "방지턱" in it } -> "방지턱은 천천히 넘어 주세요."
-        s.reasons.any { "진출로" in it || "진입로" in it } -> "진출입로는 미리 감속해 주세요."
-        else -> "천천히 부드럽게 가 주세요."
-    }
-    return "$order $what, ${RoutePreview.place(s)}. $why. $tip"
+    return "여기서 여기까지, ${ORDER.getOrElse(i) { "${i + 1}번째" }} ${what}이에요. ${RoutePreview.place(s)}, ${s.reasons.take(2).joinToString("·")}."
+}
+
+/** 달리기: 운전 팁 */
+private fun tipLine(s: RiskSegment): String = when {
+    s.reasons.any { "오르내림" in it } -> "오르내림이 이어져요. 일정한 속도로 부드럽게 가 주세요."
+    s.reasons.any { "굽은 길" in it || "회전" in it } -> "들어가기 전에 속도를 줄이고, 핸들은 천천히 돌려 주세요."
+    s.reasons.any { "방지턱" in it } -> "방지턱은 천천히 넘어 주세요."
+    s.reasons.any { "진출로" in it || "진입로" in it } -> "진출입로는 미리 감속해 주세요."
+    else -> "천천히 부드럽게 가 주세요."
 }
 
 private fun km(m: Double): String = "${(m / 100).roundToInt() / 10.0}km"
@@ -258,190 +283,234 @@ private fun riskColor(level: Int): Color = when (level) {
     else -> Neon.Cyan
 }
 
-/** 3D 장면: 바닥 격자, 경로 선(높이 기둥 포함), 위험 구간 빨강, 안내 지점, 포인터 */
+/**
+ * 3D 장면: 색을 입힌 지형(높이별 색 + 비스듬한 빛 그림자 + 옅은 네온 격자), 경로 선(위험 빨강·조심 주황·편한 길 파랑),
+ * 위험 구간 번호, 포인터. 카메라는 장면에 따라 한 바퀴 → 짚기 → 빨려 들어가기 → 달리기 → 올라오기.
+ */
 @Composable
-private fun RouteScene(path: RoutePath, at: Double, modifier: Modifier) {
+private fun RouteScene(plan: BriefPlan, t: Double, modifier: Modifier) {
+    val path = plan.path
     val measurer = rememberTextMeasurer()
     val labels = remember(measurer) { HashMap<String, androidx.compose.ui.text.TextLayoutResult>() }
-    // 매 프레임 새로 만들지 않는 선 (색마다 하나)
+    // 매 프레임 새로 만들지 않는 선·면 (메모리)
     val lines = remember { Array(3) { Path() } }
+    val glow = remember { Path() }
     val curtain = remember { Path() }
-    val grid = remember { Path() }
-    val mesh = remember { Array(3) { Path() } }
+    val wire = remember { Path() }
+    val shade = remember(path) { path.grid?.let { TerrainShade(it) } }
     Canvas(modifier) {
-        val cam = ChaseCamera(path, at, size.width, size.height)
-        val gz = cam.groundZ
+        val st = plan.steps[plan.stepIndex(t)]
+        val u = plan.progress(t)
+        val cam = poseFor(plan, st, u, t).camera(path, size.width, size.height)
         val tg = path.grid
-        if (tg != null) {
-            // 주변 지형: 실제 높이 격자를 같은 네온 선으로 (가까울수록 진하게)
-            terrainMesh(cam, tg, mesh)
-            val hues = listOf(Color(0x9950B8F0), Color(0x5A4FA3E0), Color(0x2E4FA3E0))
-            for (b in 2 downTo 0) drawPath(mesh[b], hues[b], style = Stroke(if (b == 0) 1.3f else 1f))
+        if (tg != null && shade != null) {
+            shade.draw(this, cam, wire)
         } else {
-            // 바닥 격자 (포인터 높이 아래)
-            grid.reset()
-            val gx0 = ((cam.px / 100).roundToInt() - 15) * 100.0
-            val gy0 = ((cam.py / 100).roundToInt() - 15) * 100.0
+            // 지형이 없으면 바닥 격자
+            wire.reset()
+            val gz = cam.zOf(path.z.min()) - 30
+            val gx0 = ((cam.fx / 100).roundToInt() - 15) * 100.0
+            val gy0 = ((cam.fy / 100).roundToInt() - 15) * 100.0
             for (k in 0..30) {
-                cam.segment(grid, gx0 + k * 100, gy0, gz, gx0 + k * 100, gy0 + 3000, gz)
-                cam.segment(grid, gx0, gy0 + k * 100, gz, gx0 + 3000, gy0 + k * 100, gz)
+                cam.segment(wire, gx0 + k * 100, gy0, gz, gx0 + k * 100, gy0 + 3000, gz)
+                cam.segment(wire, gx0, gy0 + k * 100, gz, gx0 + 3000, gy0 + k * 100, gz)
             }
-            drawPath(grid, Color(0x1A4FA3E0), style = Stroke(1f))
+            drawPath(wire, Color(0x1A4FA3E0), style = Stroke(1f))
         }
 
-        // 경로: 앞 3km·뒤 300m
-        val i0 = path.index(at - 300)
-        val i1 = path.index(at + 3000)
+        // 경로: 달릴 때는 앞 3km·뒤 300m, 내려다볼 때는 전체 (조금 성기게)
+        val driving = st.kind == BriefPlan.Kind.DRIVE
+        val at = plan.pointerAt(t)
+        val i0 = if (driving) path.index(at - 300) else 0
+        val i1 = if (driving) path.index(at + 3000) else path.size - 1
+        val stride = if (driving) 1 else 2
         lines.forEach { it.reset() }
         curtain.reset()
+        glow.reset()
+        val hi = plan.segs.getOrNull(st.seg)
         var prev: Offset? = null
         var prevLevel = -1
-        for (i in i0..i1) {
+        var i = i0
+        while (i <= i1) {
             val m = i * RoutePath.STEP
             val level = path.riskAt(m)
-            val p = cam.project(path.x[i], path.y[i], cam.zOf(path.z[i]))
-            if (p == null) { prev = null; continue }
+            val p = cam.project(path.x[i], path.y[i], cam.zOf(path.z[i]) + LIFT)
+            if (p == null) { prev = null; i += stride; continue }
             val line = lines[level]
-            if (prev == null || level != prevLevel) {
-                if (prev != null) line.moveTo(prev.x, prev.y) else line.moveTo(p.x, p.y)
-            }
+            if (prev == null || level != prevLevel) line.moveTo((prev ?: p).x, (prev ?: p).y)
             line.lineTo(p.x, p.y)
-            // 높이 기둥 (50m 마다): 3D 로 떠 있는 느낌
-            if (i % 10 == 0) {
-                val ground = tg?.let { cam.zOf(heightAt(it, path.x[i], path.y[i])) } ?: gz
+            // 짚는 구간은 한 번 더 빛나게
+            if (hi != null && m >= hi.startM && m <= hi.endM) {
+                if (glow.isEmpty || prev == null) glow.moveTo(p.x, p.y) else glow.lineTo(p.x, p.y)
+            }
+            if (driving && i % 10 == 0) {
+                val ground = tg?.let { cam.zOf(heightAt(it, path.x[i], path.y[i])) } ?: (cam.zOf(path.z[i]) - 40)
                 cam.project(path.x[i], path.y[i], ground)?.let { g -> curtain.moveTo(p.x, p.y); curtain.lineTo(g.x, g.y) }
             }
             prev = p
             prevLevel = level
+            i += stride
         }
         drawPath(curtain, Color(0x334FA3E0), style = Stroke(1.2f))
+        if (hi != null && st.kind != BriefPlan.Kind.DRIVE) {
+            val pulse = 0.5f + 0.5f * kotlin.math.sin((t * 6).toFloat())
+            drawPath(glow, Neon.Red.copy(alpha = 0.18f + 0.22f * pulse), style = Stroke(26f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
         for (level in 0..2) {
             val c = riskColor(level)
-            val w = if (level == 0) 5f else 7f
-            drawPath(lines[level], c.copy(alpha = 0.12f), style = Stroke(w * 5, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawPath(lines[level], c.copy(alpha = 0.3f), style = Stroke(w * 2.2f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            val w = if (level == 0) 4.5f else 6.5f
+            drawPath(lines[level], c.copy(alpha = 0.14f), style = Stroke(w * 5, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            drawPath(lines[level], c.copy(alpha = 0.32f), style = Stroke(w * 2.2f, cap = StrokeCap.Round, join = StrokeJoin.Round))
             drawPath(lines[level], c, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
         }
 
-        // 안내 지점 (앞 1.5km). 화면에서 겹치면 이름은 하나만
-        var lastLabel = Offset(-1e4f, -1e4f)
-        for (mk in path.marks) {
-            if (mk.atM < at || mk.atM > at + 1500 || mk.kind == ManeuverKind.OTHER) continue
-            val i = path.index(mk.atM)
-            val p = cam.project(path.x[i], path.y[i], cam.zOf(path.z[i])) ?: continue
-            val top = cam.project(path.x[i], path.y[i], cam.zOf(path.z[i]) + 25) ?: continue
-            val c = if (mk.kind.risk >= 1.0) Neon.Amber else Neon.Dim
-            drawLine(c.copy(alpha = 0.7f), p, top, 1.5f)
-            drawCircle(c, 4f, top)
-            val l = labels.getOrPut(mk.kind.label) {
-                measurer.measure(mk.kind.label, androidx.compose.ui.text.TextStyle(color = Neon.Text, fontSize = 12.sp))
-            }
-            if ((top - lastLabel).getDistance() > 40f) {
-                drawText(l, topLeft = Offset(top.x - l.size.width / 2f, top.y - l.size.height - 4))
-                lastLabel = top
-            }
-        }
-
-        // 포인터
-        val pi = path.index(at)
-        cam.project(path.x[pi], path.y[pi], cam.zOf(path.z[pi]))?.let { p ->
-            val c = riskColor(path.riskAt(at))
-            val ground = tg?.let { cam.zOf(heightAt(it, path.x[pi], path.y[pi])) } ?: gz
-            cam.project(path.x[pi], path.y[pi], ground)?.let { g -> drawLine(c.copy(alpha = 0.5f), p, g, 2f) }
-            drawCircle(c.copy(alpha = 0.15f), 34f, p)
-            drawCircle(c.copy(alpha = 0.35f), 18f, p)
-            drawCircle(Neon.White, 8f, p)
-        }
-    }
-}
-
-/** 지형 격자를 가로·세로 선으로: 카메라에서 멀수록 옅은 묶음 (가까이 1.5km, 3.5km, 6km) */
-private fun terrainMesh(cam: ChaseCamera, g: TerrainGrid, out: Array<Path>) {
-    out.forEach { it.reset() }
-    fun band(x: Double, y: Double): Int {
-        val d = kotlin.math.hypot(x - cam.px, y - cam.py)
-        return when { d < 1_500 -> 0; d < 3_500 -> 1; d < 6_000 -> 2; else -> -1 }
-    }
-    for (dir in 0..1) {
-        val outer = if (dir == 0) g.ny else g.nx
-        val inner = if (dir == 0) g.nx else g.ny
-        for (a in 0 until outer) {
-            var last: Offset? = null
-            for (b in 0 until inner) {
-                val i = if (dir == 0) b else a
-                val j = if (dir == 0) a else b
-                val x = g.x0 + i * g.step
-                val y = g.y0 + j * g.step
-                val k = band(x, y)
-                val p = if (k < 0) null else cam.project(x, y, cam.zOf(g.at(i, j)))
-                if (p != null && last != null) {
-                    out[k].moveTo(last.x, last.y)
-                    out[k].lineTo(p.x, p.y)
+        if (driving) {
+            // 안내 지점 (앞 1.5km). 화면에서 겹치면 이름은 하나만
+            var lastLabel = Offset(-1e4f, -1e4f)
+            for (mk in path.marks) {
+                if (mk.atM < at || mk.atM > at + 1500 || mk.kind == ManeuverKind.OTHER) continue
+                val k = path.index(mk.atM)
+                val p = cam.project(path.x[k], path.y[k], cam.zOf(path.z[k]) + LIFT) ?: continue
+                val top = cam.project(path.x[k], path.y[k], cam.zOf(path.z[k]) + LIFT + 25) ?: continue
+                val c = if (mk.kind.risk >= 1.0) Neon.Amber else Neon.Dim
+                drawLine(c.copy(alpha = 0.7f), p, top, 1.5f)
+                drawCircle(c, 4f, top)
+                val l = labels.getOrPut(mk.kind.label) {
+                    measurer.measure(mk.kind.label, androidx.compose.ui.text.TextStyle(color = Neon.Text, fontSize = 12.sp))
                 }
-                last = p
+                if ((top - lastLabel).getDistance() > 40f) {
+                    drawText(l, topLeft = Offset(top.x - l.size.width / 2f, top.y - l.size.height - 4))
+                    lastLabel = top
+                }
+            }
+        } else {
+            // 위험 구간 번호 (구간 가운데 위에)
+            plan.segs.forEachIndexed { k, seg ->
+                val mid = path.index((seg.startM + seg.endM) / 2)
+                val base = cam.project(path.x[mid], path.y[mid], cam.zOf(path.z[mid]) + LIFT) ?: return@forEachIndexed
+                val top = Offset(base.x, base.y - 42f)
+                val c = riskColor(seg.level)
+                drawLine(c.copy(alpha = 0.8f), base, top, 2f)
+                drawCircle(Color(0xE6081426), 17f, top)
+                drawCircle(c, 17f, top, style = Stroke(2.5f))
+                val l = labels.getOrPut("#${k + 1}") {
+                    measurer.measure("${k + 1}", androidx.compose.ui.text.TextStyle(color = Neon.White, fontSize = 16.sp, fontWeight = FontWeight.Bold))
+                }
+                drawText(l, topLeft = Offset(top.x - l.size.width / 2f, top.y - l.size.height / 2f))
+            }
+        }
+
+        // 포인터 (한 바퀴·마무리 때는 숨김)
+        if (st.kind != BriefPlan.Kind.ORBIT && st.kind != BriefPlan.Kind.END) {
+            val pi = path.index(at)
+            cam.project(path.x[pi], path.y[pi], cam.zOf(path.z[pi]) + LIFT)?.let { p ->
+                val c = riskColor(path.riskAt(at))
+                val ground = tg?.let { cam.zOf(heightAt(it, path.x[pi], path.y[pi])) } ?: (cam.zOf(path.z[pi]) - 40)
+                cam.project(path.x[pi], path.y[pi], ground)?.let { g -> drawLine(c.copy(alpha = 0.5f), p, g, 2f) }
+                drawCircle(c.copy(alpha = 0.15f), 34f, p)
+                drawCircle(c.copy(alpha = 0.35f), 18f, p)
+                drawCircle(Neon.White, 8f, p)
             }
         }
     }
 }
 
-/** 지형 격자에서 (x, y) 높이 (쌍선형) */
-private fun heightAt(g: TerrainGrid, x: Double, y: Double): Double {
-    val fx = ((x - g.x0) / g.step).coerceIn(0.0, g.nx - 1.001)
-    val fy = ((y - g.y0) / g.step).coerceIn(0.0, g.ny - 1.001)
-    val i = fx.toInt()
-    val j = fy.toInt()
-    val tx = fx - i
-    val ty = fy - j
-    val a = g.at(i, j) * (1 - tx) + g.at(i + 1, j) * tx
-    val b = g.at(i, j + 1) * (1 - tx) + g.at(i + 1, j + 1) * tx
-    return a * (1 - ty) + b * ty
+/** 경로 선을 지형 위로 살짝 띄운다 (지형 자료가 성겨서 길이 산에 묻히지 않게, m) */
+private const val LIFT = 12.0
+
+/** 카메라 자세: 눈·바라보는 곳, 지형을 진하게 그릴 중심과 범위 */
+private class Pose(
+    val ex: Double, val ey: Double, val ez: Double,
+    val tx: Double, val ty: Double, val tz: Double,
+    val fx: Double, val fy: Double, val range: Double,
+) {
+    fun lerp(o: Pose, k: Double): Pose {
+        fun l(a: Double, b: Double) = a + (b - a) * k
+        return Pose(l(ex, o.ex), l(ey, o.ey), l(ez, o.ez), l(tx, o.tx), l(ty, o.ty), l(tz, o.tz), l(fx, o.fx), l(fy, o.fy), l(range, o.range))
+    }
+
+    fun camera(path: RoutePath, w: Float, h: Float) = ViewCamera(this, path, w, h)
 }
 
-/** 포인터 뒤 위에서 앞을 보는 카메라. 높이는 키운다 (오르내림이 보이게: 만든 길 3배, 실제 지형 1.5배) */
-private class ChaseCamera(path: RoutePath, at: Double, w: Float, h: Float) {
-    val px: Double
-    val py: Double
+private fun ease(u: Double) = u * u * (3 - 2 * u)
+
+/** 장면마다 카메라: 한 바퀴(위에서 빙 돎) ↔ 짚기(천천히 돎) → 빨려 들어가기 → 뒤따라 달리기 → 올라오기 */
+private fun poseFor(plan: BriefPlan, st: BriefPlan.Step, u: Double, t: Double): Pose {
+    val path = plan.path
+    // 한 바퀴는 처음 장면 안에서, 그 뒤로는 아주 천천히 계속 돈다
+    val angle = BASE_ANGLE + if (t < BriefPlan.ORBIT_SEC) 2 * PI * ease(t / BriefPlan.ORBIT_SEC) else 2 * PI + DRIFT * (t - BriefPlan.ORBIT_SEC)
+    val over = overview(path, angle)
+    return when (st.kind) {
+        BriefPlan.Kind.ORBIT, BriefPlan.Kind.SHOW, BriefPlan.Kind.END -> over
+        BriefPlan.Kind.DIVE -> over.lerp(chase(path, plan.segs[st.seg].startM), ease(u))
+        BriefPlan.Kind.DRIVE -> chase(path, plan.driveAt(st.seg, u))
+        BriefPlan.Kind.RISE -> chase(path, plan.segs[st.seg].endM).lerp(over, ease(u))
+    }
+}
+
+private const val BASE_ANGLE = -PI / 2
+private const val DRIFT = 0.04
+
+/** 전체 길을 비스듬히 내려다보는 자리 ([angle] 방향에서) */
+private fun overview(path: RoutePath, angle: Double): Pose {
+    var minX = Double.MAX_VALUE; var maxX = -Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
+    for (i in 0 until path.size step 8) {
+        minX = min(minX, path.x[i]); maxX = max(maxX, path.x[i]); minY = min(minY, path.y[i]); maxY = max(maxY, path.y[i])
+    }
+    val cx = (minX + maxX) / 2
+    val cy = (minY + maxY) / 2
+    val r = max(maxX - minX, maxY - minY) * 0.62 + 600
+    val zs = zScaleOf(path)
+    val cz = ((path.z.max() + path.z.min()) / 2 - path.z[0]) * zs
+    return Pose(cx + r * cos(angle), cy + r * sin(angle), cz + r * 0.85, cx, cy, cz, cx, cy, r * 1.6)
+}
+
+/** 포인터 뒤 180m·위 90m 에서 앞 260m 를 본다 (앞 150m 평균 방향으로, 굽이에서 덜 흔들리게) */
+private fun chase(path: RoutePath, at: Double): Pose {
+    val i = path.index(at)
+    val px = path.x[i]
+    val py = path.y[i]
+    val j = path.index(at + 150)
+    val k = path.index(at - 60)
+    var hx = path.x[j] - path.x[k]
+    var hy = path.y[j] - path.y[k]
+    val hn = sqrt(hx * hx + hy * hy).coerceAtLeast(1e-6)
+    hx /= hn; hy /= hn
+    val pz = (path.z[i] - path.z[0]) * zScaleOf(path)
+    return Pose(px - hx * 180, py - hy * 180, pz + 90, px + hx * 260, py + hy * 260, pz, px, py, 2_500.0)
+}
+
+/** 높이 키우기: 실제 지형 1.6배, 만든 길 3배 (오르내림이 보이게) */
+private fun zScaleOf(path: RoutePath) = if (path.grid != null) 1.6 else 3.0
+
+/** 원근 카메라 */
+private class ViewCamera(pose: Pose, path: RoutePath, w: Float, h: Float) {
+    val fx = pose.fx
+    val fy = pose.fy
+    val range = pose.range
     private val z0 = path.z[0]
-    val groundZ: Double
+    private val zScale = zScaleOf(path)
     private val cx = w / 2
     private val cy = h * 0.42f
     private val focal = h * 0.95
-    private val c = DoubleArray(3)
+    private val c = doubleArrayOf(pose.ex, pose.ey, pose.ez)
+    private val f = doubleArrayOf(pose.tx - pose.ex, pose.ty - pose.ey, pose.tz - pose.ez)
     private val r = DoubleArray(3)
     private val u = DoubleArray(3)
-    private val f = DoubleArray(3)
 
-    private val zScale = if (path.grid != null) 1.5 else Z_SCALE
     fun zOf(z: Double) = (z - z0) * zScale
 
     init {
-        val i = path.index(at)
-        px = path.x[i]; py = path.y[i]
-        // 앞 150m 의 평균 방향으로 (굽이에서 카메라가 덜 흔들리게)
-        val j = path.index(at + 150)
-        val k = path.index(at - 60)
-        var hx = path.x[j] - path.x[k]
-        var hy = path.y[j] - path.y[k]
-        val hn = sqrt(hx * hx + hy * hy).coerceAtLeast(1e-6)
-        hx /= hn; hy /= hn
-        val pz = zOf(path.z[i])
-        var minZ = pz
-        for (q in path.index(at - 300)..path.index(at + 3000) step 20) minZ = min(minZ, zOf(path.z[q]))
-        groundZ = minZ - 30
-        c[0] = px - hx * BACK; c[1] = py - hy * BACK; c[2] = pz + UP
-        val tx = px + hx * AHEAD
-        val ty = py + hy * AHEAD
-        val tz = pz
-        f[0] = tx - c[0]; f[1] = ty - c[1]; f[2] = tz - c[2]
         norm(f)
-        // r = f × (0,0,1)
         r[0] = f[1]; r[1] = -f[0]; r[2] = 0.0
         norm(r)
-        // u = r × f
         u[0] = r[1] * f[2] - r[2] * f[1]
         u[1] = r[2] * f[0] - r[0] * f[2]
         u[2] = r[0] * f[1] - r[1] * f[0]
     }
+
+    /** 카메라 앞 깊이 (가까운 평면 뒤면 음수) */
+    fun depth(x: Double, y: Double, z: Double) = (x - c[0]) * f[0] + (y - c[1]) * f[1] + (z - c[2]) * f[2]
 
     fun project(x: Double, y: Double, z: Double): Offset? {
         val dx = x - c[0]; val dy = y - c[1]; val dz = z - c[2]
@@ -452,9 +521,17 @@ private class ChaseCamera(path: RoutePath, at: Double, w: Float, h: Float) {
         return Offset((cx + focal * xc / zc).toFloat(), (cy - focal * yc / zc).toFloat())
     }
 
-    /** 두 점을 잇는 선 (가까운 평면 뒤면 그리지 않음) */
+    /** 객체 없이 화면 좌표만 (지형 점이 많아서) */
+    fun projectInto(x: Double, y: Double, z: Double, out: FloatArray, k: Int): Boolean {
+        val dx = x - c[0]; val dy = y - c[1]; val dz = z - c[2]
+        val zc = dx * f[0] + dy * f[1] + dz * f[2]
+        if (zc < NEAR) return false
+        out[2 * k] = (cx + focal * (dx * r[0] + dy * r[1] + dz * r[2]) / zc).toFloat()
+        out[2 * k + 1] = (cy - focal * (dx * u[0] + dy * u[1] + dz * u[2]) / zc).toFloat()
+        return true
+    }
+
     fun segment(p: Path, x0: Double, y0: Double, z0: Double, x1: Double, y1: Double, z1: Double) {
-        // 격자선은 길어서 조각내 그린다
         var last: Offset? = null
         for (s in 0..12) {
             val t = s / 12.0
@@ -470,12 +547,152 @@ private class ChaseCamera(path: RoutePath, at: Double, w: Float, h: Float) {
     }
 
     companion object {
-        const val Z_SCALE = 3.0
-        const val BACK = 180.0
-        const val UP = 90.0
-        const val AHEAD = 260.0
         const val NEAR = 5.0
     }
+}
+
+/**
+ * 색을 입힌 지형: 칸마다 높이별 색(깊은 청록 골짜기 → 푸른 비탈 → 밝은 능선 → 하얀 봉우리)에
+ * 북서쪽 빛 그림자를 곱해 [COLORS] 가지로 묶어 두고(한 번만), 매 프레임은 먼 칸부터 깊이 묶음별로 칠한다.
+ * 그 위에 옅은 네온 격자. 범위 밖은 그리지 않고, 멀수록 배경으로 흐려진다.
+ */
+private class TerrainShade(private val g: TerrainGrid) {
+    private val cells = (g.nx - 1) * (g.ny - 1)
+    private val color = IntArray(cells)
+    private val palette: Array<Color>
+    private val sx = FloatArray(g.nx * g.ny * 2)
+    private val ok = BooleanArray(g.nx * g.ny)
+    private val depth = FloatArray(cells)
+    private val order = IntArray(cells)
+    private val binStart = IntArray(BINS + 1)
+    private val paths = Array(COLORS) { Path() }
+    private val used = BooleanArray(COLORS)
+
+    init {
+        val lo = g.h.min()
+        val hi = g.h.max().coerceAtLeast(lo + 1)
+        // 높이 단계 × 밝기 단계 색표
+        palette = Array(COLORS) { k ->
+            val band = k / SHADES
+            val light = (k % SHADES + 0.5) / SHADES
+            val base = hypso(band.toDouble() / (BANDS - 1))
+            val f = (0.45 + 0.75 * light).toFloat()
+            Color((base.red * f).coerceAtMost(1f), (base.green * f).coerceAtMost(1f), (base.blue * f).coerceAtMost(1f))
+        }
+        // 빛: 북서쪽 위에서 (지도처럼)
+        val lx = -0.55; val ly = 0.45; val lz = 0.7
+        for (j in 0 until g.ny - 1) for (i in 0 until g.nx - 1) {
+            val h00 = g.at(i, j); val h10 = g.at(i + 1, j); val h01 = g.at(i, j + 1); val h11 = g.at(i + 1, j + 1)
+            val dzx = ((h10 + h11) - (h00 + h01)) / (2 * g.step) * 1.6
+            val dzy = ((h01 + h11) - (h00 + h10)) / (2 * g.step) * 1.6
+            val nl = sqrt(dzx * dzx + dzy * dzy + 1)
+            val lam = ((-dzx * lx - dzy * ly + lz) / nl).coerceIn(0.0, 1.0)
+            val band = (((h00 + h10 + h01 + h11) / 4 - lo) / (hi - lo) * (BANDS - 1)).roundToInt().coerceIn(0, BANDS - 1)
+            val shade = (lam * SHADES).toInt().coerceIn(0, SHADES - 1)
+            color[j * (g.nx - 1) + i] = band * SHADES + shade
+        }
+    }
+
+    fun draw(scope: androidx.compose.ui.graphics.drawscope.DrawScope, cam: ViewCamera, wire: Path) {
+        val nx = g.nx
+        for (j in 0 until g.ny) for (i in 0 until nx) {
+            val k = j * nx + i
+            ok[k] = cam.projectInto(g.x0 + i * g.step, g.y0 + j * g.step, cam.zOf(g.at(i, j)), sx, k)
+        }
+        // 깊이 묶음 (먼 것부터 칠하려고)
+        val far = cam.range * 2.2
+        binStart.fill(0)
+        for (j in 0 until g.ny - 1) for (i in 0 until nx - 1) {
+            val c = j * (nx - 1) + i
+            val k = j * nx + i
+            val x = g.x0 + (i + 0.5) * g.step
+            val y = g.y0 + (j + 0.5) * g.step
+            val visible = ok[k] && ok[k + 1] && ok[k + nx] && ok[k + nx + 1] && kotlin.math.hypot(x - cam.fx, y - cam.fy) < far
+            depth[c] = if (visible) cam.depth(x, y, cam.zOf(g.at(i, j))).toFloat() else -1f
+            if (visible) binStart[binOf(depth[c], far)]++
+        }
+        // 묶음별 시작 자리 (먼 묶음이 앞)
+        var acc = 0
+        for (b in BINS - 1 downTo 0) { val n = binStart[b]; binStart[b] = acc; acc += n }
+        val fill = binStart.copyOf()
+        for (c in 0 until cells) if (depth[c] >= 0) { val b = binOf(depth[c], far); order[fill[b]++] = c }
+        // 먼 묶음부터: 묶음 안에서는 색별 경로 하나씩
+        var idx = 0
+        for (b in BINS - 1 downTo 0) {
+            val end = if (b == 0) acc else binStart[b - 1]
+            if (idx >= end) continue
+            paths.forEach { it.reset() }
+            used.fill(false)
+            while (idx < end) {
+                val c = order[idx++]
+                val i = c % (nx - 1)
+                val j = c / (nx - 1)
+                val k = j * nx + i
+                val p = paths[color[c]]
+                used[color[c]] = true
+                p.moveTo(sx[2 * k], sx[2 * k + 1])
+                p.lineTo(sx[2 * (k + 1)], sx[2 * (k + 1) + 1])
+                p.lineTo(sx[2 * (k + nx + 1)], sx[2 * (k + nx + 1) + 1])
+                p.lineTo(sx[2 * (k + nx)], sx[2 * (k + nx) + 1])
+                p.close()
+            }
+            // 멀수록 흐리게 (배경으로)
+            val alpha = (1f - b.toFloat() / BINS).let { 0.25f + 0.75f * it }
+            for (q in 0 until COLORS) if (used[q]) {
+                scope.drawPath(paths[q], palette[q].copy(alpha = alpha))
+                // 칸 사이 틈이 비치지 않게 같은 색 가는 테두리
+                scope.drawPath(paths[q], palette[q].copy(alpha = alpha), style = Stroke(1.2f))
+            }
+        }
+        // 옅은 네온 격자 (보이는 칸만)
+        wire.reset()
+        for (j in 0 until g.ny) for (i in 0 until nx) {
+            val k = j * nx + i
+            if (!ok[k]) continue
+            if (i + 1 < nx && ok[k + 1] && (j % 2 == 0)) { wire.moveTo(sx[2 * k], sx[2 * k + 1]); wire.lineTo(sx[2 * (k + 1)], sx[2 * (k + 1) + 1]) }
+            if (j + 1 < g.ny && ok[k + nx] && (i % 2 == 0)) { wire.moveTo(sx[2 * k], sx[2 * k + 1]); wire.lineTo(sx[2 * (k + nx)], sx[2 * (k + nx) + 1]) }
+        }
+        scope.drawPath(wire, Color(0x2E7FD8F0), style = Stroke(0.8f))
+    }
+
+    private fun binOf(d: Float, far: Double): Int = ((d / (far * 1.2)) * BINS).toInt().coerceIn(0, BINS - 1)
+
+    companion object {
+        const val BANDS = 8
+        const val SHADES = 5
+        const val COLORS = BANDS * SHADES
+        const val BINS = 40
+
+        /** 높이별 색: 골짜기 깊은 청록 → 푸른 비탈 → 청록빛 능선 → 하얀 봉우리 (네온 화면과 어울리게 차갑게) */
+        fun hypso(v: Double): Color {
+            val stops = listOf(
+                0.0 to Color(0xFF0A2A3C), 0.3 to Color(0xFF0F4A5E), 0.55 to Color(0xFF1C6E7E),
+                0.75 to Color(0xFF3C9AA6), 0.9 to Color(0xFF8CCAD4), 1.0 to Color(0xFFE6F6FA),
+            )
+            for (s in 1 until stops.size) {
+                if (v <= stops[s].first) {
+                    val (a, ca) = stops[s - 1]
+                    val (b, cb) = stops[s]
+                    val k = ((v - a) / (b - a)).toFloat()
+                    return Color(ca.red + (cb.red - ca.red) * k, ca.green + (cb.green - ca.green) * k, ca.blue + (cb.blue - ca.blue) * k)
+                }
+            }
+            return stops.last().second
+        }
+    }
+}
+
+/** 지형 격자에서 (x, y) 높이 (쌍선형) */
+private fun heightAt(g: TerrainGrid, x: Double, y: Double): Double {
+    val fx = ((x - g.x0) / g.step).coerceIn(0.0, g.nx - 1.001)
+    val fy = ((y - g.y0) / g.step).coerceIn(0.0, g.ny - 1.001)
+    val i = fx.toInt()
+    val j = fy.toInt()
+    val tx = fx - i
+    val ty = fy - j
+    val a = g.at(i, j) * (1 - tx) + g.at(i + 1, j) * tx
+    val b = g.at(i, j + 1) * (1 - tx) + g.at(i + 1, j + 1) * tx
+    return a * (1 - ty) + b * ty
 }
 
 /** 위에서 본 전체 경로 (빨강 = 위험, 주황 = 조심, 흰 점 = 지금) */

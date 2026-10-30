@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.unit.dp
 
 /** 찰랑 분석 화면의 네온 스타일 (차량 화면, 어두운 실내) */
@@ -131,13 +132,16 @@ fun DrawScope.carSilhouette(color: Color) {
         moveTo(w * 0.74f, h * 0.23f)
         lineTo(w * 0.73f, h * 0.43f)
     }
-    glowPath(body, color, 2f)
-    glowPath(window, color.copy(alpha = 0.7f), 1.3f)
-    for (cx in listOf(0.43f, 0.89f)) {
-        val r = h * 0.15f
-        drawCircle(color.copy(alpha = 0.12f), radius = r * 1.5f, center = p(cx, 0.80f), style = Stroke(5f))
-        drawCircle(color, radius = r, center = p(cx, 0.80f), style = Stroke(2f))
-        drawCircle(color.copy(alpha = 0.6f), radius = r * 0.45f, center = p(cx, 0.80f), style = Stroke(1.2f))
+    // 차는 오른쪽(앞)을 보게 좌우로 뒤집는다: 빛줄기(바람)가 차 뒤로 흐르도록
+    scale(scaleX = -1f, scaleY = 1f, pivot = p(0.645f, 0.5f)) {
+        glowPath(body, color, 2f)
+        glowPath(window, color.copy(alpha = 0.7f), 1.3f)
+        for (cx in listOf(0.43f, 0.89f)) {
+            val r = h * 0.15f
+            drawCircle(color.copy(alpha = 0.12f), radius = r * 1.5f, center = p(cx, 0.80f), style = Stroke(5f))
+            drawCircle(color, radius = r, center = p(cx, 0.80f), style = Stroke(2f))
+            drawCircle(color.copy(alpha = 0.6f), radius = r * 0.45f, center = p(cx, 0.80f), style = Stroke(1.2f))
+        }
     }
 }
 

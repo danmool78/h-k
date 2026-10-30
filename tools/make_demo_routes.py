@@ -25,8 +25,8 @@ ROUTES = [
     ("highway", "고속도로 (판교 → 경부고속도로 → 수원IC)", "highway", [(37.4000, 127.1080), (37.2700, 127.1150)]),
 ]
 OUT = os.path.join(os.path.dirname(__file__), "..", "shared", "src", "commonMain", "composeResources", "files", "routes")
-MARGIN = 1500.0
-GRID_MAX = 34
+MARGIN = 3000.0
+GRID_MAX = 64
 
 
 def get(url):
@@ -46,7 +46,7 @@ def heights(lats, lngs):
         la = ",".join(f"{v:.5f}" for v in lats[i:i + 100])
         lo = ",".join(f"{v:.5f}" for v in lngs[i:i + 100])
         out += get(f"https://api.open-meteo.com/v1/elevation?latitude={la}&longitude={lo}")["elevation"]
-        time.sleep(0.3)
+        time.sleep(1.0)
     return out
 
 
