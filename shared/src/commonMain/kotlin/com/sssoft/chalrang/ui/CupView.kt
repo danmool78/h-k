@@ -3,6 +3,7 @@ package com.sssoft.chalrang.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -13,6 +14,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -61,6 +63,11 @@ fun CupView(
     val state by rememberUpdatedState(Triple(tiltX, tiltY, spilling))
     val drops = remember { Drops() }
     var time by remember { mutableFloatStateOf(0f) }
+    // 3D 물: GPU 셰이더 + 물결 시뮬레이션 (안 되면 2D 그림)
+    val water = remember { WaterShader() }
+    val sim = remember { WaterSim(RTI.toDouble()) }
+    val uniforms = remember { WaterUniforms() }
+    DisposableEffect(Unit) { onDispose { water.release() } }
 
     // 프레임마다 물방울을 움직이고, 넘치는 중이면 가장자리에서 새 물방울을 낸다
     LaunchedEffect(Unit) {
@@ -72,6 +79,11 @@ fun CupView(
                 time += dt
                 val (tx, ty, sp) = state
                 drops.step(dt, if (sp) slope(tx, ty) else null, shownLevel)
+                if (water.supported && dt > 0) {
+                    val h0 = BASE + shownLevel * (H - BASE)
+                    val (px, py) = realSlope(tx, ty)
+                    sim.step(dt.toDouble(), px, py, innerRadiusAt(h0) * 0.97, sp)
+                }
             }
         }
     }
@@ -83,15 +95,32 @@ fun CupView(
         val cam = Camera(size.width, size.height)
         val c = waterColor(dose)
         val h0 = BASE + shownLevel * (H - BASE)
-        // 넘친 뒤에는 수면이 가장자리 가까이에서 멈춘다 (그 이상은 물방울로 보여 준다)
-        val (px, py) = slope(tiltX, tiltY).let { (sx, sy) ->
-            val m = hypot(sx, sy)
-            val limit = (H - h0) / RTI * 0.85
-            if (m > limit) (sx * limit / m) to (sy * limit / m) else sx to sy
-        }
+        val (px, py) = limitedSlope(tiltX, tiltY, h0)
         val ripple = 0.012f * sin(time * 2.4f)
 
         drawFloor(cam, pen, c, puddle, stage)
+        // GPU 3D 물: 유리·물·빛을 화소마다 광선으로 계산
+        if (water.supported) {
+            uniforms.width = size.width; uniforms.height = size.height
+            uniforms.unit = cam.unit; uniforms.cx = cam.cx; uniforms.cy = cam.cy
+            val (rx, ry) = realSlope(tiltX, tiltY)
+            uniforms.h0 = h0.toFloat(); uniforms.slopeX = rx.toFloat(); uniforms.slopeY = ry.toFloat()
+            uniforms.time = time
+            uniforms.r = c.red; uniforms.g = c.green; uniforms.b = c.blue
+            water.setUniforms(uniforms)
+            water.setHeights(sim.encode(), WaterSim.N)
+            val brush = water.brush()
+            if (brush != null) {
+                // 셰이더는 컵이 있는 영역만 (나머지 화소는 계산하지 않는다)
+                val left = cam.project(-RT * 1.06, 0.0, H.toDouble()).x
+                val right = cam.project(RT * 1.06, 0.0, H.toDouble()).x
+                val top = cam.project(0.0, RT.toDouble(), H.toDouble()).y - cam.unit * 0.06f
+                val bottom = cam.project(0.0, -RB.toDouble(), 0.0).y + cam.unit * 0.03f
+                drawRect(brush, topLeft = Offset(left, top), size = Size(right - left, bottom - top))
+                drops.draw(this, cam, c)
+                return@Canvas
+            }
+        }
         drawGlassBack(cam, pen)
 
         // 수면이 벽과 만나는 높이 (원뿔 벽 위에서 풀기)
@@ -170,16 +199,47 @@ private fun waterColor(dose: Double): Color = when {
 
 // ---- 기하 ----
 
-private const val RB = 0.74f
-private const val RT = 1.0f
-private const val H = 2.1f
+/** 컵 치수·카메라 (3D 셰이더 Water3D 와 같게 쓴다) */
+internal object CupGeometry {
+    const val RB = 0.74f
+    const val RT = 1.0f
+    const val H = 2.1f
+    /** 유리 바닥 두께, 벽 두께 */
+    const val BASE = 0.16
+    const val WALL = 0.035
+    val PITCH = 24.0 * PI / 180
+    const val DIST = 8.0
+}
+
+private const val RB = CupGeometry.RB
+private const val RT = CupGeometry.RT
+private const val H = CupGeometry.H
 private const val CONE = (RT - RB) / H
-/** 유리 바닥 두께, 벽 두께 */
-private const val BASE = 0.16
-private const val WALL = 0.035
+private const val BASE = CupGeometry.BASE
+private const val WALL = CupGeometry.WALL
 /** 안쪽(물이 닿는) 반지름: 바닥·가장자리 */
 private const val RBI = RB - WALL
 private const val RTI = RT - WALL
+
+/**
+ * 3D 물의 수면 경사: 실제 컵의 물처럼 덜 기울인다 (2D 그림은 넘침을 보이려고 가장자리까지 키운다).
+ * 넘치기 시작하는 기울기에서 약 15도, 아무리 세도 약 27도까지. 넘침은 물방울·물결로 보여 준다.
+ */
+private fun realSlope(tiltX: Double, tiltY: Double): Pair<Double, Double> {
+    val sx = -tiltY / WaterCup.MAX_FREEBOARD * 0.27
+    val sy = tiltX / WaterCup.MAX_FREEBOARD * 0.27
+    val m = hypot(sx, sy)
+    val cap = 0.5 * kotlin.math.tanh(m / 0.5)
+    return if (m > 1e-9) (sx * cap / m) to (sy * cap / m) else 0.0 to 0.0
+}
+
+/** 넘친 뒤에는 수면이 가장자리 가까이에서 멈춘다 (그 이상은 물방울로 보여 준다) */
+private fun limitedSlope(tiltX: Double, tiltY: Double, h0: Double): Pair<Double, Double> {
+    val (sx, sy) = slope(tiltX, tiltY)
+    val m = hypot(sx, sy)
+    val limit = (H - h0) / RTI * 0.85
+    return if (m > limit) (sx * limit / m) to (sy * limit / m) else sx to sy
+}
 
 /** 모델 기울기(g) → 수면 경사 (dz/dx, dz/dy). x 오른쪽, y 앞(화면 안쪽) */
 private fun slope(tiltX: Double, tiltY: Double): Pair<Double, Double> {
@@ -197,8 +257,8 @@ private data class P3(val x: Double, val y: Double, val z: Double)
 private class Camera(w: Float, h: Float) {
     /** 컵 가장자리부터 바닥 고리·물웅덩이 끝까지가 화면 안에 들어오도록 크기와 중심을 맞춘다 */
     val unit: Float
-    private val cx: Float
-    private val cy: Float
+    val cx: Float
+    val cy: Float
 
     init {
         val (minX, maxX, minY, maxY) = BOUNDS
@@ -216,8 +276,8 @@ private class Camera(w: Float, h: Float) {
     }
 
     companion object {
-        val PITCH = 24.0 * PI / 180
-        const val DIST = 8.0
+        val PITCH = CupGeometry.PITCH
+        const val DIST = CupGeometry.DIST
         const val FILL = 0.94
 
         /** 크기 1, 중심 0 일 때의 화면 좌표 (아래가 +) */
