@@ -12,8 +12,8 @@ import com.sssoft.chalrang.core.TerrainGrid
 expect class TerrainShader() {
     val supported: Boolean
 
-    /** 지형을 바꿀 때만 (그림을 새로 올림) */
-    fun setGrid(argb: IntArray, w: Int, h: Int)
+    /** 지형을 바꿀 때만 (그림을 새로 올림): 가까이 볼 자세한 것과 멀리까지 덮는 넓은 것 */
+    fun setGrids(fine: EncodedGrid, coarse: EncodedGrid)
 
     fun setUniforms(u: TerrainUniforms)
 
@@ -31,15 +31,22 @@ class TerrainUniforms {
     var focal = 1f
     var cx = 0f
     var cy = 0f
-    var ox = 0f
-    var oy = 0f
-    var step = 1f
-    var nx = 1f
-    var ny = 1f
+    /** 자세한 지형 [0] 과 넓은 지형 [1] 의 시작점·간격·칸 수·높이 범위 */
+    val ox = FloatArray(2)
+    val oy = FloatArray(2)
+    val step = FloatArray(2)
+    val nx = FloatArray(2)
+    val ny = FloatArray(2)
+    val hMin = FloatArray(2)
+    val hRange = FloatArray(2)
     var zScale = 1f
     var z0 = 0f
-    var hMin = 0f
-    var hRange = 1f
+
+    fun set(k: Int, g: com.sssoft.chalrang.core.TerrainGrid, e: EncodedGrid) {
+        ox[k] = g.x0.toFloat(); oy[k] = g.y0.toFloat(); step[k] = g.step.toFloat()
+        nx[k] = g.nx.toFloat(); ny[k] = g.ny.toFloat()
+        hMin[k] = e.hMin.toFloat(); hRange[k] = e.hRange.toFloat()
+    }
     /** 이 거리(m) 쯤부터 안개로 흐려진다 */
     var far = 10_000f
 }
@@ -63,7 +70,8 @@ class EncodedGrid(val argb: IntArray, val w: Int, val h: Int, val hMin: Double, 
 
 internal val TERRAIN_SKSL: String by lazy {
     """
-uniform shader heights;
+uniform shader fine;
+uniform shader coarse;
 uniform float3 uEye;
 uniform float3 uF;
 uniform float3 uR;
@@ -73,17 +81,41 @@ uniform float2 uC;
 uniform float2 uOrigin;
 uniform float uStep;
 uniform float2 uSize;
-uniform float uZScale;
-uniform float uZ0;
 uniform float uHMin;
 uniform float uHRange;
+uniform float2 uOrigin2;
+uniform float uStep2;
+uniform float2 uSize2;
+uniform float uHMin2;
+uniform float uHRange2;
+uniform float uZScale;
+uniform float uZ0;
 uniform float uFar;
 
-// 실제 높이 (m)
-float hRaw(float2 xy) {
+float dec(half4 c) { return (float(c.r) * 255.0 * 256.0 + float(c.g) * 255.0) / 65535.0; }
+
+float hFine(float2 xy) {
     float2 t = (xy - uOrigin) / uStep + 0.5;
-    half4 c = heights.eval(clamp(t, float2(0.5), uSize - 0.5));
-    return uHMin + (float(c.r) * 255.0 * 256.0 + float(c.g) * 255.0) / 65535.0 * uHRange;
+    return uHMin + dec(fine.eval(clamp(t, float2(0.5), uSize - 0.5))) * uHRange;
+}
+
+float hCoarse(float2 xy) {
+    float2 t = (xy - uOrigin2) / uStep2 + 0.5;
+    return uHMin2 + dec(coarse.eval(clamp(t, float2(0.5), uSize2 - 0.5))) * uHRange2;
+}
+
+// 자세한 지형이 덮는 정도 (안쪽 1, 가장자리 10칸에 걸쳐 넓은 지형으로 섞임)
+float fineW(float2 xy) {
+    float2 d = min(xy - uOrigin, uOrigin + (uSize - 1.0) * uStep - xy);
+    return smoothstep(0.0, uStep * 10.0, min(d.x, d.y));
+}
+
+// 실제 높이 (m): 가까이는 자세한 것, 바깥은 넓은 것
+float hRaw(float2 xy) {
+    float c = hCoarse(xy);
+    float w = fineW(xy);
+    if (w <= 0.0) return c;
+    return mix(c, hFine(xy), w);
 }
 
 // 그리는 높이 (출발점 0, 키운 만큼)
@@ -106,11 +138,11 @@ float3 hypso(float v) {
 
 half4 main(float2 fc) {
     float3 d = normalize(uF * uFocal + uR * (fc.x - uC.x) - uU * (fc.y - uC.y));
-    // 지형 상자와 만나는 구간
-    float2 lo = uOrigin;
-    float2 hi = uOrigin + (uSize - 1.0) * uStep;
-    float zLo = (uHMin - uZ0) * uZScale - 1.0;
-    float zHi = (uHMin + uHRange - uZ0) * uZScale + 1.0;
+    // 넓은 지형 상자와 만나는 구간
+    float2 lo = uOrigin2;
+    float2 hi = uOrigin2 + (uSize2 - 1.0) * uStep2;
+    float zLo = (min(uHMin, uHMin2) - uZ0) * uZScale - 1.0;
+    float zHi = (max(uHMin + uHRange, uHMin2 + uHRange2) - uZ0) * uZScale + 1.0;
     float3 bmin = float3(lo, zLo);
     float3 bmax = float3(hi, zHi);
     float3 inv = 1.0 / (abs(d) + 1e-6) * sign(d + 1e-9);
@@ -146,14 +178,14 @@ half4 main(float2 fc) {
     float3 p = uEye + d * b;
 
     // 매끄러운 그림자: 높이 기울기로 법선, 북서쪽 위 빛
-    float e = uStep * 0.6;
+    float e = mix(uStep2, uStep, fineW(p.xy)) * 0.6;
     float hx = hW(p.xy + float2(e, 0.0)) - hW(p.xy - float2(e, 0.0));
     float hy = hW(p.xy + float2(0.0, e)) - hW(p.xy - float2(0.0, e));
     float3 n = normalize(float3(-hx, -hy, 2.0 * e));
     float3 L = normalize(float3(-0.55, 0.45, 0.7));
     float lam = max(dot(n, L), 0.0);
     float h = hRaw(p.xy);
-    float v = clamp((h - uHMin) / uHRange, 0.0, 1.0);
+    float v = clamp((h - uHMin2) / uHRange2, 0.0, 1.0);
     float3 col = hypso(v) * (0.32 + 0.85 * lam);
     // 등고선 50m (지도 느낌의 옅은 네온), 가까울수록 또렷
     float c = fract(h / 50.0);
@@ -163,16 +195,18 @@ half4 main(float2 fc) {
     // 가까이 볼 때: 10m 잔 등고선과 100m 네온 격자 (땅이 밋밋해 보이지 않고 달리는 느낌이 나게)
     float near = 1.0 - smoothstep(600.0, 2200.0, b);
     float c10 = fract(h / 10.0);
-    float line10 = smoothstep(0.08, 0.0, min(c10, 1.0 - c10));
+    // 완만한 비탈에서는 선이 넓게 번지므로 기울기만큼 가늘게
+    float slope = length(float2(hx, hy)) / (2.0 * e * uZScale) + 0.02;
+    float line10 = smoothstep(clamp(0.02 / slope, 0.01, 0.08), 0.0, min(c10, 1.0 - c10));
     float2 g = fract(p.xy / 100.0);
-    float gridL = smoothstep(0.02, 0.0, min(min(g.x, 1.0 - g.x), min(g.y, 1.0 - g.y)));
-    col += float3(0.30, 0.78, 0.96) * near * (line10 * 0.16 + gridL * 0.12);
+    float gridL = smoothstep(0.006, 0.0, min(min(g.x, 1.0 - g.x), min(g.y, 1.0 - g.y)));
+    col += float3(0.30, 0.78, 0.96) * near * (line10 * 0.08 + gridL * 0.05);
     // 거리 안개 (배경 남색으로)
     float fog = smoothstep(uFar * 0.35, uFar, b);
     col = mix(col, float3(0.035, 0.075, 0.145), fog);
     // 가장자리는 부드럽게 사라지게 (지형 상자의 끝이 보이지 않게)
     float2 edge = min(p.xy - lo, hi - p.xy);
-    float alpha = smoothstep(0.0, uStep * 12.0, min(edge.x, edge.y)) * (1.0 - fog * 0.6);
+    float alpha = smoothstep(0.0, uStep2 * 8.0, min(edge.x, edge.y)) * (1.0 - fog * 0.6);
     return half4(half3(col) * half(alpha), half(alpha));
 }
 """
