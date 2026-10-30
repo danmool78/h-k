@@ -16,7 +16,10 @@ import kotlin.math.sqrt
  * 같은 주기대에 몰려 있으면 그 주기를 더 무겁게 보는 강조 필터를 만든다.
  * - [MIN_EVENTS] 번 미만이면 강조 없음 (표준과 같음)
  * - 멀미 주기가 한 옥타브 이상 흩어져 있으면 강조 없음 (특정 주기에 약한 게 아님)
- * - 강조는 최대 [MAX_GAIN] 배, 주기는 멀미 대역 안 (2~10초)
+ * - 주기는 수평 멀미 실험들이 다룬 범위 안 ([LEARN_LO]~[LEARN_HI] Hz, 약 1.3~33초).
+ *   표준 Wf 의 멀미 대역(2~10초)보다 넓다: 그 바깥은 연구마다 가중이 갈려서 아이 기록으로 정한다
+ * - 강조는 최대 [maxGain] 배: [MAX_GAIN] × (연구 범위 위쪽 끝 [Wh.upper] ÷ 표준 Wf).
+ *   2~10초에서는 약 1.5 배, Wf 가 크게 깎는 긴 주기(20초: Wf 0.16)에서는 연구 가중까지 올릴 수 있다
  */
 data class Sensitivity(
     /** "지금 멀미" 때마다 찾은 멀미 주기 (초), 오래된 것부터 */
@@ -36,12 +39,18 @@ data class Sensitivity(
                 sw += w
                 s += w * ln(1 / p)
             }
-            return exp(s / sw).coerceIn(ShakeAnalysis.BAND_LO, ShakeAnalysis.BAND_HI)
+            return exp(s / sw).coerceIn(LEARN_LO, LEARN_HI)
         }
 
     val peakPeriod: Double get() = 1 / peakHz
 
-    /** 강조 배율: 쌓인 횟수와 모인 정도에 따라 1 ~ [MAX_GAIN] */
+    /** 이 민감 주기에서 강조할 수 있는 최대 배율 */
+    val maxGain: Double get() = MAX_GAIN * max(1.0, Wh.upper(peakHz) / Wf.gain(peakHz))
+
+    /** 강조 필터의 Q: 배율이 클수록 좁게 해서 이웃 주기(표준이 이미 무겁게 보는 2~10초)까지 키우지 않는다 */
+    val q: Double get() = PeakFilter.Q * max(1.0, sqrt(gain / MAX_GAIN))
+
+    /** 강조 배율: 쌓인 횟수와 모인 정도에 따라 1 ~ [maxGain] */
     val gain: Double
         get() {
             if (count < MIN_EVENTS) return 1.0
@@ -50,18 +59,22 @@ data class Sensitivity(
             val sd = sqrt(logs.sumOf { (it - mean) * (it - mean) } / logs.size)
             val together = (1 - sd / SPREAD_OCTAVES).coerceIn(0.0, 1.0)
             val ramp = ((count - MIN_EVENTS + 1) / 3.0).coerceIn(0.0, 1.0)
-            return 1 + (MAX_GAIN - 1) * together * ramp
+            return 1 + (maxGain - 1) * together * ramp
         }
 
     fun with(period: Double): Sensitivity = Sensitivity((periods + period).takeLast(MAX_EVENTS))
 
     /** 주파수 [f] 에서 이 아이의 가중 (표준 Wf × 강조) */
-    fun weight(f: Double): Double = Wf.gain(f) * PeakFilter.gainAt(f, peakHz, gain)
+    fun weight(f: Double): Double = Wf.gain(f) * PeakFilter.gainAt(f, peakHz, gain, q)
 
     companion object {
         const val MIN_EVENTS = 3
         const val MAX_EVENTS = 10
+        /** 표준이 멀미 대역으로 보는 주기에서의 최대 강조 */
         const val MAX_GAIN = 1.5
+        /** 배울 수 있는 민감 주파수 범위 (Hz): Donohew & Griffin 2004 ~ Griffin & Mills 2002 실험 범위 */
+        const val LEARN_LO = 0.03
+        const val LEARN_HI = 0.8
         /** 멀미 주기가 이 정도(옥타브) 흩어지면 특정 주기에 약하다고 보지 않는다 */
         const val SPREAD_OCTAVES = 1.0
         /** 한 번 전 기록의 무게 */
@@ -155,10 +168,12 @@ object SickPeriod {
         var bestScore = 0.0
         for (k in sick.freqs.indices) {
             val f = sick.freqs[k]
-            if (f < ShakeAnalysis.BAND_LO || f > ShakeAnalysis.BAND_HI) continue
+            if (f < Sensitivity.LEARN_LO || f > Sensitivity.LEARN_HI) continue
             // 평소 대비 얼마나 많았나 (평소 기록이 없으면 그대로). 평소에도 거의 없던 주기의 잡음은 바닥값으로 누른다
             val ratio = if (pb != null) (ps[k] / sumS) / max(0.02 / ps.size, pb[k] / sumB!!) else 1.0
-            val score = ps[k] / sumS * ratio * sick.wf[k] * sick.wf[k]
+            // 멀미 가중은 연구 범위의 위쪽 끝으로: 표준 Wf 로 보면 긴 주기는 처음부터 후보가 못 된다
+            val w = Wh.upper(f)
+            val score = ps[k] / sumS * ratio * w * w
             if (score > bestScore) { bestScore = score; best = k }
         }
         return if (best >= 0) 1 / sick.freqs[best] else null

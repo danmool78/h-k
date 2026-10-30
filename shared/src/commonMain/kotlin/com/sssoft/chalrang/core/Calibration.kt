@@ -44,6 +44,17 @@ class TiltLog(val intervalSec: Double = 0.2, private val maxSamples: Int = 5 * 3
         }
         return dose
     }
+
+    /** 물 높이 [level] 로 이 기록을 다시 재생했을 때 가장 컸던 멀미 누적량 */
+    fun replayPeakDose(level: Double): Double {
+        var dose = 0.0
+        var peak = 0.0
+        for (i in 0 until size) {
+            dose = WaterCup.recover(dose, intervalSec) + WaterCup.spillRate(get(i), level) * intervalSec
+            if (dose > peak) peak = dose
+        }
+        return peak
+    }
 }
 
 object Calibration {
@@ -71,6 +82,29 @@ object Calibration {
             if (log.replayDose(mid) >= target) hi = mid else lo = mid
         }
         return (lo + hi) / 2
+    }
+
+    /**
+     * 멀미 없이 끝난 주행으로 기준을 낮출 때 새 기준 쪽으로 옮기는 비율.
+     * 멀미를 누르지 않았거나 환기·휴식 덕에 넘긴 경우도 섞여 있으므로 멀미 때([LEARN_RATE])보다 작게.
+     */
+    const val CALM_RATE = 0.25
+
+    /**
+     * 멀미 없이 끝난 주행: 물 높이 [level] 로 다시 재생한 최대 누적량이 [target] 을 넘었는데도 괜찮았다면,
+     * 이 아이는 생각보다 덜 예민하다 → 이 주행이 겨우 [target] 에 닿는 물 높이 쪽으로 조금 낮춘 값.
+     * 넘지 않았으면 (알 수 있는 것이 없으므로) null.
+     */
+    fun levelAfterCalmTrip(log: TiltLog, level: Double, target: Double = TARGET_DOSE): Double? {
+        if (log.replayPeakDose(level) < target) return null
+        var lo = WaterCup.MIN_LEVEL
+        var hi = level
+        if (log.replayPeakDose(lo) >= target) return level + (lo - level) * CALM_RATE
+        repeat(40) {
+            val mid = (lo + hi) / 2
+            if (log.replayPeakDose(mid) >= target) hi = mid else lo = mid
+        }
+        return level + ((lo + hi) / 2 - level) * CALM_RATE
     }
 
     /** 이전 기준 [old] (처음이면 null) 과 이번 결과 [found] 를 합친다. */

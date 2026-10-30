@@ -324,7 +324,7 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
     val gpu = remember { TerrainShader() }
     val tu = remember { TerrainUniforms() }
     var loaded by remember { mutableStateOf<TerrainGrid?>(null) }
-    var encoded by remember { mutableStateOf<EncodedGrid?>(null) }
+    var loadedWide by remember { mutableStateOf<TerrainGrid?>(null) }
     DisposableEffect(Unit) { onDispose { gpu.release() } }
     Canvas(modifier) {
         val st = plan.steps[plan.stepIndex(t)]
@@ -337,17 +337,18 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
         val segG = if (close) details[st.seg] else null
         val tg = listOfNotNull(fineG, segG).minByOrNull { it.step } ?: path.grid
         if (tg != null && gpu.supported) {
-            if (loaded !== tg) {
+            // 두 겹: 가까이는 가장 자세한 것, 멀리까지는 넓은 것 (앱에 넣어 둔 경로 둘레 3km, 없으면 같은 것)
+            val wide = path.grid ?: tg
+            if (loaded !== tg || loadedWide !== wide) {
                 val e = EncodedGrid.of(tg)
-                gpu.setGrid(e.argb, e.w, e.h)
+                val ew = if (wide === tg) e else EncodedGrid.of(wide)
+                gpu.setGrids(e, ew)
+                tu.set(0, tg, e)
+                tu.set(1, wide, ew)
                 loaded = tg
-                encoded = e
+                loadedWide = wide
             }
-            val e = encoded!!
             cam.fill(tu)
-            tu.ox = tg.x0.toFloat(); tu.oy = tg.y0.toFloat(); tu.step = tg.step.toFloat()
-            tu.nx = tg.nx.toFloat(); tu.ny = tg.ny.toFloat()
-            tu.hMin = e.hMin.toFloat(); tu.hRange = e.hRange.toFloat()
             tu.far = (cam.range * 2.2).toFloat()
             gpu.setUniforms(tu)
             gpu.brush()?.let { drawRect(it) }

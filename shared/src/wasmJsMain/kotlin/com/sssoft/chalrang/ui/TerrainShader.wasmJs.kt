@@ -19,8 +19,6 @@ import org.jetbrains.skia.Shader
 actual class TerrainShader actual constructor() {
     private var effect: RuntimeEffect? = null
     private var builder: RuntimeShaderBuilder? = null
-    private var bitmap: Bitmap? = null
-    private var image: Image? = null
     private var heightShader: Shader? = null
     private val recent = ArrayDeque<Shader>()
 
@@ -38,26 +36,36 @@ actual class TerrainShader actual constructor() {
         supported = ok
     }
 
-    actual fun setGrid(argb: IntArray, w: Int, h: Int) {
+    /** 올린 그림 둘 (자세한 것, 넓은 것): 바꿀 때 이전 것을 닫는다 */
+    private val held = ArrayList<org.jetbrains.skia.impl.Managed>()
+
+    actual fun setGrids(fine: EncodedGrid, coarse: EncodedGrid) {
         val b = builder ?: return
-        val bytes = ByteArray(w * h * 4)
-        for (k in 0 until w * h) {
-            val c = argb[k]
+        held.forEach { it.close() }
+        held.clear()
+        b.child("fine", upload(fine))
+        b.child("coarse", upload(coarse))
+        heightShader = held.last() as Shader
+    }
+
+    private fun upload(e: EncodedGrid): Shader {
+        val bytes = ByteArray(e.w * e.h * 4)
+        for (k in 0 until e.w * e.h) {
+            val c = e.argb[k]
             bytes[k * 4] = (c shr 16 and 0xFF).toByte()
             bytes[k * 4 + 1] = (c shr 8 and 0xFF).toByte()
             bytes[k * 4 + 2] = (c and 0xFF).toByte()
             bytes[k * 4 + 3] = (c ushr 24).toByte()
         }
-        heightShader?.close()
-        image?.close()
-        bitmap?.close()
         val bmp = Bitmap()
-        bmp.allocPixels(ImageInfo(w, h, ColorType.RGBA_8888, ColorAlphaType.PREMUL))
-        bmp.installPixels(bmp.imageInfo, bytes, w * 4)
-        bitmap = bmp
-        image = Image.makeFromBitmap(bmp)
-        heightShader = image!!.makeShader(FilterTileMode.CLAMP, FilterTileMode.CLAMP, FilterMipmap(FilterMode.LINEAR, MipmapMode.NONE))
-        b.child("heights", heightShader!!)
+        bmp.allocPixels(ImageInfo(e.w, e.h, ColorType.RGBA_8888, ColorAlphaType.PREMUL))
+        bmp.installPixels(bmp.imageInfo, bytes, e.w * 4)
+        val img = Image.makeFromBitmap(bmp)
+        val sh = img.makeShader(FilterTileMode.CLAMP, FilterTileMode.CLAMP, FilterMipmap(FilterMode.LINEAR, MipmapMode.NONE))
+        held += bmp
+        held += img
+        held += sh
+        return sh
     }
 
     actual fun setUniforms(u: TerrainUniforms) {
@@ -68,13 +76,18 @@ actual class TerrainShader actual constructor() {
         b.uniform("uU", u.u[0], u.u[1], u.u[2])
         b.uniform("uFocal", u.focal)
         b.uniform("uC", u.cx, u.cy)
-        b.uniform("uOrigin", u.ox, u.oy)
-        b.uniform("uStep", u.step)
-        b.uniform("uSize", u.nx, u.ny)
+        b.uniform("uOrigin", u.ox[0], u.oy[0])
+        b.uniform("uStep", u.step[0])
+        b.uniform("uSize", u.nx[0], u.ny[0])
+        b.uniform("uHMin", u.hMin[0])
+        b.uniform("uHRange", u.hRange[0])
+        b.uniform("uOrigin2", u.ox[1], u.oy[1])
+        b.uniform("uStep2", u.step[1])
+        b.uniform("uSize2", u.nx[1], u.ny[1])
+        b.uniform("uHMin2", u.hMin[1])
+        b.uniform("uHRange2", u.hRange[1])
         b.uniform("uZScale", u.zScale)
         b.uniform("uZ0", u.z0)
-        b.uniform("uHMin", u.hMin)
-        b.uniform("uHRange", u.hRange)
         b.uniform("uFar", u.far)
     }
 
@@ -89,9 +102,8 @@ actual class TerrainShader actual constructor() {
 
     actual fun release() {
         recent.forEach { it.close() }; recent.clear()
-        heightShader?.close(); heightShader = null
-        image?.close(); image = null
-        bitmap?.close(); bitmap = null
+        held.forEach { it.close() }; held.clear()
+        heightShader = null
         builder?.close(); builder = null
         effect?.close(); effect = null
     }
