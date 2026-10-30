@@ -159,18 +159,19 @@ half4 main(float2 fc) {
     float prev = t;
     bool hit = false;
     bool side = false;
-    for (int i = 0; i < 128; i++) {
+    // 걸음: 가까이는 1.5m, 멀수록 거리의 3.5% (192걸음이면 10km 넘게 간다 — 1인칭에서도 먼 땅까지)
+    for (int i = 0; i < 192; i++) {
         float3 p = uEye + d * t;
         if (p.z < hW(p.xy)) { hit = true; side = (i == 0); break; }
         prev = t;
-        t += max(2.0, t * 0.006);
+        t += max(1.5, t * 0.035);
         if (t > tFar) break;
     }
     // 상자 옆면으로 바로 들어온 것은 땅이 아니라 벽: 그리지 않는다
     if (!hit || side) return half4(0.0);
     float a = prev;
     float b = t;
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 8; k++) {
         float m = (a + b) * 0.5;
         float3 q = uEye + d * m;
         if (q.z < hW(q.xy)) b = m; else a = m;
