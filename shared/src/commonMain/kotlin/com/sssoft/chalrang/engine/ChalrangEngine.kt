@@ -228,6 +228,12 @@ class ChalrangEngine(
 
     private var demo: Demo? = null
     private var sickPending = false
+
+    /** 이번 주행에서 "지금 멀미" 를 눌렀는지 (누구든 멀미했으면 멀미 없는 주행으로 배우지 않는다) */
+    private var sickThisTrip = false
+
+    /** 이번 실제 주행에 탄 아이 */
+    private val rodeThisTrip = HashSet<String>()
     private var windowAnswer: Boolean? = null
 
     private class Demo(val scenario: DriveScenario, val frames: Iterator<Frame>) {
@@ -345,7 +351,7 @@ class ChalrangEngine(
             val kmh = motion.speedKmh ?: 0.0
             if (kmh >= 5) { liveMoving += dt; liveStopped = 0.0 } else if (kmh < 1) liveStopped += dt
             if (liveMoving >= TRIP_MIN_SEC && liveStopped >= PARKED_SEC) {
-                finishTrip()
+                finishTrip(learn = true)
                 resetTrip()
             }
             motion.update(now)
@@ -357,6 +363,7 @@ class ChalrangEngine(
             log.add(cup.tilt, dt)
             record(now, motion.ax, motion.ay, motion.speedKmh ?: 0.0, motion.az)
             val setup = applySetup(CupSetup.choose(seats, children))
+            setup.children.forEach { rodeThisTrip += it.id }
             val ahead = navi.ahead.value
             input = CareInput(
                 nowSec = now, setup = setup, dose = cup.dose, spillStarted = cup.spillCount > before,
@@ -445,6 +452,7 @@ class ChalrangEngine(
             _ui.update { it.copy(lastSaid = text) }
         }
         trace.event(clock, TraceKind.SICK, child?.let { "${it.name} 기준 맞춤" } ?: "")
+        sickThisTrip = true
         sickPending = true
     }
 
@@ -495,8 +503,12 @@ class ChalrangEngine(
         _ui.update { it.copy(demo = null, demoProgress = 0f, assumedSeat = false) }
     }
 
-    /** 주행이 끝났을 때: 기록으로 평가하고, 저장하고, 한 줄로 말한다 (너무 짧으면 하지 않음) */
-    private fun finishTrip() {
+    /**
+     * 주행이 끝났을 때: 기록으로 평가하고, 저장하고, 한 줄로 말한다 (너무 짧으면 하지 않음).
+     * [learn] = 실제 주행 (시연·휴대폰 시연은 아이 기준을 배우지 않는다).
+     */
+    private fun finishTrip(learn: Boolean = false) {
+        val calm = if (learn) learnCalmTrip() else emptyList()
         val r = TripReport.evaluate(trace, waterSpills)?.copy(startWater = startWater, endWater = water, habitWater = habitWater()) ?: return
         waterAdjust = 0.0
         val prev = trips.lastOrNull()?.score
@@ -504,9 +516,29 @@ class ChalrangEngine(
         while (trips.size > TripSummary.KEEP) trips.removeAt(0)
         store.saveTrips(trips)
         if (!settings.tripReport) return
-        val text = r.spoken(prev)
+        val text = r.spoken(prev) + if (calm.isEmpty()) "" else
+            " ${calm.joinToString(", ")} 기준은 오늘 멀미 없이 잘 와서 조금 덜 예민하게 맞췄어요."
         if (settings.voice) voice.say(text)
         _ui.update { it.copy(report = r, previousScore = prev, lastSaid = text) }
+    }
+
+    /**
+     * 멀미 없이 끝난 주행으로 배우기: 이 주행을 그 아이 기준으로 다시 재생했을 때 멀미 수준(누적량
+     * [Calibration.TARGET_DOSE])을 넘었는데도 "지금 멀미" 가 없었다면 기준을 조금 낮춘다.
+     * "지금 멀미" 로만 배우면 기준이 예민한 쪽으로만 움직여, 경고가 너무 이른 아이는 고쳐지지 않는다.
+     * 반환값 = 기준을 낮춘 아이 이름.
+     */
+    private fun learnCalmTrip(): List<String> {
+        if (log.size == 0 || sickThisTrip) return emptyList()
+        val changed = ArrayList<String>()
+        val list = _ui.value.children.map { c ->
+            if (c.id !in rodeThisTrip) return@map c
+            val level = Calibration.levelAfterCalmTrip(log, c.level) ?: return@map c
+            changed += c.name
+            c.copy(level = level)
+        }
+        if (changed.isNotEmpty()) saveChildren(list)
+        return changed
     }
 
     // ---- 가는 길 미리보기 ----
@@ -681,6 +713,8 @@ class ChalrangEngine(
 
     /** 새 주행: 하던 차량 조치를 되돌리고 물컵·기록을 비운다 */
     private fun resetTrip() {
+        sickThisTrip = false
+        rodeThisTrip.clear()
         liveMoving = 0.0
         liveStopped = 0.0
         if (policy.windowsOpen) car.closeWindows()

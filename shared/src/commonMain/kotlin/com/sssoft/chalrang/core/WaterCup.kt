@@ -60,7 +60,7 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
         }
     private var peakX: PeakFilter? = null
     private var peakY: PeakFilter? = null
-    private fun makePeak(s: Sensitivity) = if (s.gain > 1.0) PeakFilter(STEP, s.peakHz, s.gain) else null
+    private fun makePeak(s: Sensitivity) = if (s.gain > 1.0) PeakFilter(STEP, s.peakHz, s.gain, s.q) else null
     /** 아직 필터에 넣지 않은 시간 (Wf 는 [STEP] 간격으로 돈다) */
     private var pending = 0.0
 

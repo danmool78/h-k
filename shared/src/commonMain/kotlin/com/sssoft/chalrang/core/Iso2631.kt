@@ -1,6 +1,7 @@
 package com.sssoft.chalrang.core
 
 import kotlin.math.PI
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
@@ -88,4 +89,27 @@ object Wf {
 
         fun reset() = z.forEach { it.fill(0.0) }
     }
+}
+
+/**
+ * 수평(앞뒤·좌우) 흔들림 연구 가중 — 학습 범위를 정할 때만 쓴다 (물컵·MSDV 기본은 표준 [Wf]).
+ *
+ * Donohew & Griffin (2004, ASEM 75(8)): 좌우 흔들림 멀미는 가속도 기준 0.0315~0.25Hz 평평,
+ * 0.25~0.8Hz 옥타브당 −12dB. Wf 의 가속도-속도 전이(f4, Q4)에 고역 0.02Hz 만 붙이면 이 모양이 된다.
+ * 0.1Hz 아래에서 Wf 보다 훨씬 크다 (0.05Hz: Wf 0.16, 이것 1.0) — 연구마다 갈리는 대역 (docs/근거_논문.md).
+ */
+object Wh {
+    const val F1 = 0.02
+
+    /** 주파수 [f] Hz 에서의 가중값 */
+    fun gain(f: Double): Double {
+        val r1 = f / F1
+        val hp = r1 * r1 / sqrt((1 - r1 * r1).let { it * it } + 2 * r1 * r1)
+        val r4 = f / Wf.F4
+        val tr = 1 / sqrt((1 - r4 * r4).let { it * it } + (r4 / Wf.Q4).let { it * it })
+        return hp * tr
+    }
+
+    /** 연구 범위의 위쪽 끝: 표준 Wf 와 이것 중 큰 값 */
+    fun upper(f: Double): Double = max(Wf.gain(f), gain(f))
 }
