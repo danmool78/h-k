@@ -27,13 +27,15 @@ expect suspend fun httpRequest(url: String, method: String = "GET", body: String
  *
  * - 2초마다 `demo/live` 를 보고 시연 중인지 안다
  * - 시연 중이면 0.4초마다 새 묶음을 받는다 (Firestore REST, 라이브러리 없이)
- * - 10초 동안 새 묶음이 없으면 끝난 것으로 본다
+ * - 10초 동안 새 묶음이 없거나 휴대폰에서 끝내면 끝난 것으로 본다.
+ *   요청 한 번 실패(망 지연)로는 끊지 않는다 — 끊으면 엔진이 주행을 새로 시작해 물컵·그래프가 처음부터 다시 그려진다
  */
 class RemoteFeed {
 
     /** 지금 휴대폰 시연 중인지 */
     var active = false; private set
-    private var session: String? = null
+    /** 지금(또는 마지막) 시연 세션: 같은 세션이 다시 이어지면 엔진이 주행을 새로 시작하지 않는다 */
+    var session: String? = null; private set
     private var lastSeq = -1L
     private var lastBatchAt = 0L
     private var clockMs = 0L
@@ -100,7 +102,8 @@ class RemoteFeed {
     }
 
     private suspend fun pollState() {
-        val text = httpRequest("${FirebaseWeb.DOCS}/demo/live?key=${FirebaseWeb.API_KEY}") ?: run { if (active) stop(); return }
+        // 실패는 넘긴다 (끝남은 [STALE_MS] 로 판단)
+        val text = httpRequest("${FirebaseWeb.DOCS}/demo/live?key=${FirebaseWeb.API_KEY}") ?: return
         val fields = runCatching { Json.parseToJsonElement(text).jsonObject["fields"]?.jsonObject }.getOrNull() ?: return
         val on = fields["active"]?.let { bool(it) } == true
         val s = fields["session"]?.let { str(it) }

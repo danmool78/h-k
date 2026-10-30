@@ -109,6 +109,7 @@ class ChalrangEngine(
     /** 휴대폰 시연 시각 (받은 시료 수 × 간격) */
     private var remoteT = 0.0
     private var remoteWas = false
+    private var remoteSession: String? = null
 
     private val cup = WaterCup()
     private var policy = CarePolicy()
@@ -315,8 +316,12 @@ class ChalrangEngine(
         } else if (remote != null && remote.active && settings.phoneDemo) {
             // 휴대폰 시연: 받은 휴대폰 가속도를 차 흔들림으로
             if (!remoteWas) {
-                resetTrip()
-                remoteT = 0.0
+                // 같은 시연이 잠깐 끊겼다 이어진 것이면 그대로 이어 간다
+                if (remote.session != remoteSession) {
+                    resetTrip()
+                    remoteT = 0.0
+                    remoteSession = remote.session
+                }
                 remoteWas = true
             }
             val step = remote.sampleDt
@@ -344,6 +349,7 @@ class ChalrangEngine(
         } else {
             if (remoteWas) {
                 remoteWas = false
+                remoteSession = null
                 finishTrip()
                 resetTrip()
             }
