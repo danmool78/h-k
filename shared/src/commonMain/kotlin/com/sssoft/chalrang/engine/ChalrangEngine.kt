@@ -354,7 +354,7 @@ class ChalrangEngine(
                 finishTrip(learn = true)
                 resetTrip()
             }
-            // 지도 경사: 길 안내 중 실제 도로 높이에서 지금 자리 앞뒤 25m (센서 기준 각도 오차를 맞추는 데)
+            // 지도 경사: 길 안내 중 실제 도로 높이에서 지금 자리 앞뒤 25m (센서 0 점 맞추기, 센서가 없으면 물컵 수면 기울기 자체)
             motion.mapGrade = livePath?.let { p ->
                 val at = _ui.value.routeAtM - livePathStartM
                 if (at < 0 || at > p.lengthM) null else {

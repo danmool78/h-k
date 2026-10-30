@@ -107,6 +107,28 @@ class VerticalTest {
     }
 
     @Test
+    fun `차 기울기 - 센서가 없으면 지도 경사를 따라 물 수면이 기운다`() {
+        val m = MotionEstimator()
+        m.mapGrade = 0.1
+        var t = 0.0
+        repeat(150) { t += 0.02; m.update(t) }          // 3초
+        assertFalse(m.gradeFromSensor)
+        assertEquals("지도 경사를 부드럽게 따라감", 0.1, m.gradeX, 0.005)
+        // 기기 센서가 생기면 센서가 이긴다 (옆 기울기도)
+        repeat(150) { t += 0.02; m.onVertical(t, 0.0); m.onGrade(0.05, -0.03); m.update(t) }
+        assertTrue(m.gradeFromSensor)
+        assertEquals(0.05, m.gradeX, 0.005)
+        assertEquals(-0.03, m.gradeY, 0.005)
+        // 센서도 지도도 없으면 0 으로
+        m.mapGrade = null
+        repeat(250) { t += 0.02; m.update(t) }
+        assertEquals(0.0, m.gradeX, 0.005)
+        val cup = WaterCup(level = 0.8)
+        cup.gradeX = 0.1
+        assertEquals("물은 수평 → 컵 안 수면은 반대로", -0.1, cup.surfaceX, 1e-9)
+    }
+
+    @Test
     fun `위아래 흔들림도 물컵을 넘치게 하고, 경사는 넘침에 넣지 않는다`() {
         val flat = WaterCup(level = 0.8)
         val bumpy = WaterCup(level = 0.8)
