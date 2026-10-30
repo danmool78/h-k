@@ -34,6 +34,7 @@ class RoutePath(
 ) {
     /** 새 위험 구간으로 (내비 지점이 늘어날 때) */
     fun withPreview(p: RoutePreview) = RoutePath(x, y, z, heading, curvature, speedKmh, marks, p, synthetic, region, grid, stops, lat0, lng0)
+    fun withMarks(m: List<RoutePoint>) = RoutePath(x, y, z, heading, curvature, speedKmh, m, preview, synthetic, region, grid, stops, lat0, lng0)
 
     val size: Int get() = x.size
     val lengthM: Double get() = (size - 1) * STEP
@@ -93,10 +94,13 @@ class RoutePath(
         /** [angle] rad 를 [len] m 동안 돈다 (+ 왼쪽) */
         fun turn(angle: Double, len: Double, kmh: Double) = go(len, angle / len, kmh)
 
-        fun build(marks: List<RoutePoint>, preview: RoutePreview, synthetic: Boolean): RoutePath {
+        /** 지금까지 온 거리 (m) */
+        val distM: Double get() = (xs.size - 1) * STEP + carry
+
+        fun build(marks: List<RoutePoint>, preview: RoutePreview, synthetic: Boolean, stops: List<Double> = emptyList()): RoutePath {
             val n = xs.size
             val z = DoubleArray(n) { terrainAt(it * STEP) }
-            return RoutePath(xs.toDoubleArray(), ys.toDoubleArray(), z, hs.toDoubleArray(), ks.toDoubleArray(), vs.toDoubleArray(), marks, preview, synthetic)
+            return RoutePath(xs.toDoubleArray(), ys.toDoubleArray(), z, hs.toDoubleArray(), ks.toDoubleArray(), vs.toDoubleArray(), marks, preview, synthetic, stops = stops)
         }
     }
 
@@ -106,7 +110,7 @@ class RoutePath(
         /**
          * 실제 도로 선(점 사이 거리가 제각각)으로: [STEP] m 마다 다시 나누고 앞뒤 [SMOOTH_M] m 로 고르게 해
          * 꺾인 데 없이 부드럽게. 굽은 정도에서 편안한 속도(좌우 2.5 m/s², 최고 70km/h, 가감속 1.5 m/s²)를 정하고,
-         * 굽이를 찾아 위험 점수 지점으로 ([bends]).
+         * 굽이를 찾아 안내 지점으로 ([bends], 위험 구간의 이유 설명용). 위험 구간은 [RoutePlanner.assess].
          */
         fun fromPolyline(
             px: DoubleArray, py: DoubleArray, pz: DoubleArray,
@@ -160,11 +164,8 @@ class RoutePath(
             val kmh = DoubleArray(n) { v[it] * 3.6 }
             // 내비(또는 길찾기) 회전 안내 근처의 굽이는 같은 것이라 뺀다
             val marks = bends(kappa).filter { b -> extra.none { abs(it.atM - b.atM) < 60 } } + extra
-            // 오르내림 점수는 150m 로 더 고른 높이로 (지형 자료 90m 간격의 잔 오차가 쌓이지 않게)
-            val hw = (HILL_SMOOTH_M / STEP).toInt()
-            val terrain = Terrain(STEP, smooth(smooth(sz, hw), hw))
-            val preview = RoutePlanner.plan(marks, (n - 1) * STEP, etaSec, terrain)
-            return RoutePath(sx, sy, sz, hd, kappa, kmh, marks, preview, synthetic = false, region = region, grid = grid, stops = stops, lat0 = lat0, lng0 = lng0)
+            val path = RoutePath(sx, sy, sz, hd, kappa, kmh, marks, RoutePreview.empty((n - 1) * STEP), synthetic = false, region = region, grid = grid, stops = stops, lat0 = lat0, lng0 = lng0)
+            return path.withPreview(RoutePlanner.assess(path, etaSec))
         }
 
         /** 굽이 찾기: 굽은 정도가 1/150m 넘는 곳이 이어지면 한 굽이, 반지름 40m 미만이면 급한 회전 */
@@ -216,22 +217,23 @@ class RoutePath(
         }
 
         const val SMOOTH_M = 20.0
-        const val HILL_SMOOTH_M = 150.0
         const val BEND_K = 1 / 150.0
         const val A_LAT = 2.5
         const val A_LON = 1.5
         const val V_MAX = 70 / 3.6
 
-        /** 시연 시나리오 그대로 */
-        fun of(s: DriveScenario, preview: RoutePreview): RoutePath {
+        /** 시연 시나리오 그대로 (멈추는 구간은 서는 곳으로). [preview] 가 없으면 이 모양으로 평가 */
+        fun of(s: DriveScenario, preview: RoutePreview? = null): RoutePath {
             val t = s.terrain()
             val b = Builder { m -> sample(t, m) }
+            val stops = ArrayList<Double>()
             for (leg in s.legs) {
                 val len = leg.speedKmh / 3.6 * leg.durationSec
-                if (len <= 0) continue
+                if (len <= 0) { if (b.distM > 0) stops += b.distM; continue }
                 b.go(len, leg.radiusM?.let { 1 / it } ?: 0.0, leg.speedKmh)
             }
-            return b.build(s.routePoints(), preview, synthetic = false)
+            val path = b.build(s.routePoints(), preview ?: RoutePreview.empty(b.distM), synthetic = false, stops = stops)
+            return if (preview != null) path else path.withPreview(RoutePlanner.assess(path, s.durationSec))
         }
 
         /**

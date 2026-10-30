@@ -191,8 +191,10 @@ internal class BriefPlan(val path: RoutePath) {
         val fixed = ORBIT_SEC + END_SEC + segs.size * (SHOW_SEC + DIVE_SEC + RISE_SEC) * q
         val ideal = segReal.map { (it.last() / RISK_X).coerceAtLeast(DRIVE_MIN) }
         val budget = max(segs.size * DRIVE_MIN, CAP_SEC - fixed)
-        val k = if (ideal.sum() > budget) budget / ideal.sum() else 1.0
-        val drive = ideal.map { max(DRIVE_MIN, it * k) }
+        // 구간마다 최소 [DRIVE_MIN] 은 두고, 넘는 몫만 같은 비율로 줄인다 (합이 예산을 넘지 않게)
+        val extra = ideal.sumOf { it - DRIVE_MIN }
+        val k = if (extra > 0 && ideal.sum() > budget) ((budget - segs.size * DRIVE_MIN) / extra).coerceIn(0.0, 1.0) else 1.0
+        val drive = ideal.map { DRIVE_MIN + (it - DRIVE_MIN) * k }
         val list = ArrayList<Step>()
         var at = 0.0
         fun add(kind: Kind, seg: Int, d: Double) { list += Step(kind, seg, at, d); at += d }

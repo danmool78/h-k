@@ -1,7 +1,7 @@
 package com.sssoft.chalrang.core
 
 /** 내비가 알려 준 앞으로 올 움직임 */
-/** 내비 안내·주의 지점. [risk] = 경로 미리보기에서 그 지점이 멀미에 보태는 점수 (RoutePreview) */
+/** 내비 안내·주의 지점. [risk] = 브리핑 지도에서 눈에 띄게 그릴 정도 (위험 구간 판정은 길 모양으로: RoutePlanner.assess) */
 enum class ManeuverKind(val label: String, val shaky: Boolean, val risk: Double = 0.0) {
     TURN("교차로 회전", false, 0.5),
     SHARP_TURN("급한 회전", true, 1.5),

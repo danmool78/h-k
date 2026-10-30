@@ -30,7 +30,8 @@ class BriefPlanTest {
             }
         }
         // 위험 구간이 많으면 심한 4곳만, 그래도 40초 안팎
-        val pts = (0 until 8).flatMap { k -> List(8) { RoutePoint(ManeuverKind.SHARP_TURN, 20_000.0 * k + 5_000 + it * 150) } }
+        // 굽이가 이어지는 길(굽은 길 120m 씩 좌우로) 8곳
+        val pts = (0 until 8).flatMap { k -> List(20) { RoutePoint(ManeuverKind.CURVE, 20_000.0 * k + 5_000 + it * 120) } }
         val long = RoutePath.synthesize(pts, 180_000.0, null, RoutePlanner.plan(pts, 180_000.0))
         val plan = BriefPlan(long)
         println("180km: ${long.preview.segments.size}구간 중 ${plan.segs.size} ${"%.1f".format(plan.total)}초")

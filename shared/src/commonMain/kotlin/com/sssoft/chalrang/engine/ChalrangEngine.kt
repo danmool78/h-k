@@ -491,8 +491,8 @@ class ChalrangEngine(
         // 실제 지역 길(받아 두었으면) 또는 만든 주말 나들이 시나리오
         val s = demoPaths[DemoRoute.of(settings.demoRoute)]?.let { DriveScenario.fromRoute(it, style) } ?: DriveScenario.weekendTrip(style)
         clearRoute()
-        // 시연 경로 미리보기: 시나리오의 안내·방지턱·굽은 길과 길 높이로 (시연 시간은 배속)
-        demoRoute = s.route?.preview ?: RoutePlanner.plan(s.routePoints(), s.totalM, s.durationSec, s.terrain())
+        // 시연 경로 미리보기: 길 모양을 편하게 달릴 때의 흔들림으로 (실제 길과 같은 기준)
+        demoRoute = s.route?.preview ?: RoutePath.of(s).preview
         demo = Demo(s, s.frames(SCENARIO_DT).iterator())
         // 설정에서 브리핑을 켰으면 출발 전에 3D 브리핑 (보는 동안 시연은 멈춤)
         if (settings.briefing && settings.routePreview) {
@@ -607,9 +607,20 @@ class ChalrangEngine(
                 changed = true
             }
             val current = _ui.value.route
-            val plan = if (changed || current == null) RoutePlanner.plan(known.values.toList(), routeD0, a.remainSec, terrain) else current
+            val plan = if (changed || current == null) livePlan(a.remainSec) else current
             route(plan, travelled)
         }
+    }
+
+    /**
+     * 길 안내 경로 평가 (시연 길과 같은 기준, [RoutePlanner.assess]): 실제 도로 선이 있으면 그 모양에
+     * 내비 안내 지점(방지턱·이유 설명)을 얹어서, 없으면 안내 지점으로 다시 그린 모양으로.
+     */
+    private fun livePlan(etaSec: Double?): RoutePreview {
+        val p = livePath ?: return RoutePlanner.plan(known.values.toList(), routeD0, etaSec, terrain)
+        val d = livePathStartM
+        val marks = known.values.filter { it.atM >= d && it.atM - d <= p.lengthM }.map { it.copy(atM = it.atM - d) }
+        return RoutePlanner.assess(p.withMarks(marks), etaSec).shifted(d, routeD0)
     }
 
     private fun route(plan: RoutePreview, atM: Double) {

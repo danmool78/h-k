@@ -36,6 +36,7 @@ class DemoRoutesTest {
             val smooth = drive(p, DriverStyle.SMOOTH)
             val rough = drive(p, DriverStyle.ROUGH)
             out[r] = smooth to rough
+            println("${r.short} km 마다 a_w: " + p.preview.riskPerKm.joinToString(" ") { "%.2f".format(it) })
             println(p.preview.segments.joinToString { "${com.sssoft.chalrang.core.RoutePreview.place(it)} L${it.level} ${it.reasons}" })
             println(
                 "${r.short}: ${(p.lengthM / 100).toInt() / 10.0}km 높이 ${p.z.min().toInt()}~${p.z.max().toInt()}m 지형 ${p.grid?.nx}x${p.grid?.ny} " +

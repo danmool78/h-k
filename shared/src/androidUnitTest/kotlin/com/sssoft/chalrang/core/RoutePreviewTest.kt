@@ -7,40 +7,61 @@ import org.junit.Test
 
 class RoutePreviewTest {
 
-    @Test
-    fun `시연 경로에서 산길을 위험 구간으로, 고속도로는 편한 길로`() {
-        val s = DriveScenario.weekendTrip(DriverStyle.SMOOTH)
-        val p = RoutePlanner.plan(s.routePoints(), s.totalM, s.durationSec, s.terrain())
-        println(p.summary + " / " + p.segments.joinToString { "${RoutePreview.place(it)} L${it.level} ${it.reasons}" } + " / " + p.restAdvice)
-        val mountainStart = s.totalM - 14 * 13 * 50 / 3.6 - 20 * 30 / 3.6 - 100
-        val danger = p.segments.filter { it.level >= 2 }
-        assertTrue("산길이 위험", danger.any { it.endM > mountainStart })
-        // 고속도로 (약 2~6km) 는 조용
-        val highway = p.segments.filter { it.startM > 2_500 && it.endM < 6_000 }
-        assertTrue(highway.isEmpty())
-        assertTrue(p.summary.contains("멀미 위험 구간"))
+    /** 곧은 길 [flatM] m, 좌우로 번갈아 굽는 길(반지름 [radius] m, 60도씩) [windM] m, 다시 곧은 길 */
+    private fun road(flatM: Double, windM: Double, radius: Double, marks: List<RoutePoint> = emptyList(), stopsEvery: Double? = null): RoutePath {
+        val b = RoutePath.Builder { 0.0 }
+        b.go(flatM, 0.0, 80.0)
+        var sign = 1.0
+        var w = 0.0
+        while (w < windM) { b.go(radius * kotlin.math.PI / 3, sign / radius, 60.0); sign = -sign; w += radius * kotlin.math.PI / 3 }
+        b.go(flatM, 0.0, 80.0)
+        val stops = stopsEvery?.let { e -> (1 until (b.distM / e).toInt()).map { it * e } } ?: emptyList()
+        return b.build(marks, RoutePreview.empty(b.distM), synthetic = false, stops = stops)
     }
 
     @Test
-    fun `지점이 없고 평지면 편한 길`() {
-        val p = RoutePlanner.plan(emptyList(), 20_000.0, 1200.0, Terrain(200.0, DoubleArray(101) { 30.0 + it % 2 }))
+    fun `같은 기준 - 굽이 길은 위험, 곧은 길은 편한 길`() {
+        val p = RoutePlanner.assess(road(5_000.0, 4_000.0, 50.0), 900.0)
+        println(p.summary + " / " + p.riskPerKm.joinToString(" ") { "%.2f".format(it) })
+        assertEquals(1, p.dangerCount)
+        val seg = p.segments.first { it.level == 2 }
+        assertTrue("굽이 길 자리", seg.startM >= 4_000 && seg.endM <= 10_000)
+        assertTrue(p.summary.contains("멀미 위험 구간"))
+        val flat = RoutePlanner.assess(road(10_000.0, 0.0, 50.0), 600.0)
+        assertTrue(flat.segments.isEmpty())
+        assertTrue(flat.summary.contains("편한 길"))
+    }
+
+    @Test
+    fun `내비가 안내를 몇 번으로 나누든 결과가 같다`() {
+        val one = listOf(RoutePoint(ManeuverKind.TURN, 6_000.0))
+        val many = List(4) { RoutePoint(ManeuverKind.TURN, 6_000.0 + it * 20) }
+        val a = RoutePlanner.assess(road(5_000.0, 2_000.0, 80.0, one))
+        val b = RoutePlanner.assess(road(5_000.0, 2_000.0, 80.0, many))
+        assertTrue(a.riskPerKm.contentEquals(b.riskPerKm))
+        assertEquals(a.segments.map { it.level to it.startM }, b.segments.map { it.level to it.startM })
+    }
+
+    @Test
+    fun `도심 교차로에서 서고 가는 것은 편한 길`() {
+        // 400m 마다 신호에 서는 곧은 길 (도로 속도 50km/h)
+        val b = RoutePath.Builder { 0.0 }
+        b.go(5_000.0, 0.0, 50.0)
+        val p = RoutePlanner.assess(b.build(emptyList(), RoutePreview.empty(5_000.0), false, stops = (1..11).map { it * 400.0 }))
+        println("도심 a_w: " + p.riskPerKm.joinToString(" ") { "%.2f".format(it) })
         assertTrue(p.segments.isEmpty())
-        assertTrue(p.summary.contains("편한 길"))
     }
 
     @Test
     fun `휴게소가 위험 구간 앞에 있으면 쉬어 가기`() {
-        val pts = listOf(RoutePoint(ManeuverKind.REST_AREA, 8_000.0)) + List(6) { RoutePoint(ManeuverKind.SHARP_TURN, 12_000.0 + it * 150) }
-        val p = RoutePlanner.plan(pts, 20_000.0)
+        val p = RoutePlanner.assess(road(5_000.0, 4_000.0, 50.0, listOf(RoutePoint(ManeuverKind.REST_AREA, 3_000.0))))
         assertEquals(1, p.dangerCount)
         assertNotNull(p.restAdvice)
     }
 
     @Test
-    fun `오르내림은 올랐다 내려온 만큼`() {
-        val t = Terrain(1_000.0, doubleArrayOf(10.0, 50.0, 10.0))
-        assertEquals(40.0, t.climbPerKm(0.0, 2_000.0), 1e-9)
-        assertEquals("한쪽으로만 오르면 0", 0.0, Terrain(1_000.0, doubleArrayOf(10.0, 50.0, 90.0)).climbPerKm(0.0, 2_000.0), 1e-9)
+    fun `주의·위험 문턱은 주행 평가 70점·50점이 되는 세기`() {
+        assertEquals(0.628, RoutePlanner.CAUTION_AW, 0.001)
+        assertEquals(1.032, RoutePlanner.DANGER_AW, 0.001)
     }
-
 }

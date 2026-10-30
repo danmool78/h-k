@@ -11,16 +11,14 @@ class RoutePathTest {
     @Test
     fun `시연 경로 선은 시나리오 길이·산길 굽이·높이를 그대로`() {
         val s = DriveScenario.weekendTrip(DriverStyle.SMOOTH)
-        val plan = RoutePlanner.plan(s.routePoints(), s.totalM, s.durationSec, s.terrain())
-        val p = RoutePath.of(s, plan)
+        val p = RoutePath.of(s)
         assertEquals(s.totalM, p.lengthM, 10.0)
         // 산길: 굽은 정도 1/70 m, 시속 50km → 좌우 약 0.28 g
         val mountain = p.lengthM - 1500
         val maxG = (0 until 60).maxOf { p.lateralG(mountain + it * 5.0) }
         assertTrue("$maxG", maxG in 0.2..0.35)
         assertTrue(p.climb(mountain, 400.0) > 5)
-        assertEquals(2, p.riskAt(mountain))
-        assertEquals(0, p.riskAt(4_000.0))
+        assertEquals("고속도로는 편한 길", 0, p.riskAt(4_000.0))
     }
 
     @Test
