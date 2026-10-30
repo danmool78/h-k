@@ -53,6 +53,8 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
     private val spill = BooleanArray(capacity)
     private var start = 0
     var size = 0; private set
+    /** 가득 차서 밀려난 기록 수: [dropped] + i 가 기록 i 의 고정 번호 (그래프 묶음이 프레임마다 흔들리지 않게) */
+    var dropped = 0L; private set
     private var lastT = Double.NEGATIVE_INFINITY
 
     private val _events = ArrayDeque<TraceEvent>()
@@ -67,7 +69,7 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
     ) {
         if (time - lastT < interval * 0.999) return
         lastT = time
-        val i = if (size < capacity) (start + size++) % capacity else start.also { start = (start + 1) % capacity }
+        val i = if (size < capacity) (start + size++) % capacity else start.also { start = (start + 1) % capacity; dropped++ }
         this.t[i] = time
         this.ax[i] = ax.toFloat(); this.ay[i] = ay.toFloat()
         this.tx[i] = tiltX.toFloat(); this.ty[i] = tiltY.toFloat()
@@ -147,7 +149,7 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
     }
 
     fun clear() {
-        start = 0; size = 0; lastT = Double.NEGATIVE_INFINITY
+        start = 0; size = 0; dropped = 0; lastT = Double.NEGATIVE_INFINITY
         _events.clear()
         version++
     }

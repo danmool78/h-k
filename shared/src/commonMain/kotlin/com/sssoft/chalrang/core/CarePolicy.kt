@@ -57,7 +57,7 @@ data class CareInput(
  * 멀미 누적량과 차량 상황으로 조치를 정한다 (화면·SDK 없음, 테스트 가능).
  *
  * - 넘칠 때마다 "찰랑"
- * - 주의 (누적 0.6): "다음 구간은 부드럽게"
+ * - 주의 (누적 0.6, 그리고 1분 안에 넘쳤을 때만): "다음 구간은 부드럽게" — 잔잔해진 뒤 누적량이 줄어드는 동안에는 말하지 않는다
  * - 자주 넘침 (누적 0.5, 또는 3분 안에 4번 넘치고 누적 0.25): 외기 유입 + 아이 옆 창문을 열지 묻는다
  *   (비 오거나 고속이면 묻지 않음). "열지 않기" = 먼지 나는 길 → 내부 순환 + 공기청정, 이번 환기 동안 다시 묻지 않음
  * - 위험 (누적 1.0): 휴게소에서 쉬어 가기
@@ -176,7 +176,8 @@ class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
                     },
                 )
             }
-            input.dose >= CAUTION && now - lastCaution >= CAUTION_GAP -> {
+            // 지금 찰랑거릴 때만 (누적량은 천천히 줄어서, 잔잔해진 뒤에도 한동안 0.6 위에 남는다)
+            input.dose >= CAUTION && now - lastSpill <= CAUTION_RECENT && now - lastCaution >= CAUTION_GAP -> {
                 lastCaution = now
                 out += CareAction.Say("물이 찰랑거려요. 다음 구간은 부드럽게 가 주세요")
             }
@@ -228,6 +229,8 @@ class CarePolicy(private val askTimeoutSec: Double = ASK_TIMEOUT) {
         const val SPILL_WINDOW = 180.0
         const val CHIME_GAP = 6.0
         const val CAUTION_GAP = 180.0
+        /** 주의 안내는 이 시간(초) 안에 넘쳤을 때만 */
+        const val CAUTION_RECENT = 60.0
         const val DANGER_GAP = 600.0
         const val PREVIEW_GAP = 60.0
         const val PREVIEW_M = 400.0

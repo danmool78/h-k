@@ -128,7 +128,8 @@ class RemoteFeed {
             f["dt"]?.let { num(it) }?.let { if (it in 0.01..0.5) sampleDt = it }
             val ax = f["ax"]?.let { arr(it) } ?: continue
             val ay = f["ay"]?.let { arr(it) } ?: continue
-            for (k in 0 until minOf(ax.size, ay.size)) queue.addLast(ax[k] to ay[k])
+            // 손으로 세게 흔들면 수십 m/s² 가 나온다: 차가 낼 수 있는 가속(급제동 약 0.8g)까지만
+            for (k in 0 until minOf(ax.size, ay.size)) queue.addLast(ax[k].coerceIn(-MAX_ACC, MAX_ACC) to ay[k].coerceIn(-MAX_ACC, MAX_ACC))
             lastBatchAt = clockMs
             active = true
         }
@@ -138,6 +139,8 @@ class RemoteFeed {
         const val STATE_MS = 2_000L
         const val IDLE_MAX_MS = 10_000L
         const val BATCH_MS = 400L
+        /** 받는 가속도 한도 (m/s²) */
+        const val MAX_ACC = 8.0
         const val STALE_MS = 10_000L
         const val START_BUFFER = 20
         const val MAX_BUFFER = 120

@@ -93,6 +93,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -170,8 +171,11 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Column(Modifier.width(340.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             CupCard(sample, Modifier.fillMaxWidth().height(232.dp))
-                            SummaryCard(sample, trace.startTime, lag, stats, shake, ui.setup.primary)
-                            MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier.weight(1f))
+                            // 요약·안내는 남는 높이에서 함께 스크롤 (화면이 낮아도 안내가 잘리지 않게)
+                            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                SummaryCard(sample, trace.startTime, lag, stats, shake, ui.setup.primary)
+                                MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier)
+                            }
                         }
                         Charts(trace, frame, range, cursorAt, following, events, shake, ui.setup.primary, sample, stats, pick, Modifier.weight(1f).fillMaxHeight(), null)
                     }
@@ -180,7 +184,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                         CupCard(sample, Modifier.fillMaxWidth().height(220.dp))
                         SummaryCard(sample, trace.startTime, lag, stats, shake, ui.setup.primary)
                         Charts(trace, frame, range, cursorAt, following, events, shake, ui.setup.primary, sample, stats, pick, Modifier.fillMaxWidth(), 200.dp)
-                        MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier.height(220.dp))
+                        MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier)
                     }
                 }
             }
@@ -416,7 +420,7 @@ private fun MessagesCard(events: List<TraceEvent>, start: Double, onPick: (Doubl
         }
         Spacer(Modifier.height(6.dp))
         if (shown.isEmpty()) Text("이 구간에는 안내가 없어요", color = Neon.Faint, fontSize = 13.sp)
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             shown.forEachIndexed { k, e ->
                 val c = if (k == 0) Neon.Amber else kindColor(e.kind)
                 Row(Modifier.fillMaxWidth().clickable { onPick(e.t) }, verticalAlignment = Alignment.Top) {
@@ -584,6 +588,10 @@ private fun TimeChart(
     val spillPath = remember { Path() }
     val linePath = remember { Path() }
     val fillPath = remember { Path() }
+    val bandPath = remember { Path() }
+    var bandLo by remember { mutableStateOf(FloatArray(0)) }
+    var bandHi by remember { mutableStateOf(FloatArray(0)) }
+    var bandX by remember { mutableStateOf(FloatArray(0)) }
     val left = 34f
     val bottom = 18f
     fun timeAtX(x: Float, width: Int): Double {
@@ -605,10 +613,15 @@ private fun TimeChart(
         if (i0 < trace.size - 1 && trace.timeAt(i0) < t0) i0++
         var i1 = trace.indexAt(t1)
         if (i1 > 0 && trace.timeAt(i1) > t1) i1--
-        val step = max(1, (i1 - i0) / max(1, w.toInt()))
+        // 한 픽셀에 몇 기록을 묶을지: 창 길이로 정해 프레임마다 바뀌지 않게
+        // 픽셀보다 기록이 많으면(2분 이상) 3픽셀마다 묶어 평균 선 + 폭 띠로
+        val perPx = span / trace.interval / max(1f, w)
+        val step = if (perPx <= 1.0) 1 else max(2, ceil(perPx * 3).toInt())
+        // 묶음 경계를 기록의 고정 번호에 맞춘다: 창이 0.1초씩 밀려도 같은 기록끼리 묶여 선이 떨리지 않는다
+        val first = i0 + ((step - ((trace.dropped + i0) % step).toInt()) % step)
         val (lo, hi) = yRange ?: run {
             var m = 0.0
-            var i = i0
+            var i = first
             while (i <= i1) { for (sr in series) m = max(m, sr.value(trace, i)); i += step }
             0.0 to max(1.5, m * 1.15)
         }
@@ -643,7 +656,7 @@ private fun TimeChart(
         if (shadeSpill) {
             spillPath.reset()
             val bw = max(2f, w * step / (i1 - i0 + 1) + 1)
-            var i = i0
+            var i = first
             while (i <= i1) {
                 if (trace.spillingAt(i)) spillPath.addRect(Rect(Offset(x(trace.timeAt(i)) - 1, 0f), Size(bw, h)))
                 i += step
@@ -652,19 +665,59 @@ private fun TimeChart(
         }
         fun build(value: (DriveTrace, Int) -> Double): Path {
             linePath.reset()
-            var i = i0
             var prevT = Double.NEGATIVE_INFINITY
             // 그림 간격보다 훨씬 긴 빈틈(앱이 멈췄던 동안)은 선을 잇지 않는다
             val gap = max(1.0, trace.interval * step * 3)
-            while (i <= i1) {
+            fun point(i: Int) {
                 val t = trace.timeAt(i)
                 val px = x(t)
                 val py = y(value(trace, i))
                 if (t - prevT > gap) linePath.moveTo(px, py) else linePath.lineTo(px, py)
                 prevT = t
-                i += step
+            }
+            if (step == 1) {
+                for (i in i0..i1) point(i)
+                return linePath
+            }
+            // 긴 창: 묶음 평균을 잇는다 (흔들림 폭은 아래 [band] 띠로)
+            if (first > i0) point(i0)
+            var b = first
+            while (b <= i1) {
+                val e = min(i1, b + step - 1)
+                var sum = 0.0
+                for (i in b..e) sum += value(trace, i)
+                val mid = (b + e) / 2
+                val t = trace.timeAt(mid)
+                val px = x(t)
+                val py = y(sum / (e - b + 1))
+                if (t - prevT > gap) linePath.moveTo(px, py) else linePath.lineTo(px, py)
+                prevT = t
+                b += step
             }
             return linePath
+        }
+        // 긴 창의 흔들림 폭: 묶음마다 가장 작은 값~큰 값을 옅은 띠로 (선을 빽빽하게 오가지 않고 폭만 보인다)
+        fun band(value: (DriveTrace, Int) -> Double): Path {
+            bandPath.reset()
+            val n = (i1 - first) / step + 1
+            if (n < 2) return bandPath
+            if (bandLo.size < n) { bandLo = FloatArray(n * 2); bandHi = FloatArray(n * 2); bandX = FloatArray(n * 2) }
+            var k = 0
+            var b = first
+            while (b <= i1 && k < n) {
+                val e = min(i1, b + step - 1)
+                var vLo = value(trace, b)
+                var vHi = vLo
+                for (i in b + 1..e) { val v = value(trace, i); if (v < vLo) vLo = v; if (v > vHi) vHi = v }
+                bandX[k] = x(trace.timeAt((b + e) / 2)); bandLo[k] = y(vLo); bandHi[k] = y(vHi)
+                k++
+                b += step
+            }
+            bandPath.moveTo(bandX[0], bandHi[0])
+            for (j in 1 until k) bandPath.lineTo(bandX[j], bandHi[j])
+            for (j in k - 1 downTo 0) bandPath.lineTo(bandX[j], bandLo[j])
+            bandPath.close()
+            return bandPath
         }
         // 기준선
         for (g in guides) if (g.value in lo..hi) {
@@ -684,6 +737,7 @@ private fun TimeChart(
         // 값: 아래 채움 + 빛나는 선
         val base = y(if (0.0 in lo..hi) 0.0 else lo)
         for (sr in series) {
+            if (step > 1 && !sr.fill) drawPath(band(sr.value), sr.color.copy(alpha = 0.22f))
             val line = build(sr.value)
             if (sr.fill) {
                 fillPath.reset()
