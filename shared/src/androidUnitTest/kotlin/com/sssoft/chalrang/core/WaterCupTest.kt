@@ -12,7 +12,7 @@ class WaterCupTest {
         val cup = WaterCup(level)
         var maxDose = 0.0
         for (f in scenario.frames(0.1)) {
-            if (f.resting) cup.rest(0.1) else cup.step(f.ax, f.ay, 0.1)
+            if (f.resting) cup.rest(0.1) else cup.step(f.ax, f.ay, 0.1, f.az)
             if (cup.dose > maxDose) maxDose = cup.dose
         }
         return cup to maxDose

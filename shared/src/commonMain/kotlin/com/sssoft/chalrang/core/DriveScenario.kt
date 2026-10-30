@@ -2,13 +2,14 @@ package com.sssoft.chalrang.core
 
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sign
 import kotlin.math.sin
 
 /**
  * 시연·검증용 주행 시나리오. 에뮬레이터에는 실제 움직임이 없으므로
- * 실제 도로 모양(가다 서다, 진입·진출로, 굽은 길)으로 가속도를 만들어 재생한다.
+ * 실제 도로 모양(가다 서다·방지턱, 진입·진출로, 굽고 오르내리는 산길)으로 가속도를 만들어 재생한다.
  */
 data class Leg(
     val durationSec: Double,
@@ -18,13 +19,19 @@ data class Leg(
     /** 이 구간이 시작되는 곳에 있는 안내 (진출로·휴게소 등) */
     val maneuver: ManeuverKind? = null,
     val raining: Boolean = false,
+    /** 오르내리는 길: 높이 진폭 (m), 파장 [hillWaveM] (m) */
+    val hillM: Double = 0.0,
+    val hillWaveM: Double = 80.0,
+    /** 출발 직후 과속 방지턱 */
+    val bump: Boolean = false,
 )
 
 /** 운전 습관. 거친 운전은 세게 밟고, 굽은 길에서 핸들을 자주 고친다 */
-data class DriverStyle(val name: String, val maxAccel: Double, val maxBrake: Double, val steerTau: Double, val weave: Double) {
+/** [bumpHit] = 방지턱을 넘는 세기 (부드러운 운전은 속도를 줄여 살살 넘는다) */
+data class DriverStyle(val name: String, val maxAccel: Double, val maxBrake: Double, val steerTau: Double, val weave: Double, val bumpHit: Double = 1.0) {
     companion object {
-        val SMOOTH = DriverStyle("부드럽게", maxAccel = 1.0, maxBrake = 1.5, steerTau = 2.5, weave = 0.0)
-        val ROUGH = DriverStyle("거칠게", maxAccel = 3.0, maxBrake = 4.5, steerTau = 0.6, weave = 0.9)
+        val SMOOTH = DriverStyle("부드럽게", maxAccel = 1.0, maxBrake = 1.5, steerTau = 2.5, weave = 0.0, bumpHit = 0.35)
+        val ROUGH = DriverStyle("거칠게", maxAccel = 3.0, maxBrake = 4.5, steerTau = 0.6, weave = 0.9, bumpHit = 1.0)
     }
 }
 
@@ -38,6 +45,10 @@ data class Frame(
     val raining: Boolean,
     /** 휴게소에서 쉬는 중 */
     val resting: Boolean,
+    /** 위아래 (m/s², + 위로 밀어 올림) */
+    val az: Double = 0.0,
+    /** 길 경사 (rad, + 오르막) */
+    val grade: Double = 0.0,
 )
 
 class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
@@ -69,6 +80,16 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
             ay += (wantAy - ay) * (dt / style.steerTau).coerceAtMost(1.0)
             val weave = if (leg.radiusM != null) style.weave * sin(2 * PI * 0.22 * t) * sign(wantAy) else 0.0
             dist += v * dt
+            // 위아래: 길 높이 h(x) = A·sin(2πx/λ) 를 지나면 az = -A·(2πv/λ)²·sin(2πx/λ)
+            var az = 0.0
+            var grade = 0.0
+            if (leg.hillM > 0) {
+                val k = 2 * PI / leg.hillWaveM
+                az += -leg.hillM * (k * v) * (k * v) * sin(k * dist)
+                grade = leg.hillM * k * cos(k * dist)
+            }
+            // 방지턱: 구간 시작 2초 뒤 0.5초 동안 올라갔다 내려옴
+            if (leg.bump && legT in 2.0..2.5) az += 2.8 * style.bumpHit * sin(2 * PI * (legT - 2.0) / 0.5)
 
             val upcoming = nextManeuver(legIdx, dist)
             val rest = restAreaKm(legIdx, dist)
@@ -77,6 +98,7 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
                     t = t, ax = ax, ay = ay + weave, speedKmh = v * 3.6, next = upcoming,
                     restAreaKm = rest, raining = leg.raining,
                     resting = leg.maneuver == ManeuverKind.REST_AREA && leg.speedKmh == 0.0,
+                    az = az, grade = grade,
                 ),
             )
             t += dt
@@ -109,23 +131,24 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
 
     companion object {
         /** 가다 서다 [n] 번 */
-        fun stopAndGo(n: Int, topKmh: Double = 40.0): List<Leg> =
-            (0 until n).flatMap { listOf(Leg(12.0, topKmh), Leg(8.0, 0.0)) }
+        fun stopAndGo(n: Int, topKmh: Double = 40.0, bumps: Boolean = false): List<Leg> =
+            (0 until n).flatMap { i -> listOf(Leg(12.0, topKmh, bump = bumps && i % 2 == 1), Leg(8.0, 0.0)) }
 
         /** 굽은 길 [n] 개 (좌우 번갈아) */
-        fun curves(n: Int, kmh: Double, radiusM: Double): List<Leg> =
-            (0 until n).flatMap { i -> listOf(Leg(9.0, kmh, if (i % 2 == 0) radiusM else -radiusM), Leg(4.0, kmh)) }
+        fun curves(n: Int, kmh: Double, radiusM: Double, hillM: Double = 0.0): List<Leg> =
+            (0 until n).flatMap { i -> listOf(Leg(9.0, kmh, if (i % 2 == 0) radiusM else -radiusM, hillM = hillM), Leg(4.0, kmh, hillM = hillM)) }
 
         /** 시연 경로: 주말 나들이 (도심 → 고속도로 → 진출로 → 산길 → 휴게소), 약 13분 */
         fun weekendTrip(style: DriverStyle): DriveScenario = DriveScenario(
             buildList {
-                addAll(stopAndGo(8))
+                addAll(stopAndGo(8, bumps = true))
                 add(Leg(20.0, 60.0, radiusM = 120.0, maneuver = ManeuverKind.IC_ENTER))
                 add(Leg(150.0, 100.0))
                 add(Leg(18.0, 50.0, radiusM = -90.0, maneuver = ManeuverKind.IC_EXIT))
                 addAll(stopAndGo(4, topKmh = 50.0))
                 add(Leg(10.0, 50.0, maneuver = ManeuverKind.SHARP_TURN))
-                addAll(curves(14, kmh = 50.0, radiusM = 70.0))
+                // 산길: 굽고 오르내린다 (파장 80m, 시속 50km 에서 약 6초 주기 — 멀미 주기)
+                addAll(curves(14, kmh = 50.0, radiusM = 70.0, hillM = 0.35))
                 add(Leg(20.0, 30.0, maneuver = ManeuverKind.REST_AREA))
                 add(Leg(60.0, 0.0, maneuver = ManeuverKind.REST_AREA))
             },

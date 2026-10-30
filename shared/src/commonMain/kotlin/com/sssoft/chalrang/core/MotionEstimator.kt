@@ -26,6 +26,11 @@ class MotionEstimator(
     var speed = 0.0; private set          // m/s
     var ax = 0.0; private set             // m/s², + 가속
     var ay = 0.0; private set             // m/s², + 왼쪽으로 도는 중
+    var az = 0.0; private set             // m/s², + 위로 (기기 가속도 센서가 있을 때만, 없으면 0)
+    private var azT = Double.NaN
+    /** 길 경사 (rad): 앞이 올라감, 왼쪽이 올라감 (기기 센서가 차 방향을 알게 된 뒤부터) */
+    var gradeX = 0.0; private set
+    var gradeY = 0.0; private set
     var hasSpeed = false; private set
 
     /** 최근 (시각, 누적 거리), (시각, 속도). 거칠게 들어오는 값을 2초 남짓 구간의 기울기로 읽는다 */
@@ -81,7 +86,23 @@ class MotionEstimator(
     }
 
     /** 현재 시각 [t] 의 가속도를 갱신한다 */
+    /**
+     * 위아래 가속도 (m/s², + 위로): 기기 가속도 센서에서 중력 방향 성분만 뽑은 값.
+     * 차량 SDK 에는 가속도 센서가 없어서, 화면 기기의 센서를 쓴다 (기기 방향과 상관없이 중력 축으로 투영).
+     */
+    fun onVertical(t: Double, accel: Double) {
+        az = accel.coerceIn(-MAX_A, MAX_A)
+        azT = t
+    }
+
+    /** 길 경사 (rad) */
+    fun onGrade(pitch: Double, roll: Double) {
+        gradeX = pitch.coerceIn(-0.3, 0.3)
+        gradeY = roll.coerceIn(-0.3, 0.3)
+    }
+
     fun update(t: Double) {
+        if (!(t - azT < 1.0)) { az = 0.0; gradeX = 0.0; gradeY = 0.0 }
         val lastT = distHist.lastOrNull()?.first
         if (lastT != null && t - lastT > STOP_AFTER * 2) {
             // 거리 신호가 끊김: 정지로 본다

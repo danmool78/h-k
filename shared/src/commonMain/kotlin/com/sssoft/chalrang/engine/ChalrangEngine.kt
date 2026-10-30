@@ -34,6 +34,11 @@ import kotlin.time.TimeSource
 data class UiState(
     val tiltX: Double = 0.0,
     val tiltY: Double = 0.0,
+    /** 위아래 출렁임 (g) */
+    val tiltZ: Double = 0.0,
+    /** 길 경사 (rad): 화면 수면 = 출렁임 - 경사 */
+    val gradeX: Double = 0.0,
+    val gradeY: Double = 0.0,
     /** 화면에 그릴 물 높이 */
     val level: Double = WaterCup.DEFAULT_LEVEL,
     val dose: Double = 0.0,
@@ -106,13 +111,16 @@ class ChalrangEngine(
         remote?.let { launch { it.run() } }
     }
 
+    /** 엔진 시각 (초). 차량·센서 쪽도 이 시각으로 값을 넣어야 [motion] 의 끊김 판정이 맞는다 */
+    private val t0 = TimeSource.Monotonic.markNow()
+    fun now(): Double = t0.elapsedNow().inWholeMicroseconds / 1e6
+
     private suspend fun CoroutineScope.loop() {
-        val t0 = TimeSource.Monotonic.markNow()
-        var last = 0.0
+        var last = now()
         var lastPoll = 0.0
         while (isActive) {
             delay(TICK_MS)
-            val now = t0.elapsedNow().inWholeMicroseconds / 1e6
+            val now = now()
             val dt = (now - last).coerceIn(0.0, 0.5)
             last = now
             if (now - lastPoll >= 1.0) {
@@ -137,13 +145,14 @@ class ChalrangEngine(
                 d.pending -= SCENARIO_DT
                 val f = d.frames.next()
                 val before = cup.spillCount
-                if (f.resting) cup.rest(SCENARIO_DT) else cup.step(f.ax, f.ay, SCENARIO_DT)
+                cup.gradeX = f.grade
+                if (f.resting) cup.rest(SCENARIO_DT) else cup.step(f.ax, f.ay, SCENARIO_DT, f.az)
                 log.add(cup.tilt, SCENARIO_DT)
                 if (cup.spillCount > before) {
                     spillStarted = true
                     trace.event(f.t, TraceKind.SPILL)
                 }
-                trace.record(f.t, f.ax, f.ay, cup.tiltX, cup.tiltY, f.speedKmh, cup.dose, cup.level, cup.spilling)
+                trace.record(f.t, f.ax, f.ay, cup.tiltX, cup.tiltY, f.speedKmh, cup.dose, cup.level, cup.spilling, f.az, cup.tiltZ, cup.gradeX, cup.gradeY)
                 d.frame = f
             }
             if (seats.values.none { it.riding } && children.isNotEmpty()) {
@@ -172,16 +181,17 @@ class ChalrangEngine(
             }
             val step = remote.sampleDt
             var spillStarted = false
-            for ((ax, ay) in remote.take(dt)) {
+            for (r in remote.take(dt)) {
                 remoteT += step
                 val before = cup.spillCount
-                cup.step(ax, ay, step)
+                cup.gradeX = r.gradeX; cup.gradeY = r.gradeY
+                cup.step(r.ax, r.ay, step, r.az)
                 log.add(cup.tilt, step)
                 if (cup.spillCount > before) {
                     spillStarted = true
                     trace.event(remoteT, TraceKind.SPILL)
                 }
-                trace.record(remoteT, ax, ay, cup.tiltX, cup.tiltY, REMOTE_KMH, cup.dose, cup.level, cup.spilling)
+                trace.record(remoteT, r.ax, r.ay, cup.tiltX, cup.tiltY, REMOTE_KMH, cup.dose, cup.level, cup.spilling, r.az, cup.tiltZ, cup.gradeX, cup.gradeY)
             }
             clock = remoteT
             if (seats.values.none { it.riding } && children.isNotEmpty()) {
@@ -201,10 +211,11 @@ class ChalrangEngine(
             motion.update(now)
             clock = now
             val before = cup.spillCount
-            cup.step(motion.ax, motion.ay, dt)
+            cup.gradeX = motion.gradeX; cup.gradeY = motion.gradeY
+            cup.step(motion.ax, motion.ay, dt, motion.az)
             log.add(cup.tilt, dt)
             if (cup.spillCount > before) trace.event(now, TraceKind.SPILL)
-            trace.record(now, motion.ax, motion.ay, cup.tiltX, cup.tiltY, motion.speedKmh ?: 0.0, cup.dose, cup.level, cup.spilling)
+            trace.record(now, motion.ax, motion.ay, cup.tiltX, cup.tiltY, motion.speedKmh ?: 0.0, cup.dose, cup.level, cup.spilling, motion.az, cup.tiltZ, cup.gradeX, cup.gradeY)
             val setup = applySetup(CupSetup.choose(seats, children))
             val ahead = navi.ahead.value
             input = CareInput(
@@ -216,7 +227,7 @@ class ChalrangEngine(
         perform(policy.decide(input))
         _ui.update {
             it.copy(
-                tiltX = cup.tiltX, tiltY = cup.tiltY, level = input.setup.level ?: ALONE_LEVEL,
+                tiltX = cup.tiltX, tiltY = cup.tiltY, tiltZ = cup.tiltZ, gradeX = cup.gradeX, gradeY = cup.gradeY, level = input.setup.level ?: ALONE_LEVEL,
                 dose = cup.dose, spilling = cup.spilling, setup = input.setup, car = car.status.value,
                 demoProgress = demo?.let { dm -> ((dm.frame?.t ?: 0.0) / dm.scenario.durationSec).toFloat() } ?: 0f,
                 assumedSeat = assumed, raining = input.raining, remote = remoteWas,

@@ -148,7 +148,7 @@ class CarePolicyTest {
             val out = mutableListOf<CareAction>()
             for (f in DriveScenario.weekendTrip(style).frames(0.1)) {
                 val before = cup.spillCount
-                if (f.resting) cup.rest(0.1) else cup.step(f.ax, f.ay, 0.1)
+                if (f.resting) cup.rest(0.1) else cup.step(f.ax, f.ay, 0.1, f.az)
                 out += p.decide(CareInput(f.t, setup, cup.dose, cup.spillCount > before, f.speedKmh, f.raining, f.next, f.restAreaKm))
             }
             return out
@@ -170,7 +170,7 @@ class CalibrationTest {
         val log = TiltLog()
         val cup = WaterCup()
         for (f in DriveScenario.weekendTrip(DriverStyle.ROUGH).frames(0.1).take(4000)) {
-            cup.step(f.ax, f.ay, 0.1)
+            cup.step(f.ax, f.ay, 0.1, f.az)
             log.add(cup.tilt, 0.1)
         }
         val level = Calibration.levelForSickness(log)
@@ -181,7 +181,7 @@ class CalibrationTest {
         val again = WaterCup(level)
         var dangerAt = -1
         DriveScenario.weekendTrip(DriverStyle.ROUGH).frames(0.1).take(4000).forEachIndexed { i, f ->
-            again.step(f.ax, f.ay, 0.1)
+            again.step(f.ax, f.ay, 0.1, f.az)
             if (dangerAt < 0 && again.dose >= CarePolicy.DANGER) dangerAt = i
         }
         assertTrue("위험 경고 $dangerAt", dangerAt in 1 until 4000)

@@ -38,7 +38,7 @@ class RemoteFeed {
     private var lastBatchAt = 0L
     private var clockMs = 0L
 
-    private val queue = ArrayDeque<Pair<Double, Double>>()
+    private val queue = ArrayDeque<RemoteSample>()
     /** 받은 묶음의 시료 간격 (초) */
     var sampleDt = 0.05; private set
     private var playing = false
@@ -68,12 +68,12 @@ class RemoteFeed {
      * 엔진이 [dt] 초 동안 쓸 가속도 (앞뒤, 좌우 m/s²). 받은 시료를 순서대로 꺼낸다.
      * 1초쯤 쌓인 뒤에 재생을 시작하고(망 지연 흡수), 너무 밀리면 오래된 것을 버린다.
      */
-    fun take(dt: Double): List<Pair<Double, Double>> {
+    fun take(dt: Double): List<RemoteSample> {
         if (!playing && queue.size >= START_BUFFER) playing = true
         if (!playing) return emptyList()
         while (queue.size > MAX_BUFFER) queue.removeFirst()
         acc += dt
-        val out = ArrayList<Pair<Double, Double>>()
+        val out = ArrayList<RemoteSample>()
         while (acc >= sampleDt && queue.isNotEmpty()) {
             out += queue.removeFirst()
             acc -= sampleDt
@@ -128,8 +128,16 @@ class RemoteFeed {
             f["dt"]?.let { num(it) }?.let { if (it in 0.01..0.5) sampleDt = it }
             val ax = f["ax"]?.let { arr(it) } ?: continue
             val ay = f["ay"]?.let { arr(it) } ?: continue
+            // 위아래는 새 휴대폰 페이지부터 (없으면 0)
+            val az = f["az"]?.let { arr(it) }
+            // 휴대폰 기울기 = 길 경사 (rad): 위쪽이 들림, 왼쪽이 들림
+            val px = f["px"]?.let { num(it) } ?: 0.0
+            val py = f["py"]?.let { num(it) } ?: 0.0
             // 손으로 세게 흔들면 수십 m/s² 가 나온다: 차가 낼 수 있는 가속(급제동 약 0.8g)까지만
-            for (k in 0 until minOf(ax.size, ay.size)) queue.addLast(ax[k].coerceIn(-MAX_ACC, MAX_ACC) to ay[k].coerceIn(-MAX_ACC, MAX_ACC))
+            for (k in 0 until minOf(ax.size, ay.size)) {
+                val z = az?.getOrNull(k) ?: 0.0
+                queue.addLast(RemoteSample(ax[k].coerceIn(-MAX_ACC, MAX_ACC), ay[k].coerceIn(-MAX_ACC, MAX_ACC), z.coerceIn(-MAX_ACC, MAX_ACC), px.coerceIn(-MAX_GRADE, MAX_GRADE), py.coerceIn(-MAX_GRADE, MAX_GRADE)))
+            }
             lastBatchAt = clockMs
             active = true
         }
@@ -141,6 +149,8 @@ class RemoteFeed {
         const val BATCH_MS = 400L
         /** 받는 가속도 한도 (m/s²) */
         const val MAX_ACC = 8.0
+        /** 받는 기울기 한도 (rad, 약 17도: 아주 가파른 길) */
+        const val MAX_GRADE = 0.3
         const val STALE_MS = 10_000L
         const val START_BUFFER = 20
         const val MAX_BUFFER = 120
@@ -158,3 +168,6 @@ class RemoteFeed {
                 ?: if (value(e).containsKey("arrayValue")) emptyList() else null
     }
 }
+
+/** 휴대폰에서 받은 시료 하나 (차 기준 m/s²): 앞뒤 + 가속, 좌우 + 왼쪽으로 도는 중, 위아래 + 위로 */
+class RemoteSample(val ax: Double, val ay: Double, val az: Double = 0.0, val gradeX: Double = 0.0, val gradeY: Double = 0.0)

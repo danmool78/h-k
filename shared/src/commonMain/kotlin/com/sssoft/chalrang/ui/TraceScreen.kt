@@ -192,6 +192,9 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
     }
 }
 
+/** 출렁임 합계 (g): 앞뒤·좌우·위아래 */
+private fun total(trace: DriveTrace, i: Int): Double = hypot(hypot(trace.tiltXAt(i), trace.tiltYAt(i)), trace.tiltZAt(i))
+
 private fun windowStats(trace: DriveTrace, t0: Double, t1: Double, events: List<TraceEvent>): WindowStats {
     val i0 = trace.indexAt(t0).coerceAtLeast(0)
     val i1 = trace.indexAt(t1)
@@ -199,9 +202,9 @@ private fun windowStats(trace: DriveTrace, t0: Double, t1: Double, events: List<
     var aMin = 0.0
     var tMax = 0.0
     for (i in i0..i1) {
-        aMax = max(aMax, max(trace.axAt(i), trace.ayAt(i)))
-        aMin = min(aMin, min(trace.axAt(i), trace.ayAt(i)))
-        tMax = max(tMax, hypot(trace.tiltXAt(i), trace.tiltYAt(i)))
+        aMax = max(aMax, max(max(trace.axAt(i), trace.ayAt(i)), trace.azAt(i)))
+        aMin = min(aMin, min(min(trace.axAt(i), trace.ayAt(i)), trace.azAt(i)))
+        tMax = max(tMax, total(trace, i))
     }
     return WindowStats(aMax, aMin, tMax, events.count { it.kind == TraceKind.SPILL })
 }
@@ -306,7 +309,7 @@ private fun CupCard(s: TraceSample?, modifier: Modifier) {
             while (gy < size.height) { drawLine(Color(0x0F4FA3E0), Offset(0f, gy), Offset(size.width, gy)); gy += step }
         }
         if (s != null) {
-            CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(start = 84.dp, end = 8.dp, top = 14.dp, bottom = 4.dp), stage = true)
+            CupView(s.tiltX - s.gradeX, s.tiltY - s.gradeY, s.level, s.dose, s.spilling, heave = s.tiltZ, modifier = Modifier.fillMaxSize().padding(start = 96.dp, end = 8.dp, top = 14.dp, bottom = 4.dp), stage = true)
         }
         LevelGauge(s, Modifier.align(Alignment.CenterStart).padding(start = 10.dp))
         Text("LIQUID\nDYNAMICS", color = Neon.Faint, fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
@@ -321,11 +324,11 @@ private fun CupCard(s: TraceSample?, modifier: Modifier) {
 private fun LevelGauge(s: TraceSample?, modifier: Modifier) {
     val measurer = rememberTextMeasurer()
     val labels = remember(measurer) { Labels(measurer, 9.sp, Neon.Dim) }
-    val tilt = s?.let { hypot(it.tiltX, it.tiltY) } ?: 0.0
-    Column(modifier.width(72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Canvas(Modifier.size(68.dp)) {
-            val c = center
-            val r = size.minDimension / 2 - 10f
+    val tilt = s?.total ?: 0.0
+    Column(modifier.width(84.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Canvas(Modifier.size(82.dp, 68.dp)) {
+            val c = Offset(size.height / 2, size.height / 2)
+            val r = size.height / 2 - 10f
             val full = WaterCup.MAX_FREEBOARD
             drawCircle(Color(0x6606111F), r, c)
             drawCircle(Neon.Cyan.copy(alpha = 0.18f), r + 3f, c, style = Stroke(5f))
@@ -349,10 +352,27 @@ private fun LevelGauge(s: TraceSample?, modifier: Modifier) {
                 drawCircle(col.copy(alpha = 0.3f), 9f, dot)
                 drawCircle(col, 5f, dot)
             }
+            // 위아래 막대: 가운데 = 0, 위로 = 물이 눌림(차가 위로 밀림), 아래로 = 물이 뜸
+            val bx = size.width - 6f
+            drawLine(Neon.Grid, Offset(bx, c.y - r), Offset(bx, c.y + r), 4f)
+            drawLine(Neon.Green.copy(alpha = 0.6f), Offset(bx - 5f, c.y), Offset(bx + 5f, c.y), 1f)
+            if (s != null) {
+                val bz = (s.tiltZ / full).toFloat().coerceIn(-1.1f, 1.1f) * r
+                drawLine(Neon.Green.copy(alpha = 0.3f), Offset(bx, c.y), Offset(bx, c.y - bz), 9f)
+                drawLine(Neon.Green, Offset(bx, c.y), Offset(bx, c.y - bz), 4f)
+            }
+            val zl = labels["위아래"]
+            drawText(zl, topLeft = Offset(bx - zl.size.width / 2f, size.height - zl.size.height + 2f))
         }
         Text("쏠림", color = Neon.Dim, fontSize = 11.sp)
         Text("${fmt(tilt, 2)} g", color = if (s?.spilling == true) Neon.Red else Neon.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
         if (s != null) Text("넘침 ${fmt(s.freeboard, 2)}", color = Neon.Red.copy(alpha = 0.85f), fontSize = 10.sp)
+        // 길 경사 (1도 넘을 때): 물은 수평을 지키므로 컵 안에서 그만큼 기울어 보인다
+        if (s != null && hypot(s.gradeX, s.gradeY) > 0.0175) {
+            val deg = (kotlin.math.atan(hypot(s.gradeX, s.gradeY)) * 180 / kotlin.math.PI).roundToInt()
+            val dir = if (abs(s.gradeX) >= abs(s.gradeY)) (if (s.gradeX > 0) "오르막" else "내리막") else "옆 기울기"
+            Text("$dir ${deg}°", color = Neon.Dim, fontSize = 10.sp)
+        }
     }
 }
 
@@ -368,8 +388,8 @@ private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: Window
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(Brush.horizontalGradient(listOf(Neon.Edge.copy(alpha = 0.6f), Color.Transparent))))
         if (s == null) return@Column
-        val tilt = hypot(s.tiltX, s.tiltY)
-        SummaryRow(Icons.Filled.DirectionsCar, "차 흔들림", "${signed(s.ax, 1)} | ${signed(s.ay, 1)}", "m/s² 앞뒤|좌우")
+        val tilt = s.total
+        SummaryRow(Icons.Filled.DirectionsCar, "차 흔들림", "${signed(s.ax, 1)} | ${signed(s.ay, 1)} | ${signed(s.az, 1)}", "앞|옆|위 m/s²")
         SummaryRow(Icons.Filled.WaterDrop, "물 출렁임", "${fmt(tilt, 2)} g", "넘침 ${fmt(s.freeboard, 2)} g", if (s.spilling) Neon.Red else Neon.White)
         SummaryRow(
             Icons.Filled.Warning, "멀미 누적", fmt(s.dose, 2), "주의 0.6 · 위험 1.0",
@@ -451,23 +471,27 @@ private fun Charts(
 
         ChartCard(
             Icons.Filled.DirectionsCar, "차 흔들림", "(가속도) m/s²",
-            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan),
+            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "위아래" to Neon.Green),
             stat(
                 "최대" to signed(stats.accMax, 1), "최소" to signed(stats.accMin, 1),
-                "현재" to (s?.let { signed(if (abs(it.ax) > abs(it.ay)) it.ax else it.ay, 1) + " m/s²" } ?: "-"),
+                "현재" to (s?.let { signed(listOf(it.ax, it.ay, it.az).maxBy { v -> abs(v) }, 1) + " m/s²" } ?: "-"),
             ),
             slot(1f),
         ) {
             TimeChart(
                 trace, frame, range, cursorAt, following, events, onCursor,
-                series = listOf(Series(Neon.Amber, fill = true) { t, i -> t.axAt(i) }, Series(Neon.Cyan, fill = true) { t, i -> t.ayAt(i) }),
+                series = listOf(
+                    Series(Neon.Amber, fill = true) { t, i -> t.axAt(i) },
+                    Series(Neon.Cyan, fill = true) { t, i -> t.ayAt(i) },
+                    Series(Neon.Green, width = 1.5f) { t, i -> t.azAt(i) },
+                ),
                 yRange = -4.0 to 4.0, yTicks = listOf(3.0, 0.0, -3.0),
             )
         }
         ChartCard(
             Icons.Filled.WaterDrop, "물 출렁임", "(기울기) g",
-            listOf("앞뒤 성분" to Neon.Amber, "좌우 성분" to Neon.Cyan, "합계" to Neon.White),
-            stat("최대" to "${fmt(stats.tiltMax, 2)} g", "현재" to (s?.let { "${fmt(hypot(it.tiltX, it.tiltY), 2)} g" } ?: "-"), "넘침" to "${stats.spills}회"),
+            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "위아래" to Neon.Green, "합계" to Neon.White),
+            stat("최대" to "${fmt(stats.tiltMax, 2)} g", "현재" to (s?.let { "${fmt(it.total, 2)} g" } ?: "-"), "넘침" to "${stats.spills}회"),
             slot(1f),
         ) {
             TimeChart(
@@ -475,7 +499,8 @@ private fun Charts(
                 series = listOf(
                     Series(Neon.Amber) { t, i -> abs(t.tiltXAt(i)) },
                     Series(Neon.Cyan) { t, i -> abs(t.tiltYAt(i)) },
-                    Series(Neon.White, width = 2f, fill = true) { t, i -> hypot(t.tiltXAt(i), t.tiltYAt(i)) },
+                    Series(Neon.Green, width = 1.5f) { t, i -> abs(t.tiltZAt(i)) },
+                    Series(Neon.White, width = 2f, fill = true) { t, i -> total(t, i) },
                 ),
                 yRange = 0.0 to 0.32, yTicks = listOf(0.3, 0.15, 0.0),
                 threshold = Threshold("넘침 기준", Neon.Red) { t, i -> t.freeboardAt(i) }, shadeSpill = true,
@@ -503,7 +528,7 @@ private fun Charts(
         }
         ChartCard(
             Icons.Filled.GraphicEq, "흔들림 주기", "",
-            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "Wf 가중" to Neon.Dim) +
+            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "위아래" to Neon.Green, "Wf 가중" to Neon.Dim) +
                 (child?.sensitivity?.takeIf { it.active }?.let { listOf("${child.name} 가중" to Neon.Red) } ?: emptyList()),
             if (shake == null || shake.quiet) {
                 buildAnnotatedString { withStyle(SpanStyle(color = Neon.Dim)) { append(if (shake == null) "30초 넘게 기록되면 분석해요" else "이 구간은 흔들림이 거의 없어요") } }
@@ -790,7 +815,7 @@ private fun SpectrumChart(r: ShakeReport, sens: Sensitivity?) {
             val l = labels["${period.roundToInt()}초"]
             drawText(l, topLeft = Offset((px - l.size.width / 2f).coerceIn(left, size.width - l.size.width), h + 3))
         }
-        val top = max(1e-9, r.freqs.indices.maxOf { max(r.longAmp[it], r.latAmp[it]) })
+        val top = max(1e-9, r.freqs.indices.maxOf { max(max(r.longAmp[it], r.latAmp[it]), r.vertAmp[it]) })
         fun path(values: DoubleArray, scale: Double): Path = Path().apply {
             values.forEachIndexed { k, v ->
                 val px = x(r.freqs[k])
@@ -801,7 +826,7 @@ private fun SpectrumChart(r: ShakeReport, sens: Sensitivity?) {
         glowPath(path(r.wf, 1.0), Neon.Dim, 1.3f, dash = true)
         // 아이별 가중: 표준 Wf × 민감 주기 강조
         if (sens != null) glowPath(path(DoubleArray(r.freqs.size) { sens.weight(r.freqs[it]) }, sens.gain), Neon.Red.copy(alpha = 0.8f), 1.4f, dash = true)
-        for ((amp, c) in listOf(r.longAmp to Neon.Amber, r.latAmp to Neon.Cyan)) {
+        for ((amp, c) in listOf(r.longAmp to Neon.Amber, r.latAmp to Neon.Cyan, r.vertAmp to Neon.Green)) {
             val line = path(amp, top)
             val fill = Path().apply { addPath(line); lineTo(x(r.freqs.last()), h); lineTo(x(r.freqs.first()), h); close() }
             drawPath(fill, Brush.verticalGradient(listOf(c.copy(alpha = 0.3f), c.copy(alpha = 0.02f)), startY = 0f, endY = h))

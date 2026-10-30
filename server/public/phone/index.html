@@ -55,6 +55,7 @@
     <ol class="muted">
       <li>화면이 위로 오게 <b>평평하게</b> 들고, 휴대폰 <b>위쪽을 차 앞쪽</b>으로</li>
       <li>브레이크·출발처럼 <b>앞뒤로</b>, 굽은 길처럼 <b>좌우로</b> 밀었다 당기기</li>
+      <li><b>위아래로</b> 들었다 내리면 방지턱·오르내리는 길, 앞을 <b>살짝 들면</b> 오르막 (시작할 때 기울기를 평지로 봐요)</li>
       <li><b>2~10초에 한 번</b> 정도로 천천히 — 멀미를 일으키는 흔들림이에요. 빨리 흔드는 떨림은 물컵이 거의 반응하지 않아요</li>
     </ol>
   </div>
@@ -65,7 +66,7 @@
       <div style="text-align:right"><span class="muted">보낸 묶음</span><div class="big" id="sent">0</div></div>
     </div>
     <canvas id="chart" width="960" height="320"></canvas>
-    <div class="muted" style="margin-top:6px"><span style="color:var(--amber)">■</span> 앞뒤 &nbsp; <span style="color:var(--cyan)">■</span> 좌우 (m/s², 최근 10초)</div>
+    <div class="muted" style="margin-top:6px"><span style="color:var(--amber)">■</span> 앞뒤 &nbsp; <span style="color:var(--cyan)">■</span> 좌우 &nbsp; <span style="color:#5be3a0">■</span> 위아래 (m/s², 최근 10초) · 기울이면 오르막·내리막</div>
     <div style="margin-top:14px"><button id="start" disabled>시연 시작</button></div>
     <p class="muted" id="msg" style="margin:10px 0 0"></p>
   </div>
@@ -90,8 +91,10 @@
   const DT = 0.05;          // 시료 간격 (초) = 20Hz
   const BATCH_MS = 500;     // 0.5초마다 묶어서 올림 (문서 하나에 초당 1번 넘게 쓰지 않게, 새 문서로)
   let user = null, isAdmin = false, running = false;
-  let session = null, seq = 0, buf = { ax: [], ay: [] };
-  let latest = { ax: 0, ay: 0 }, gravity = null;
+  let session = null, seq = 0, buf = { ax: [], ay: [], az: [] };
+  let latest = { ax: 0, ay: 0, az: 0 }, gravity = null;
+  // 기울기: 중력 포함 값을 느리게 평균 → 시작할 때를 평지로 보고 그 뒤 기운 만큼 (rad)
+  let tiltG = null, tilt0 = null, tilt = { px: 0, py: 0 };
   let sampleTimer = null, batchTimer = null, wakeLock = null;
   const history = [];       // 그래프용 최근 10초
 
@@ -116,16 +119,24 @@
   });
 
   // 휴대폰 가속도 → 차 기준: 휴대폰 위쪽(y) = 차 앞, 오른쪽(x) = 차 오른쪽. 찰랑은 왼쪽으로 도는 가속을 + 로 쓴다
+  // 위아래(z): 화면이 위를 보면 +z = 위
   function onMotion(e) {
-    let x, y;
-    if (e.acceleration && e.acceleration.x != null) { x = e.acceleration.x; y = e.acceleration.y; }
-    else if (e.accelerationIncludingGravity) {
+    let x, y, z;
+    const g = e.accelerationIncludingGravity;
+    if (e.acceleration && e.acceleration.x != null) { x = e.acceleration.x; y = e.acceleration.y; z = e.acceleration.z || 0; }
+    else if (g) {
       // 중력이 섞인 값만 주는 기기: 느린 평균을 중력으로 보고 뺀다
-      const g = e.accelerationIncludingGravity;
-      gravity = gravity ? { x: gravity.x * 0.98 + g.x * 0.02, y: gravity.y * 0.98 + g.y * 0.02 } : { x: g.x, y: g.y };
-      x = g.x - gravity.x; y = g.y - gravity.y;
+      gravity = gravity ? { x: gravity.x * 0.98 + g.x * 0.02, y: gravity.y * 0.98 + g.y * 0.02, z: gravity.z * 0.98 + g.z * 0.02 } : { x: g.x, y: g.y, z: g.z };
+      x = g.x - gravity.x; y = g.y - gravity.y; z = g.z - gravity.z;
     } else return;
-    latest = { ax: y, ay: -x };
+    latest = { ax: y, ay: -x, az: z };
+    if (g && g.z != null) {
+      tiltG = tiltG ? { x: tiltG.x * 0.97 + g.x * 0.03, y: tiltG.y * 0.97 + g.y * 0.03, z: tiltG.z * 0.97 + g.z * 0.03 } : { x: g.x, y: g.y, z: g.z };
+      // 위쪽(차 앞)을 들면 중력 반작용이 아래쪽으로 기운다: 앞 올라감 = atan2(-y, z), 왼쪽 올라감 = atan2(-x, z)
+      const p = Math.atan2(-tiltG.y, tiltG.z), r = Math.atan2(-tiltG.x, tiltG.z);
+      if (!tilt0) tilt0 = { p, r };
+      tilt = { px: p - tilt0.p, py: r - tilt0.r };
+    }
   }
 
   async function start() {
@@ -134,13 +145,13 @@
       if (r !== "granted") { msg("움직임 센서 권한이 필요해요.", "bad"); return; }
     }
     session = "s" + Date.now().toString(36);
-    seq = 0; buf = { ax: [], ay: [] }; gravity = null;
+    seq = 0; buf = { ax: [], ay: [], az: [] }; gravity = null; tiltG = null; tilt0 = null; tilt = { px: 0, py: 0 };
     try { await setDoc(doc(db, "demo", "live"), { active: true, session, by: user.uid, startedAt: serverTimestamp() }); }
     catch (e) { msg("시작 실패: " + (e.code || e.message) + " (Firestore 규칙이 배포됐는지 확인)", "bad"); return; }
     window.addEventListener("devicemotion", onMotion);
     sampleTimer = setInterval(() => {
-      buf.ax.push(+latest.ax.toFixed(3)); buf.ay.push(+latest.ay.toFixed(3));
-      history.push([latest.ax, latest.ay]); if (history.length > 200) history.shift();
+      buf.ax.push(+latest.ax.toFixed(3)); buf.ay.push(+latest.ay.toFixed(3)); buf.az.push(+latest.az.toFixed(3));
+      history.push([latest.ax, latest.ay, latest.az]); if (history.length > 200) history.shift();
     }, DT * 1000);
     batchTimer = setInterval(flush, BATCH_MS);
     try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (e) { wakeLock = null; }
@@ -152,10 +163,10 @@
 
   async function flush() {
     if (!buf.ax.length) return;
-    const ax = buf.ax, ay = buf.ay; buf = { ax: [], ay: [] };
+    const ax = buf.ax, ay = buf.ay, az = buf.az; buf = { ax: [], ay: [], az: [] };
     seq += 1;
     try {
-      await setDoc(doc(db, "demo", "live", session, String(seq).padStart(6, "0")), { seq, dt: DT, ax, ay, t: Date.now() });
+      await setDoc(doc(db, "demo", "live", session, String(seq).padStart(6, "0")), { seq, dt: DT, ax, ay, az, px: +tilt.px.toFixed(4), py: +tilt.py.toFixed(4), t: Date.now() });
       $("sent").textContent = seq;
     } catch (e) { msg("보내기 실패: " + (e.code || e.message), "bad"); }
   }
@@ -184,7 +195,7 @@
     const w = cv.width, h = cv.height;
     cx.clearRect(0, 0, w, h);
     cx.strokeStyle = "rgba(79,163,224,.25)"; cx.beginPath(); cx.moveTo(0, h / 2); cx.lineTo(w, h / 2); cx.stroke();
-    for (const [k, color] of [[0, "#ffb31a"], [1, "#29c4f6"]]) {
+    for (const [k, color] of [[0, "#ffb31a"], [1, "#29c4f6"], [2, "#5be3a0"]]) {
       cx.strokeStyle = color; cx.lineWidth = 3; cx.beginPath();
       history.forEach((p, i) => { const x = i / 199 * w, y = h / 2 - Math.max(-6, Math.min(6, p[k])) / 6 * (h / 2 - 6); i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
       cx.stroke();

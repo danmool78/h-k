@@ -137,7 +137,7 @@ private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit) = Box(modif
     Canvas(Modifier.fillMaxSize()) {
         drawRect(Brush.radialGradient(listOf(Color(0x3329C4F6), Color.Transparent), center = Offset(size.width * 0.5f, size.height * 0.62f), radius = size.minDimension * 0.7f))
     }
-    CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 8.dp), stage = true)
+    CupView(s.tiltX - s.gradeX, s.tiltY - s.gradeY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 8.dp), stage = true, heave = s.tiltZ)
     Row(Modifier.align(Alignment.TopStart).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Filled.WaterDrop, null, tint = Neon.Cyan, modifier = Modifier.size(26.dp))
         Spacer(Modifier.width(6.dp))

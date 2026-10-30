@@ -11,8 +11,8 @@ class DriveTraceTest {
         val trace = DriveTrace()
         val cup = WaterCup()
         for (f in DriveScenario.weekendTrip(style).frames(0.05)) {
-            if (f.resting) cup.rest(0.05) else cup.step(f.ax, f.ay, 0.05)
-            trace.record(f.t, f.ax, f.ay, cup.tiltX, cup.tiltY, f.speedKmh, cup.dose, cup.level, cup.spilling)
+            if (f.resting) cup.rest(0.05) else cup.step(f.ax, f.ay, 0.05, f.az)
+            trace.record(f.t, f.ax, f.ay, cup.tiltX, cup.tiltY, f.speedKmh, cup.dose, cup.level, cup.spilling, f.az, cup.tiltZ)
         }
         return trace
     }

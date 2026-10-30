@@ -57,10 +57,13 @@ fun CupView(
     modifier: Modifier = Modifier,
     /** 컵이 놓인 바닥(빛나는 받침 고리)도 같은 3D 공간에 그린다 */
     stage: Boolean = false,
+    /** 위아래 출렁임 (g, + 위로): 3D 물이 눌리고 튄다 */
+    heave: Double = 0.0,
 ) {
     val puddle by animateFloatAsState((dose / 1.4).coerceIn(0.0, 1.0).toFloat(), label = "puddle")
     val shownLevel by animateFloatAsState(level.toFloat(), label = "level")
     val state by rememberUpdatedState(Triple(tiltX, tiltY, spilling))
+    val heaveNow by rememberUpdatedState(heave)
     val drops = remember { Drops() }
     var time by remember { mutableFloatStateOf(0f) }
     // 3D 물: GPU 셰이더 + 물결 시뮬레이션 (안 되면 2D 그림)
@@ -82,7 +85,7 @@ fun CupView(
                 if (water.supported && dt > 0) {
                     val h0 = BASE + shownLevel * (H - BASE)
                     val (px, py) = realSlope(tx, ty)
-                    sim.step(dt.toDouble(), px, py, innerRadiusAt(h0) * 0.97, sp)
+                    sim.step(dt.toDouble(), px, py, innerRadiusAt(h0) * 0.97, sp, heaveNow)
                 }
             }
         }

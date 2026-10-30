@@ -25,7 +25,16 @@ data class TraceSample(
     val dose: Double,
     val level: Double,
     val spilling: Boolean,
+    /** 위아래 (m/s², + 위로) 와 위아래 출렁임 (g) */
+    val az: Double = 0.0,
+    val tiltZ: Double = 0.0,
+    /** 길 경사 (rad): 앞이 올라감, 왼쪽이 올라감 */
+    val gradeX: Double = 0.0,
+    val gradeY: Double = 0.0,
 ) {
+    /** 출렁임 합계 (g): 앞뒤·좌우·위아래 */
+    val total: Double get() = kotlin.math.hypot(kotlin.math.hypot(tiltX, tiltY), tiltZ)
+
     /** 넘치기 시작하는 기울기 (g) */
     val freeboard: Double get() = WaterCup.freeboardOf(level)
 }
@@ -45,6 +54,10 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
     private val t = DoubleArray(capacity)
     private val ax = FloatArray(capacity)
     private val ay = FloatArray(capacity)
+    private val az = FloatArray(capacity)
+    private val tz = FloatArray(capacity)
+    private val gx = FloatArray(capacity)
+    private val gy = FloatArray(capacity)
     private val tx = FloatArray(capacity)
     private val ty = FloatArray(capacity)
     private val speed = FloatArray(capacity)
@@ -66,6 +79,7 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
     fun record(
         time: Double, ax: Double, ay: Double, tiltX: Double, tiltY: Double,
         speedKmh: Double, dose: Double, level: Double, spilling: Boolean,
+        az: Double = 0.0, tiltZ: Double = 0.0, gradeX: Double = 0.0, gradeY: Double = 0.0,
     ) {
         if (time - lastT < interval * 0.999) return
         lastT = time
@@ -75,6 +89,8 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
         this.tx[i] = tiltX.toFloat(); this.ty[i] = tiltY.toFloat()
         this.speed[i] = speedKmh.toFloat(); this.dose[i] = dose.toFloat(); this.level[i] = level.toFloat()
         this.spill[i] = spilling
+        this.az[i] = az.toFloat(); this.tz[i] = tiltZ.toFloat()
+        this.gx[i] = gradeX.toFloat(); this.gy[i] = gradeY.toFloat()
         version++
     }
 
@@ -89,6 +105,7 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
         return TraceSample(
             t[k], ax[k].toDouble(), ay[k].toDouble(), tx[k].toDouble(), ty[k].toDouble(),
             speed[k].toDouble(), dose[k].toDouble(), level[k].toDouble(), spill[k],
+            az[k].toDouble(), tz[k].toDouble(), gx[k].toDouble(), gy[k].toDouble(),
         )
     }
 
@@ -97,6 +114,11 @@ class DriveTrace(val interval: Double = 0.1, private val capacity: Int = 72_000)
     // 그래프용: 객체를 만들지 않고 값만
     fun axAt(i: Int): Double = ax[(start + i) % capacity].toDouble()
     fun ayAt(i: Int): Double = ay[(start + i) % capacity].toDouble()
+    fun azAt(i: Int): Double = az[(start + i) % capacity].toDouble()
+    fun tiltZAt(i: Int): Double = tz[(start + i) % capacity].toDouble()
+    fun gradeXAt(i: Int): Double = gx[(start + i) % capacity].toDouble()
+    fun gradeYAt(i: Int): Double = gy[(start + i) % capacity].toDouble()
+    fun speedAt(i: Int): Double = speed[(start + i) % capacity].toDouble()
     fun tiltXAt(i: Int): Double = tx[(start + i) % capacity].toDouble()
     fun tiltYAt(i: Int): Double = ty[(start + i) % capacity].toDouble()
     fun doseAt(i: Int): Double = dose[(start + i) % capacity].toDouble()

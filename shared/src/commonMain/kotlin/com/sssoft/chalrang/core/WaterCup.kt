@@ -2,6 +2,7 @@ package com.sssoft.chalrang.core
 
 import kotlin.math.exp
 import kotlin.math.hypot
+import kotlin.math.min
 
 /**
  * 물컵 출렁임과 멀미 누적량.
@@ -10,6 +11,16 @@ import kotlin.math.hypot
  * (아이별 민감 주기를 학습했으면 그 주기를 [sensitivity] 만큼 더 강조).
  * Wf 는 0.16Hz(약 6초 주기)에서 가장 크고, 그보다 느리거나 빠른 흔들림은 줄인다. 물은 차 흔들림을 늦게 따라온다.
  * → 물이 많이 출렁이는 운전 = 국제 규격이 멀미를 일으킨다고 보는 흔들림.
+ *
+ * 위아래 흔들림(방지턱·오르내리는 길)도 넣는다: ISO 2631-1 의 Wf 는 원래 위아래(z) 멀미 가중이다.
+ * - [tiltZ] = 위아래 가속도에 Wf 를 건 값 (g). 넘침 판정은 앞뒤·좌우·위아래를 합친 크기
+ *   (ISO 2631-1 의 축 합성 √(x²+y²+z²), 축 계수 1)
+ * - 위로 밀리면 물이 눌려 덜 기울고, 꺼지면(둔덕을 넘을 때) 물이 떠서 같은 쏠림에도 더 기운다:
+ *   수면 경사 = 수평 가속 / (g + 위아래 가속)
+ *
+ * 길 경사(오르막·내리막·옆 기울기)는 [gradeX], [gradeY] 로 받는다. 물은 중력에 수평을 유지하므로
+ * 차에 붙은 컵 안에서는 경사만큼 기울어 보인다. 경사 자체는 흔들림이 아니라 멀미를 만들지 않으므로
+ * 넘침·누적량에는 넣지 않고, 화면의 수면([surfaceX], [surfaceY])에만 더한다.
  *
  * 물 높이 [level] (0~1) 이 높을수록 여유가 줄어 쉽게 넘친다 (아이별 기준).
  * 넘친 양을 쌓아 멀미 누적량 [dose] 로 쓰고, 넘치지 않는 동안은 천천히 줄어든다 (몸의 회복).
@@ -23,8 +34,21 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
     /** 수면 기울기 (g). x = 앞뒤(+ 앞으로 쏠림), y = 좌우(+ 왼쪽으로 쏠림) */
     var tiltX = 0.0; private set
     var tiltY = 0.0; private set
+    /** 위아래 출렁임 (g, + 위로) */
+    var tiltZ = 0.0; private set
     private val wfX = Wf.Filter(STEP)
     private val wfY = Wf.Filter(STEP)
+    private val wfZ = Wf.Filter(STEP)
+    /** 길 경사 (rad ≈ g): x = 앞이 올라감(+ 오르막), y = 왼쪽이 올라감 */
+    var gradeX = 0.0
+    var gradeY = 0.0
+
+    /** 화면에 그릴 수면 기울기 (g): 흔들림 + 길 경사. 오르막이면 물은 컵 뒤쪽으로 몰린다 */
+    val surfaceX: Double get() = tiltX - gradeX
+    val surfaceY: Double get() = tiltY - gradeY
+
+    /** 느린 위아래 가속 (m/s²): 물이 느끼는 중력 g + 이것 */
+    private var azSlow = 0.0
 
     /** 아이별 민감 주기. 바뀌면 강조 필터를 새로 만든다 (학습 전에는 강조 없음) */
     var sensitivity: Sensitivity = Sensitivity()
@@ -49,7 +73,11 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
     /** 넘치기 시작한 횟수 (전체) */
     var spillCount = 0; private set
 
-    val tilt: Double get() = hypot(tiltX, tiltY)
+    /** 수평 쏠림 (g): 앞뒤·좌우 기울기를 지금 느끼는 중력으로 나눈 것 */
+    val tiltH: Double get() = hypot(tiltX, tiltY) * G / (G + azSlow).coerceIn(G * MIN_GRAVITY, G * MAX_GRAVITY)
+
+    /** 출렁임 크기 (g): 수평 쏠림과 위아래 출렁임을 합친 것. 이것이 [freeboard] 를 넘으면 넘친다 */
+    val tilt: Double get() = hypot(tiltH, tiltZ)
 
     /** 넘치기까지 남은 여유 (g) */
     val freeboard: Double get() = freeboardOf(level)
@@ -58,11 +86,13 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
      * [dt] 초 동안 가속도 [ax](앞뒤, + 가속), [ay](좌우, + 왼쪽으로 도는 중) (m/s²) 를 받는다.
      * 반환값은 이번에 넘친 양.
      */
-    fun step(ax: Double, ay: Double, dt: Double): Double {
+    fun step(ax: Double, ay: Double, dt: Double, az: Double = 0.0): Double {
         if (dt <= 0) return 0.0
         // 가속하면 물은 뒤로, 왼쪽으로 돌면 물은 오른쪽으로 쏠린다 → 입력 부호 반대
         val gx = -ax / G
         val gy = -ay / G
+        val gz = az / G
+        azSlow += (az - azSlow) * min(1.0, dt / GRAVITY_TAU)
         var spilled = 0.0
         pending += dt
         while (pending >= STEP * 0.999) {
@@ -71,6 +101,7 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
             val wy = wfY.step(gy)
             tiltX = peakX?.step(wx) ?: wx
             tiltY = peakY?.step(wy) ?: wy
+            tiltZ = wfZ.step(gz)
             spilled += spillRate(tilt, level) * STEP
         }
         val nowSpilling = tilt > freeboard
@@ -84,7 +115,7 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
     fun rest(dt: Double) = step(0.0, 0.0, dt)
 
     fun reset() {
-        tiltX = 0.0; tiltY = 0.0; wfX.reset(); wfY.reset(); pending = 0.0
+        tiltX = 0.0; tiltY = 0.0; tiltZ = 0.0; gradeX = 0.0; gradeY = 0.0; wfX.reset(); wfY.reset(); wfZ.reset(); azSlow = 0.0; pending = 0.0
         dose = 0.0; spilling = false; spillCount = 0
     }
 
@@ -105,6 +136,12 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
 
         /** 넘친 양 계수 (1/(g²·s)) */
         const val SPILL_K = 3.0
+
+        /** 물이 느끼는 중력의 범위 (g 배): 위아래 가속이 커도 이 안에서 */
+        const val MIN_GRAVITY = 0.5
+        const val MAX_GRAVITY = 1.5
+        /** 위아래 가속을 중력에 더할 때 고르는 시간 (초): 물이 따라 눌리고 뜨는 빠르기 */
+        const val GRAVITY_TAU = 0.3
 
         /** 회복 시간 상수 (초). 넘치지 않으면 10분마다 1/e 로 줄어든다 */
         const val RECOVERY_TAU = 600.0

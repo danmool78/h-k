@@ -7,10 +7,23 @@ import org.junit.Test
 class RemoteFeedTest {
 
     /** Firestore REST runQuery 응답 모양 (휴대폰 페이지가 쓴 묶음 두 개 + 빈 줄) */
-    private fun batch(seq: Int, ax: List<Double>, ay: List<Double>): String {
+    private fun batch(seq: Int, ax: List<Double>, ay: List<Double>, az: List<Double>? = null, px: Double? = null): String {
         fun arr(v: List<Double>) = v.joinToString(",") { if (it % 1.0 == 0.0) """{"integerValue":"${it.toLong()}"}""" else """{"doubleValue":$it}""" }
+        val extra = (az?.let { ""","az":{"arrayValue":{"values":[${arr(it)}]}}""" } ?: "") + (px?.let { ""","px":{"doubleValue":$it}""" } ?: "")
         return """{"document":{"name":"x","fields":{"seq":{"integerValue":"$seq"},"dt":{"doubleValue":0.05},""" +
-            """"ax":{"arrayValue":{"values":[${arr(ax)}]}},"ay":{"arrayValue":{"values":[${arr(ay)}]}}}},"readTime":"t"}"""
+            """"ax":{"arrayValue":{"values":[${arr(ax)}]}},"ay":{"arrayValue":{"values":[${arr(ay)}]}}$extra}},"readTime":"t"}"""
+    }
+
+    @Test
+    fun `위아래·기울기를 받고, 너무 센 값은 자른다`() {
+        val feed = RemoteFeed()
+        val ten = List(10) { 0.0 }
+        feed.accept("[" + batch(1, List(10) { 30.0 }, ten, List(10) { 1.5 }, px = 0.05) + "," + batch(2, ten, ten) + "]")
+        val got = feed.take(1.0)
+        assertEquals(RemoteFeed.MAX_ACC, got[0].ax, 1e-9)
+        assertEquals(1.5, got[0].az, 1e-9)
+        assertEquals(0.05, got[0].gradeX, 1e-9)
+        assertEquals("예전 페이지(위아래 없음)는 0", 0.0, got[15].az, 1e-9)
     }
 
     @Test
@@ -22,13 +35,13 @@ class RemoteFeedTest {
         // 20개(1초) 쌓였으니 재생 시작: 0.1초 동안 2개
         val first = feed.take(0.1)
         assertEquals(2, first.size)
-        assertEquals(0.0, first[0].first, 1e-9)
-        assertEquals(-0.1, first[1].second, 1e-9)
+        assertEquals(0.0, first[0].ax, 1e-9)
+        assertEquals(-0.1, first[1].ay, 1e-9)
         // 이미 받은 순번은 다시 받지 않는다
         feed.accept("[" + batch(2, ten, ten) + "]")
         val rest = feed.take(10.0)
         assertEquals(18, rest.size)
-        assertEquals(1.9, rest.last().first, 1e-9)
+        assertEquals(1.9, rest.last().ax, 1e-9)
     }
 
     @Test

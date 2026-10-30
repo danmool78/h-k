@@ -80,7 +80,20 @@ class WaterSim(private val extent: Double) {
      * 그래서 가만히 있으면 수면이 그 경사의 평면으로 멈추고, 가속이 바뀌면 벽에서 물결이 생겨
      * 반대편으로 건너가고, 벽에서 되돌아오고, 서로 부딪혀 간섭 무늬를 만든다.
      */
-    fun step(dt: Double, px: Double, py: Double, radius: Double, spilling: Boolean) {
+    fun step(dt: Double, px: Double, py: Double, radius: Double, spilling: Boolean, heave: Double = 0.0) {
+        // 위아래: 물이 느끼는 중력이 g·(1+heave) 로 바뀌면 물결이 그만큼 빨리/늦게 달리고(c² ∝ g),
+        // 갑자기 바뀌면(방지턱) 수면 곳곳이 튄다
+        gScale = (1 + heave).coerceIn(0.5, 1.5).toFloat()
+        val jolt = heave - lastHeave
+        lastHeave = heave
+        if (kotlin.math.abs(jolt) > JOLT_MIN) {
+            val n = (kotlin.math.abs(jolt) * 300).toInt().coerceIn(1, 6)
+            repeat(n) {
+                val a = rnd.nextDouble() * 2 * kotlin.math.PI
+                val rr = radius * kotlin.math.sqrt(rnd.nextDouble()) * 0.9
+                bump(rr * kotlin.math.cos(a), rr * kotlin.math.sin(a), (rnd.nextDouble() - 0.5) * kotlin.math.abs(jolt) * 1.2, wide = 0.01)
+            }
+        }
         val rate = kotlin.math.hypot(px - p1x, py - p1y) / max(dt, 1e-3)
         agitation += ((rate * 2.5).coerceIn(0.0, 1.0) - agitation) * min(1.0, dt * 3)
         p1x = px; p1y = py
@@ -107,6 +120,8 @@ class WaterSim(private val extent: Double) {
 
     private var sx = 0f
     private var sy = 0f
+    private var gScale = 1f
+    private var lastHeave = 0.0
     private var lastR2 = 0f
 
     /** 지금 경사의 평면 (비선형 항은 이것에 대한 높이로 본다) */
@@ -158,7 +173,7 @@ class WaterSim(private val extent: Double) {
             }
             val lap = at(i - 1, j) + at(i + 1, j) + at(i, j - 1) + at(i, j + 1) - 4 * c
             // 비선형: 물이 높은 곳에서 물결이 더 빨리 달린다 (얕은 물 c² ∝ g·깊이) → 앞쪽이 가팔라지며 잔물결이 생긴다
-            val local = C2 * (1f + NONLINEAR * (c - planeAt(i, j))).coerceIn(0.5f, 1.6f)
+            val local = C2 * gScale * (1f + NONLINEAR * (c - planeAt(i, j))).coerceIn(0.5f, 1.6f)
             // 점성: 아주 잔 굴곡은 금방 매끄러워진다 (큰 물결은 오래 간다)
             next[k] = (2 * c - prev[k] + local * lap) * DAMP + VISC * lap
             mean += next[k]
@@ -236,6 +251,8 @@ class WaterSim(private val extent: Double) {
         private const val BREAK_STEEP = 3.0f
         private const val VISC = 0.06f
         private const val BREAK_SAMPLES = 24
+        /** 이보다 큰 위아래 변화(한 프레임, g)면 수면이 튄다 */
+        private const val JOLT_MIN = 0.004
         /** 컵 밖으로 이어 채우는 칸 수 (B-스플라인 4×4 와 잔물결 판정이 닿는 범위) */
         private const val FILL_RINGS = 3
 

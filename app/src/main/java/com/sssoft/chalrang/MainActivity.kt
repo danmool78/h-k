@@ -20,7 +20,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 처리 루프는 화면이 보이는 동안만 (멈추면 취소, 다시 보이면 이어서)
         lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.engine.run() }
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.imu.start()
+                try {
+                    viewModel.engine.run()
+                } finally {
+                    viewModel.imu.stop()
+                }
+            }
         }
         setContent {
             ChalrangTheme {

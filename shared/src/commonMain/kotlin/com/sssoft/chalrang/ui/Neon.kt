@@ -38,6 +38,8 @@ object Neon {
     val Orange = Color(0xFFFF7A1A)
     val Red = Color(0xFFFF4D5E)
     val Purple = Color(0xFFB07CFF)
+    /** 위아래 (z축) */
+    val Green = Color(0xFF5BE3A0)
     val White = Color(0xFFF2F7FF)
     val Text = Color(0xFFE3EEFF)
     val Dim = Color(0xFF8AA2C2)
