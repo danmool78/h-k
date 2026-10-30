@@ -25,6 +25,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -66,12 +68,24 @@ import kotlin.math.sqrt
  * 3) 마무리. 안전한 길을 따라 계속 달리지 않아 덜 어지럽다.
  */
 @Composable
-fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit) {
+fun BriefingScreen(
+    path: RoutePath,
+    speak: (String) -> Unit,
+    onClose: () -> Unit,
+    /** 위험 구간 둘레의 자세한 지형 (가까이 들어갈 때 쓴다, 없으면 전체 지형) */
+    detail: (suspend (RiskSegment) -> TerrainGrid?)? = null,
+) {
     var t by remember { mutableDoubleStateOf(0.0) }
     var caption by remember { mutableStateOf("") }
     val speakNow by rememberUpdatedState(speak)
     val close by rememberUpdatedState(onClose)
     val plan = remember(path) { BriefPlan(path) }
+    val details = remember(path) { mutableStateMapOf<Int, TerrainGrid>() }
+    // 한 바퀴 도는 동안 위험 구간의 자세한 지형을 미리 받아 둔다 (동시에)
+    LaunchedEffect(plan) {
+        val load = detail ?: return@LaunchedEffect
+        plan.segs.forEachIndexed { i, seg -> launch { load(seg)?.let { details[i] = it } } }
+    }
 
     LaunchedEffect(plan) {
         var last = 0L
@@ -95,7 +109,7 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
     val step = plan.steps[plan.stepIndex(t)]
     val at = plan.pointerAt(t)
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF050B18), Color(0xFF0A1A33), Color(0xFF040A16))))) {
-        RouteScene(plan, t, Modifier.fillMaxSize())
+        RouteScene(plan, t, details, Modifier.fillMaxSize())
         // 위: 제목·거리·닫기
         Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.Route, null, tint = Neon.Cyan, modifier = Modifier.size(28.dp))
@@ -288,7 +302,7 @@ private fun riskColor(level: Int): Color = when (level) {
  * 위험 구간 번호, 포인터. 카메라는 장면에 따라 한 바퀴 → 짚기 → 빨려 들어가기 → 달리기 → 올라오기.
  */
 @Composable
-private fun RouteScene(plan: BriefPlan, t: Double, modifier: Modifier) {
+private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid>, modifier: Modifier) {
     val path = plan.path
     val measurer = rememberTextMeasurer()
     val labels = remember(measurer) { HashMap<String, androidx.compose.ui.text.TextLayoutResult>() }
@@ -297,14 +311,17 @@ private fun RouteScene(plan: BriefPlan, t: Double, modifier: Modifier) {
     val glow = remember { Path() }
     val curtain = remember { Path() }
     val wire = remember { Path() }
-    val shade = remember(path) { path.grid?.let { TerrainShade(it) } }
+    // 지형마다 색·그림자 (한 번만 계산)
+    val shades = remember(path) { HashMap<TerrainGrid, TerrainShade>() }
     Canvas(modifier) {
         val st = plan.steps[plan.stepIndex(t)]
         val u = plan.progress(t)
         val cam = poseFor(plan, st, u, t).camera(path, size.width, size.height)
-        val tg = path.grid
-        if (tg != null && shade != null) {
-            shade.draw(this, cam, wire)
+        // 위험 구간에 들어가 있으면 그 둘레의 자세한 지형, 아니면 전체 지형
+        val close = st.seg >= 0 && (st.kind == BriefPlan.Kind.DIVE || st.kind == BriefPlan.Kind.DRIVE || st.kind == BriefPlan.Kind.RISE)
+        val tg = (if (close) details[st.seg] else null) ?: path.grid
+        if (tg != null) {
+            shades.getOrPut(tg) { TerrainShade(tg) }.draw(this, cam, wire)
         } else {
             // 지형이 없으면 바닥 격자
             wire.reset()

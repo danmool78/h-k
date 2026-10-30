@@ -30,7 +30,7 @@ enum class DemoRoute(val id: String, val label: String, val short: String) {
 }
 
 /**
- * 실제 지역 시연 길: tools/make_demo_routes.py 로 OSRM(도로 선·속도·회전)과 Open-Meteo(높이·주변 지형)에서
+ * 실제 지역 시연 길: tools/make_demo_routes.py 로 OSRM(도로 선·속도·회전)과 공개 고도 타일(높이·주변 지형)에서
  * 미리 받아 앱에 넣어 둔 것 (차 안에서 인터넷이 없어도 된다).
  */
 object DemoRoutes {
@@ -60,6 +60,7 @@ object DemoRoutes {
         return RoutePath.fromPolyline(
             arr("x"), arr("y"), arr("z"), extra = turns, etaSec = o["durationSec"]?.jsonPrimitive?.double,
             region = r.label, grid = grid(o["grid"]!!.jsonObject), vLimit = v, stops = stops,
+            lat0 = o["lat0"]?.jsonPrimitive?.double, lng0 = o["lng0"]?.jsonPrimitive?.double,
         )
     }
 

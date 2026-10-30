@@ -3,7 +3,7 @@
 시연용 실제 지역 경로 만들기 (한 번 돌려 결과 JSON 을 앱 리소스로 넣는다).
 
 - 도로 선·구간 속도·회전 안내: OSRM (OpenStreetMap 길찾기, router.project-osrm.org)
-- 높이(경로·주변 지형 격자): Open-Meteo 고도 API (Copernicus DEM 90m)
+- 높이(경로·주변 지형 격자): 공개 고도 타일 (AWS Terrain Tiles, Terrarium PNG: 높이 = R*256 + G + B/256 - 32768)
 
 결과: shared/src/commonMain/composeResources/files/routes/<id>.json
   x, y   : 출발점 기준 m (동, 북)        z : 그 점의 높이 (m)
@@ -26,7 +26,7 @@ ROUTES = [
 ]
 OUT = os.path.join(os.path.dirname(__file__), "..", "shared", "src", "commonMain", "composeResources", "files", "routes")
 MARGIN = 3000.0
-GRID_MAX = 64
+GRID_MAX = 72
 
 
 def get(url):
@@ -40,13 +40,53 @@ def get(url):
     raise RuntimeError(url)
 
 
-def heights(lats, lngs):
+TILE = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+_tiles = {}
+
+
+def tile(z, x, y):
+    key = (z, x, y)
+    if key not in _tiles:
+        import io
+        from PIL import Image
+        for i in range(5):
+            try:
+                with urllib.request.urlopen(TILE.format(z=z, x=x, y=y), timeout=40) as r:
+                    im = Image.open(io.BytesIO(r.read())).convert("RGB")
+                break
+            except Exception as e:
+                print("retry", e)
+                time.sleep(2 * (i + 1))
+        px = im.load()
+        _tiles[key] = [[px[i, j][0] * 256 + px[i, j][1] + px[i, j][2] / 256 - 32768 for i in range(256)] for j in range(256)]
+    return _tiles[key]
+
+
+def heights(lats, lngs, z=13):
+    """점마다 높이: 그 줌의 타일에서 쌍선형 (먼저 필요한 타일을 동시에 받는다)"""
+    from concurrent.futures import ThreadPoolExecutor
+    n = 2 ** z
+    def pix(lat, lng):
+        x = (lng + 180) / 360 * n * 256
+        y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * n * 256
+        return x, y
+    need = set()
+    for la, lo in zip(lats, lngs):
+        x, y = pix(la, lo)
+        need.add((int(x // 256), int(y // 256)))
+        need.add((int((x + 1) // 256), int((y + 1) // 256)))
+    with ThreadPoolExecutor(8) as ex:
+        list(ex.map(lambda k: tile(z, k[0], k[1]), need))
+    def at(px, py):
+        t = tile(z, int(px // 256), int(py // 256))
+        return t[int(py % 256)][int(px % 256)]
     out = []
-    for i in range(0, len(lats), 100):
-        la = ",".join(f"{v:.5f}" for v in lats[i:i + 100])
-        lo = ",".join(f"{v:.5f}" for v in lngs[i:i + 100])
-        out += get(f"https://api.open-meteo.com/v1/elevation?latitude={la}&longitude={lo}")["elevation"]
-        time.sleep(1.0)
+    for la, lo in zip(lats, lngs):
+        x, y = pix(la, lo)
+        x0, y0 = math.floor(x - 0.5), math.floor(y - 0.5)
+        fx, fy = x - 0.5 - x0, y - 0.5 - y0
+        h = (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) + (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy
+        out.append(h)
     return out
 
 
@@ -99,8 +139,8 @@ def build(rid, label, kind, pts):
             m = st["maneuver"].get("modifier", "")
             dr = -1 if "left" in m else (1 if "right" in m else (-1 if m == "uturn" else 0))
             turns.append([round(cum[i], 1), dr, k])
-    # 경로 높이: 40m 마다 (최대 300곳) 재고 점마다 보간
-    n = max(2, min(300, int(total / 40)))
+    # 경로 높이: 20m 마다 재고 점마다 보간
+    n = max(2, int(total / 20))
     sl, sg = [], []
     j = 0
     for k in range(n):
@@ -125,15 +165,15 @@ def build(rid, label, kind, pts):
     nx, ny = int((maxx - minx) / step) + 1, int((maxy - miny) / step) + 1
     glat = [lat0 + (miny + (i // nx) * step) / ky for i in range(nx * ny)]
     glng = [lng0 + (minx + (i % nx) * step) / kx for i in range(nx * ny)]
-    gh = heights(glat, glng)
+    gh = heights(glat, glng, z=12)
     out = {
-        "id": rid, "label": label, "kind": kind,
+        "id": rid, "label": label, "kind": kind, "lat0": lat0, "lng0": lng0,
         "durationSec": round(r["duration"]), "distanceM": round(total),
         "x": [round(v, 1) for v in xs], "y": [round(v, 1) for v in ys], "z": [round(v, 1) for v in zs],
         "v": [round(v, 1) for v in speeds],
         "turns": turns,
         "grid": {"x0": round(minx, 1), "y0": round(miny, 1), "step": round(step, 1), "nx": nx, "ny": ny, "h": [round(v) for v in gh]},
-        "source": "OSRM (OpenStreetMap contributors, ODbL), Open-Meteo Elevation (Copernicus DEM GLO-90)",
+        "source": "OSRM (OpenStreetMap contributors, ODbL), AWS Terrain Tiles (Mapzen; SRTM, GMTED, ETOPO1 etc.)",
     }
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, rid + ".json"), "w") as f:

@@ -21,23 +21,22 @@ class GeoRoute(
     val zs: DoubleArray,
     val grid: TerrainGrid?,
     val durationSec: Double?,
+    /** 출발점 위경도 (x, y 의 기준) */
+    val lat0: Double,
+    val lng0: Double,
 )
 
 /**
  * 실제 지역의 길: OSRM(오픈스트리트맵 길찾기, 키 없음) 으로 도로 경로 선을 받고,
- * Open-Meteo 고도(Copernicus DEM 90m) 로 경로 높이와 주변 지형 격자를 잰다.
- * 경로마다 한 번만 부른다 (길찾기 1번 + 고도 몇 번).
+ * 공개 고도 타일([TerrainTiles]) 로 경로 높이와 주변 지형 격자를 읽는다.
+ * 경로마다 한 번만 부른다 (길찾기 1번 + 타일 몇 장 동시에).
  */
 object GeoFetch {
     private const val OSRM = "https://router.project-osrm.org/route/v1/driving"
-    private const val ELEV = "https://api.open-meteo.com/v1/elevation"
-    /** 고도 API 한 번에 잴 수 있는 곳 */
-    private const val BATCH = 100
-    /** 경로 높이를 재는 최대 곳 수 */
-    private const val ROUTE_SAMPLES = 200
     /** 주변 지형: 경로 둘레 여유 (m), 격자 칸 수 한도 */
-    private const val MARGIN = 1_500.0
-    private const val GRID_MAX = 34
+    private const val MARGIN = 3_000.0
+    private const val GRID_MAX = 64
+    private const val MIN_STEP = 150.0
 
     suspend fun route(fromLat: Double, fromLng: Double, toLat: Double, toLng: Double, name: String? = null, grid: Boolean = true): GeoRoute? {
         val text = httpRequest("$OSRM/${r6(fromLng)},${r6(fromLat)};${r6(toLng)},${r6(toLat)}?overview=full&geometries=geojson") ?: return null
@@ -49,63 +48,41 @@ object GeoFetch {
         val ky = 110_540.0
         val xs = DoubleArray(coords.size) { (coords[it].second - lng0) * kx }
         val ys = DoubleArray(coords.size) { (coords[it].first - lat0) * ky }
-        // 경로 높이: 거리로 고르게 나눈 곳에서 재고 점마다 보간
-        val cum = DoubleArray(coords.size)
-        for (i in 1 until coords.size) cum[i] = cum[i - 1] + sqrt((xs[i] - xs[i - 1]).let { it * it } + (ys[i] - ys[i - 1]).let { it * it })
-        val total = cum.last()
-        val n = min(ROUTE_SAMPLES, max(2, (total / 40).toInt()))
-        val sLat = DoubleArray(n)
-        val sLng = DoubleArray(n)
-        var j = 0
-        for (k in 0 until n) {
-            val d = total * k / (n - 1)
-            while (j < cum.size - 2 && cum[j + 1] < d) j++
-            val t = if (cum[j + 1] > cum[j]) (d - cum[j]) / (cum[j + 1] - cum[j]) else 0.0
-            sLat[k] = coords[j].first + (coords[j + 1].first - coords[j].first) * t
-            sLng[k] = coords[j].second + (coords[j + 1].second - coords[j].second) * t
-        }
-        val sh = heights(sLat, sLng) ?: return null
-        val zs = DoubleArray(coords.size) { i ->
-            val f = (cum[i] / total * (n - 1)).coerceIn(0.0, (n - 1).toDouble())
-            val a = f.toInt()
-            val b = min(a + 1, n - 1)
-            sh[a] + (sh[b] - sh[a]) * (f - a)
-        }
-        // 주변 지형 격자
+        // 높이: 경로 둘레를 덮는 고도 타일을 동시에 받아 그 안에서 읽는다 (점마다 묻지 않음)
+        var minLat = Double.MAX_VALUE; var maxLat = -Double.MAX_VALUE; var minLng = Double.MAX_VALUE; var maxLng = -Double.MAX_VALUE
+        for ((la, lo) in coords) { minLat = min(minLat, la); maxLat = max(maxLat, la); minLng = min(minLng, lo); maxLng = max(maxLng, lo) }
+        val padLat = MARGIN / ky
+        val padLng = MARGIN / kx
+        val span = max((maxLat - minLat) * ky, (maxLng - minLng) * kx) + 2 * MARGIN
+        val step = max(MIN_STEP, span / GRID_MAX)
+        val mosaic = TerrainTiles.mosaic(minLat - padLat, minLng - padLng, maxLat + padLat, maxLng + padLng, step) ?: return null
+        val zs = DoubleArray(coords.size) { mosaic.height(coords[it].first, coords[it].second) }
         val g = if (!grid) null else {
             val minX = xs.min() - MARGIN
-            val maxX = xs.max() + MARGIN
             val minY = ys.min() - MARGIN
-            val maxY = ys.max() + MARGIN
-            val step = max(200.0, max(maxX - minX, maxY - minY) / GRID_MAX)
-            val nx = ((maxX - minX) / step).toInt() + 1
-            val ny = ((maxY - minY) / step).toInt() + 1
-            val gLat = DoubleArray(nx * ny) { lat0 + (minY + (it / nx) * step) / ky }
-            val gLng = DoubleArray(nx * ny) { lng0 + (minX + (it % nx) * step) / kx }
-            heights(gLat, gLng)?.let { TerrainGrid(minX, minY, step, nx, ny, it) }
+            val nx = ((xs.max() + MARGIN - minX) / step).toInt() + 1
+            val ny = ((ys.max() + MARGIN - minY) / step).toInt() + 1
+            val h = DoubleArray(nx * ny) { k -> mosaic.height(lat0 + (minY + (k / nx) * step) / ky, lng0 + (minX + (k % nx) * step) / kx) }
+            TerrainGrid(minX, minY, step, nx, ny, h)
         }
-        return GeoRoute(name, xs, ys, zs, g, dur)
+        return GeoRoute(name, xs, ys, zs, g, dur, lat0, lng0)
     }
 
-    /** 고도를 [BATCH] 곳씩 나눠 잰다. 하나라도 실패하면 null */
-    private suspend fun heights(lat: DoubleArray, lng: DoubleArray): DoubleArray? {
-        val out = DoubleArray(lat.size)
-        var i = 0
-        while (i < lat.size) {
-            val end = min(lat.size, i + BATCH)
-            val la = StringBuilder()
-            val lo = StringBuilder()
-            for (k in i until end) {
-                if (k > i) { la.append(','); lo.append(',') }
-                la.append(r5(lat[k])); lo.append(r5(lng[k]))
-            }
-            val text = httpRequest("$ELEV?latitude=$la&longitude=$lo") ?: return null
-            val arr = runCatching { Json.parseToJsonElement(text).jsonObject["elevation"]?.jsonArray }.getOrNull() ?: return null
-            if (arr.size != end - i) return null
-            for (k in i until end) out[k] = arr[k - i].jsonPrimitive.doubleOrNull ?: 0.0
-            i = end
-        }
-        return out
+    /**
+     * 위험 구간처럼 가까이 볼 곳의 자세한 지형: 출발점 기준 ([lat0], [lng0]) x·y 범위 둘레 [margin] m 를
+     * [step] m 간격(칸 수는 [maxCells] 까지)으로, 더 자세한 줌의 타일에서.
+     */
+    suspend fun detail(lat0: Double, lng0: Double, minX: Double, minY: Double, maxX: Double, maxY: Double, margin: Double = 800.0, step: Double = 40.0, maxCells: Int = 88): TerrainGrid? {
+        val kx = 111_320.0 * cos(lat0 * PI / 180)
+        val ky = 110_540.0
+        val x0 = minX - margin
+        val y0 = minY - margin
+        val st = max(step, max(maxX - minX, maxY - minY).plus(2 * margin) / maxCells)
+        val nx = ((maxX + margin - x0) / st).toInt() + 1
+        val ny = ((maxY + margin - y0) / st).toInt() + 1
+        val m = TerrainTiles.mosaic(lat0 + y0 / ky, lng0 + x0 / kx, lat0 + (y0 + ny * st) / ky, lng0 + (x0 + nx * st) / kx, st, maxTiles = 9) ?: return null
+        val h = DoubleArray(nx * ny) { k -> m.height(lat0 + (y0 + (k / nx) * st) / ky, lng0 + (x0 + (k % nx) * st) / kx) }
+        return TerrainGrid(x0, y0, st, nx, ny, h)
     }
 
     /** OSRM 응답 → (위도, 경도) 목록과 예상 시간 */

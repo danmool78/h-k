@@ -99,7 +99,7 @@ fun MainScreen(vm: ChalrangEngine) {
         val brief = s.briefing
         if (brief != null) {
             // 3D 경로 브리핑 (설정에서 켜면 길 안내·시연이 시작될 때)
-            BriefingScreen(brief, speak = vm::briefSay, onClose = vm::endBriefing)
+            BriefingScreen(brief, speak = vm::briefSay, onClose = vm::endBriefing, detail = { seg -> vm.briefDetail(brief, seg) })
         } else if (settingsOpen) {
             SettingsScreen(vm, onClose = { settingsOpen = false })
         } else if (tracing) {

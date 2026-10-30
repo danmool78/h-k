@@ -11,11 +11,13 @@ import com.sssoft.chalrang.core.DriveScenario
 import com.sssoft.chalrang.core.DriveTrace
 import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TripReport
+import com.sssoft.chalrang.core.RiskSegment
 import com.sssoft.chalrang.core.RoutePath
 import com.sssoft.chalrang.core.RoutePlanner
 import com.sssoft.chalrang.core.RoutePoint
 import com.sssoft.chalrang.core.RoutePreview
 import com.sssoft.chalrang.core.Terrain
+import com.sssoft.chalrang.core.TerrainGrid
 import com.sssoft.chalrang.core.TripSummary
 import com.sssoft.chalrang.core.DriverStyle
 import com.sssoft.chalrang.core.Frame
@@ -553,7 +555,7 @@ class ChalrangEngine(
                 // 실제 도로 선(OSRM)과 높이: 되면 굽이까지, 안 되면 직선 지형 추정
                 val g = GeoFetch.route(a.hereLat, a.hereLng, a.destLat, a.destLng)
                 if (g != null) {
-                    val p = RoutePath.fromPolyline(g.xs, g.ys, g.zs, etaSec = a.remainSec, grid = g.grid)
+                    val p = RoutePath.fromPolyline(g.xs, g.ys, g.zs, etaSec = a.remainSec, grid = g.grid, lat0 = g.lat0, lng0 = g.lng0)
                     livePath = p
                     terrain = Terrain(RoutePath.STEP, p.z)
                     for (b in p.marks) known["${b.kind}@g${(b.atM / 200).roundToInt()}"] = b.copy(atM = b.atM + travelled)
@@ -632,6 +634,18 @@ class ChalrangEngine(
             ?: _ui.value.route?.let { plan -> livePath?.withPreview(plan) ?: RoutePath.synthesize(known.values.toList(), plan.totalM, terrain, plan) }
             ?: return
         _ui.update { it.copy(briefing = path) }
+    }
+
+    /** 브리핑에서 가까이 볼 위험 구간의 자세한 지형 (실제 지역일 때, 인터넷이 되면) */
+    suspend fun briefDetail(path: RoutePath, seg: RiskSegment): TerrainGrid? {
+        val la = path.lat0 ?: return null
+        val lo = path.lng0 ?: return null
+        if (!settings.terrain) return null
+        var minX = Double.MAX_VALUE; var maxX = -Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
+        for (i in path.index(seg.startM)..path.index(seg.endM)) {
+            minX = minOf(minX, path.x[i]); maxX = maxOf(maxX, path.x[i]); minY = minOf(minY, path.y[i]); maxY = maxOf(maxY, path.y[i])
+        }
+        return GeoFetch.detail(la, lo, minX, minY, maxX, maxY)
     }
 
     fun endBriefing() = _ui.update { it.copy(briefing = null) }

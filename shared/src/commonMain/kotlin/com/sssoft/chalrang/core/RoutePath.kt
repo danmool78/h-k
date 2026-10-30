@@ -28,9 +28,12 @@ class RoutePath(
     val grid: TerrainGrid? = null,
     /** 서는 곳 (출발점부터 m): 도심 교차로 회전 */
     val stops: List<Double> = emptyList(),
+    /** 출발점 위경도 (x·y 의 기준, 실제 지역일 때): 가까이 볼 곳의 자세한 지형을 받을 때 */
+    val lat0: Double? = null,
+    val lng0: Double? = null,
 ) {
     /** 새 위험 구간으로 (내비 지점이 늘어날 때) */
-    fun withPreview(p: RoutePreview) = RoutePath(x, y, z, heading, curvature, speedKmh, marks, p, synthetic, region, grid, stops)
+    fun withPreview(p: RoutePreview) = RoutePath(x, y, z, heading, curvature, speedKmh, marks, p, synthetic, region, grid, stops, lat0, lng0)
 
     val size: Int get() = x.size
     val lengthM: Double get() = (size - 1) * STEP
@@ -112,6 +115,8 @@ class RoutePath(
             /** 점마다 도로 속도 한도 (m/s, 없으면 [V_MAX]) */
             vLimit: DoubleArray? = null,
             stops: List<Double> = emptyList(),
+            lat0: Double? = null,
+            lng0: Double? = null,
         ): RoutePath {
             // 1) 거리로 다시 나누기
             val cum = DoubleArray(px.size)
@@ -159,7 +164,7 @@ class RoutePath(
             val hw = (HILL_SMOOTH_M / STEP).toInt()
             val terrain = Terrain(STEP, smooth(smooth(sz, hw), hw))
             val preview = RoutePlanner.plan(marks, (n - 1) * STEP, etaSec, terrain)
-            return RoutePath(sx, sy, sz, hd, kappa, kmh, marks, preview, synthetic = false, region = region, grid = grid, stops = stops)
+            return RoutePath(sx, sy, sz, hd, kappa, kmh, marks, preview, synthetic = false, region = region, grid = grid, stops = stops, lat0 = lat0, lng0 = lng0)
         }
 
         /** 굽이 찾기: 굽은 정도가 1/150m 넘는 곳이 이어지면 한 굽이, 반지름 40m 미만이면 급한 회전 */

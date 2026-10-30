@@ -1,6 +1,5 @@
 package com.sssoft.chalrang.core
 
-import com.sssoft.chalrang.engine.Elevation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -38,9 +37,10 @@ class RoutePreviewTest {
     }
 
     @Test
-    fun `고도 응답 읽기`() {
-        val t = Elevation.parse("""{"elevation":[10.0, 50.0, 10.0]}""", 2_000.0)!!
-        assertEquals(1_000.0, t.spacingM, 1e-9)
-        assertEquals("올랐다 내려온 만큼", 40.0, t.climbPerKm(0.0, 2_000.0), 1e-9)
+    fun `오르내림은 올랐다 내려온 만큼`() {
+        val t = Terrain(1_000.0, doubleArrayOf(10.0, 50.0, 10.0))
+        assertEquals(40.0, t.climbPerKm(0.0, 2_000.0), 1e-9)
+        assertEquals("한쪽으로만 오르면 0", 0.0, Terrain(1_000.0, doubleArrayOf(10.0, 50.0, 90.0)).climbPerKm(0.0, 2_000.0), 1e-9)
     }
+
 }
