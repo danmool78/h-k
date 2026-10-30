@@ -4,6 +4,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.cos
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -28,9 +29,22 @@ class MotionEstimator(
     var ay = 0.0; private set             // m/s², + 왼쪽으로 도는 중
     var az = 0.0; private set             // m/s², + 위로 (기기 가속도 센서가 있을 때만, 없으면 0)
     private var azT = Double.NaN
-    /** 길 경사 (rad): 앞이 올라감, 왼쪽이 올라감 (기기 센서가 차 방향을 알게 된 뒤부터) */
+    /** 지도에서 아는 지금 도로 경사 (rad, + 오르막): 길 안내 중 도로 높이로. 센서의 기준 각도 오차를 맞추는 데 쓴다 */
+    var mapGrade: Double? = null
+
+    /**
+     * 지금 차 기울기 (rad): 앞이 올라감, 왼쪽이 올라감. 물컵 수면이 이만큼 반대로 기운다 (물은 늘 수평).
+     * 기기 센서가 차 방향을 알면 그 값, 아니면(센서 없음·아직 모름) 길 안내 중 지도 경사 (앞뒤만).
+     * 바뀌는 값은 [GRADE_TAU] 로 부드럽게 따라간다.
+     */
     var gradeX = 0.0; private set
     var gradeY = 0.0; private set
+    /** 지금 기울기를 기기 센서로 아는지 (아니면 지도 경사 또는 0) */
+    var gradeFromSensor = false; private set
+    private var sensorPitch = 0.0
+    private var sensorRoll = 0.0
+    private var gradeT = Double.NaN
+    private var gradeUpdT = Double.NaN
     var hasSpeed = false; private set
 
     /** 최근 (시각, 누적 거리), (시각, 속도). 거칠게 들어오는 값을 2초 남짓 구간의 기울기로 읽는다 */
@@ -97,12 +111,26 @@ class MotionEstimator(
 
     /** 길 경사 (rad) */
     fun onGrade(pitch: Double, roll: Double) {
-        gradeX = pitch.coerceIn(-0.3, 0.3)
-        gradeY = roll.coerceIn(-0.3, 0.3)
+        sensorPitch = pitch.coerceIn(-MAX_GRADE, MAX_GRADE)
+        sensorRoll = roll.coerceIn(-MAX_GRADE, MAX_GRADE)
+        gradeT = azT
+    }
+
+    /** 센서 기울기(최근 1초 안) → 없으면 지도 경사 → 없으면 0, 을 향해 부드럽게 */
+    private fun updateGrade(t: Double) {
+        gradeFromSensor = t - gradeT < 1.0
+        val tx = if (gradeFromSensor) sensorPitch else (mapGrade ?: 0.0).coerceIn(-MAX_GRADE, MAX_GRADE)
+        val ty = if (gradeFromSensor) sensorRoll else 0.0
+        val dt = if (gradeUpdT.isNaN()) 1e9 else (t - gradeUpdT).coerceAtLeast(0.0)
+        gradeUpdT = t
+        val k = min(1.0, dt / GRADE_TAU)
+        gradeX += (tx - gradeX) * k
+        gradeY += (ty - gradeY) * k
     }
 
     fun update(t: Double) {
-        if (!(t - azT < 1.0)) { az = 0.0; gradeX = 0.0; gradeY = 0.0 }
+        if (!(t - azT < 1.0)) az = 0.0
+        updateGrade(t)
         val lastT = distHist.lastOrNull()?.first
         if (lastT != null && t - lastT > STOP_AFTER * 2) {
             // 거리 신호가 끊김: 정지로 본다
@@ -141,6 +169,9 @@ class MotionEstimator(
 
     companion object {
         const val MAX_A = 0.8 * WaterCup.G
+        /** 차 기울기 한도 (rad, 약 17도) 와 따라가는 시간 (초) */
+        const val MAX_GRADE = 0.3
+        const val GRADE_TAU = 0.8
         /** 속도·가속도를 읽는 구간 (초). 멀미 대역(2~10초 주기)보다 짧아 흔들림은 살아남는다 */
         const val DIST_WINDOW = 2.0
         const val ACCEL_WINDOW = 2.0

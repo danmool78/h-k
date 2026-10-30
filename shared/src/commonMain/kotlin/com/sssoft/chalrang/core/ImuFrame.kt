@@ -10,9 +10,13 @@ import kotlin.math.sqrt
  * 기기가 차에 어떤 방향으로 붙어 있는지 모르므로 스스로 알아낸다.
  * - 위: 센서 값을 느리게 평균한 것이 중력 반대 방향 (차가 내는 가속은 알게 된 만큼 빼고 평균)
  * - 위아래 가속 = (센서 값 - 중력) · 위 → 기기 방향과 상관없다
- * - 기준 수평: 처음 2초 넘게 멈춰 있을 때의 "위" (그곳을 평지로 본다)
+ * - 기준 "위": 처음 2초 넘게 멈춰 있을 때의 위 (앞 방향을 찾는 데만 쓴다 — 비탈일 수 있다)
  * - 앞: 곧게 가속·제동할 때(차량 신호로 아는 앞뒤 가속) 센서의 수평 가속 방향을 모은다
- * - 길 경사: 지금 "위" 가 기준에서 앞뒤·좌우로 얼마나 기울었나 (오르막이면 위가 차 뒤쪽으로 기운다)
+ * - 길 경사: 지금 "위" 가 기준에서 앞뒤·좌우로 얼마나 기울었나 (오르막이면 위가 차 뒤쪽으로 기운다)에서
+ *   기준 자리의 경사(= 기기가 붙은 각도 오차)를 계속 학습해 뺀다:
+ *   · 지도 경사([update] 의 mapGrade, 길 안내 중 도로 높이에서)를 알면: 곧게 일정하게 달릴 때 (센서 경사 − 지도 경사) 를 약 [MAP_TAU] 초로 평균
+ *   · 모르면: 길은 길게 보면 오르내림이 상쇄되므로 달리는 동안의 평균을 [DRIFT_TAU] 초에 걸쳐 0 으로 (옆 기울기는 늘 이 방식)
+ *   그래서 비탈에서 출발해도 달리기 시작하면 맞춰진다
  *
  * 값마다 새 객체를 만들지 않는다 (초당 50번 불린다).
  */
@@ -22,6 +26,11 @@ class ImuFrame {
     /** 길 경사 (rad): 앞이 올라감, 왼쪽이 올라감. [oriented] 일 때만 의미 있음 */
     var pitch = 0.0; private set
     var roll = 0.0; private set
+    /** 학습한 기준 자리 경사 (rad): 센서 경사에서 뺀다 */
+    var pitchOffset = 0.0; private set
+    var rollOffset = 0.0; private set
+    /** 지도 경사로 맞춘 적이 있는지 (없으면 평균 0 가정만) */
+    var mapAnchored = false; private set
     /** 기준 수평과 앞 방향을 알아냈는지 */
     val oriented: Boolean get() = hasRef && fwdCount >= FWD_SAMPLES
 
@@ -44,7 +53,7 @@ class ImuFrame {
      * [ax], [ay], [az] = 센서 값 (기기 좌표, 중력 반작용 포함, m/s²).
      * [carAx], [carAy] = 차량 신호로 추정한 앞뒤·좌우 가속 (m/s²), [speed] = m/s.
      */
-    fun update(t: Double, ax: Double, ay: Double, az: Double, carAx: Double, carAy: Double, speed: Double) {
+    fun update(t: Double, ax: Double, ay: Double, az: Double, carAx: Double, carAy: Double, speed: Double, mapGrade: Double? = null) {
         val dt = if (lastT.isNaN()) 0.0 else (t - lastT).coerceIn(0.0, 0.2)
         lastT = t
         // 차가 내는 가속(앞뒤·좌우)은 알게 된 만큼 빼고 중력을 평균한다 (가속 중에 오르막으로 착각하지 않게)
@@ -85,8 +94,21 @@ class ImuFrame {
         }
         if (oriented) {
             val dx = upx - rx; val dy = upy - ry; val dz = upz - rz
-            pitch = -(dx * ux + dy * uy + dz * uz)
-            roll = -(dx * lx + dy * ly + dz * lz)
+            val rawPitch = -(dx * ux + dy * uy + dz * uz)
+            val rawRoll = -(dx * lx + dy * ly + dz * lz)
+            // 기준 자리 경사(기기 각도 오차) 학습: 곧게 일정하게 달릴 때만 (가속·회전 중엔 중력 추정이 흔들린다)
+            val steady = speed > 4.0 && abs(carAx) < 0.6 && abs(carAy) < 0.8
+            if (steady && dt > 0) {
+                if (mapGrade != null) {
+                    pitchOffset += (rawPitch - mapGrade - pitchOffset) * min(1.0, dt / MAP_TAU)
+                    mapAnchored = true
+                } else if (!mapAnchored) {
+                    pitchOffset += (rawPitch - pitchOffset) * min(1.0, dt / DRIFT_TAU)
+                }
+                rollOffset += (rawRoll - rollOffset) * min(1.0, dt / DRIFT_TAU)
+            }
+            pitch = rawPitch - pitchOffset
+            roll = rawRoll - rollOffset
         }
     }
 
@@ -94,6 +116,10 @@ class ImuFrame {
         /** 중력 평균 시간 (초): 길 경사는 천천히 바뀌고, 방지턱 같은 위아래 흔들림은 남긴다 */
         const val GRAVITY_TAU = 1.0
         const val STILL_SEC = 2.0
+        /** 지도 경사로 기기 각도 오차를 맞추는 시간 (초) */
+        const val MAP_TAU = 20.0
+        /** 지도가 없을 때 평균을 0 으로 맞추는 시간 (초): 길은 길게 보면 오르내림이 상쇄된다 */
+        const val DRIFT_TAU = 600.0
         /** 앞 방향을 정하는 데 모으는 시료 수 (50Hz 로 약 2초의 곧은 가속·제동) */
         const val FWD_SAMPLES = 100
     }

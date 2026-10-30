@@ -354,6 +354,15 @@ class ChalrangEngine(
                 finishTrip(learn = true)
                 resetTrip()
             }
+            // 지도 경사: 길 안내 중 실제 도로 높이에서 지금 자리 앞뒤 25m (센서 0 점 맞추기, 센서가 없으면 물컵 수면 기울기 자체)
+            motion.mapGrade = livePath?.let { p ->
+                val at = _ui.value.routeAtM - livePathStartM
+                if (at < 0 || at > p.lengthM) null else {
+                    val i = p.index(at)
+                    val k = (MAP_GRADE_M / RoutePath.STEP).toInt()
+                    (p.z[(i + k).coerceAtMost(p.size - 1)] - p.z[(i - k).coerceAtLeast(0)]) / (2 * MAP_GRADE_M)
+                }
+            }
             motion.update(now)
             clock = now
             val before = cup.spillCount
@@ -589,6 +598,7 @@ class ChalrangEngine(
                 if (g != null) {
                     val p = RoutePath.fromPolyline(g.xs, g.ys, g.zs, etaSec = a.remainSec, grid = g.grid, lat0 = g.lat0, lng0 = g.lng0)
                     livePath = p
+                    livePathStartM = travelled
                     terrain = Terrain(RoutePath.STEP, p.z)
                     for (b in p.marks) known["${b.kind}@g${(b.atM / 200).roundToInt()}"] = b.copy(atM = b.atM + travelled)
                 } else {
@@ -643,8 +653,9 @@ class ChalrangEngine(
 
     /** 시연용 실제 지역 길 (앱에 넣어 둔 것, 고를 수 있음) */
     private val demoPaths = HashMap<DemoRoute, RoutePath>()
-    /** 길 안내 중인 실제 도로 (OSRM) */
+    /** 길 안내 중인 실제 도로 (OSRM) 와 그것을 받을 때 이미 온 거리 (m) */
     private var livePath: RoutePath? = null
+    private var livePathStartM = 0.0
 
     private suspend fun loadRegion() {
         for (r in DemoRoute.entries) if (r !in demoPaths) DemoRoutes.load(r)?.let { demoPaths[r] = it }
@@ -758,6 +769,9 @@ class ChalrangEngine(
         const val ALONE_LEVEL = 0.3
         /** 실제 주행 평가: 이만큼 달린 뒤 (초) */
         const val TRIP_MIN_SEC = 120.0
+        /** 지도 경사를 재는 앞뒤 거리 (m) */
+        const val MAP_GRADE_M = 25.0
+
         /** 평소 운전 습관 = 최근 몇 번의 주행 */
         const val HABIT_TRIPS = 5
         const val WATER_MIN_FILL = 0.35

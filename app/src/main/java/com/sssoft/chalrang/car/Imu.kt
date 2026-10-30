@@ -41,7 +41,7 @@ class Imu(context: Context) : SensorEventListener {
         val m = motion ?: return
         val v = event.values
         val t = clock()
-        frame.update(t, v[0].toDouble(), v[1].toDouble(), v[2].toDouble(), m.ax, m.ay, m.speed)
+        frame.update(t, v[0].toDouble(), v[1].toDouble(), v[2].toDouble(), m.ax, m.ay, m.speed, m.mapGrade)
         m.onVertical(t, frame.vertical)
         if (frame.oriented) m.onGrade(frame.pitch, frame.roll)
     }
