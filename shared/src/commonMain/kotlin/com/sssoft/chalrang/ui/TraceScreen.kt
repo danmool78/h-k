@@ -86,6 +86,7 @@ import com.sssoft.chalrang.core.ShakeReport
 import com.sssoft.chalrang.core.TraceEvent
 import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TraceSample
+import com.sssoft.chalrang.core.WaterCup
 import com.sssoft.chalrang.engine.ChalrangEngine
 import kotlinx.coroutines.delay
 import kotlin.math.abs
@@ -302,30 +303,51 @@ private fun CupCard(s: TraceSample?, modifier: Modifier) {
         if (s != null) {
             CupView(s.tiltX, s.tiltY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(start = 84.dp, end = 8.dp, top = 14.dp, bottom = 4.dp), stage = true)
         }
-        Column(Modifier.align(Alignment.CenterStart).padding(start = 14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Gauge("앞뒤", s?.let { -it.tiltX })
-            Gauge("좌우", s?.let { -it.tiltY })
-        }
+        LevelGauge(s, Modifier.align(Alignment.CenterStart).padding(start = 10.dp))
         Text("LIQUID\nDYNAMICS", color = Neon.Faint, fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
     }
 }
 
+/**
+ * 수평계: 점 = 물이 몰린 쪽 (위 = 차 앞, 오른쪽 = 차 오른쪽), 바깥 원 = 0.3 g.
+ * 빨간 원 = 이 아이의 넘침 기준. 점이 빨간 원 밖으로 나가면 넘친다.
+ */
 @Composable
-private fun Gauge(label: String, g: Double?) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Canvas(Modifier.size(32.dp)) {
+private fun LevelGauge(s: TraceSample?, modifier: Modifier) {
+    val measurer = rememberTextMeasurer()
+    val labels = remember(measurer) { Labels(measurer, 9.sp, Neon.Dim) }
+    val tilt = s?.let { hypot(it.tiltX, it.tiltY) } ?: 0.0
+    Column(modifier.width(72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Canvas(Modifier.size(68.dp)) {
             val c = center
-            val r = size.minDimension * 0.28f
-            drawCircle(Neon.Cyan.copy(alpha = 0.25f), r * 1.6f, c, style = Stroke(4f))
-            drawCircle(Neon.Cyan, r, c, style = Stroke(1.6f))
-            drawCircle(Neon.Cyan, r * 0.3f, c)
-            drawLine(Neon.Cyan, Offset(0f, c.y), Offset(c.x - r, c.y), 1.3f)
-            drawLine(Neon.Cyan, Offset(c.x + r, c.y), Offset(size.width, c.y), 1.3f)
-            drawLine(Neon.Cyan, Offset(c.x, 0f), Offset(c.x, c.y - r), 1.3f)
-            drawLine(Neon.Cyan, Offset(c.x, c.y + r), Offset(c.x, size.height), 1.3f)
+            val r = size.minDimension / 2 - 10f
+            val full = WaterCup.MAX_FREEBOARD
+            drawCircle(Color(0x6606111F), r, c)
+            drawCircle(Neon.Cyan.copy(alpha = 0.18f), r + 3f, c, style = Stroke(5f))
+            drawCircle(Neon.Cyan.copy(alpha = 0.8f), r, c, style = Stroke(1.4f))
+            drawLine(Neon.Grid, Offset(c.x - r, c.y), Offset(c.x + r, c.y), 1f)
+            drawLine(Neon.Grid, Offset(c.x, c.y - r), Offset(c.x, c.y + r), 1f)
+            for ((t, o) in listOf("앞" to Offset(0f, -1f), "뒤" to Offset(0f, 1f), "좌" to Offset(-1f, 0f), "우" to Offset(1f, 0f))) {
+                val l = labels[t]
+                drawText(l, topLeft = Offset(c.x + o.x * (r + 6f) - l.size.width / 2f, c.y + o.y * (r + 6f) - l.size.height / 2f))
+            }
+            if (s != null) {
+                // 넘침 기준
+                val fr = (s.freeboard / full * r).toFloat().coerceAtMost(r)
+                drawCircle(Neon.Red.copy(alpha = 0.85f), fr, c, style = Stroke(1.6f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 4f))))
+                // 물이 몰린 쪽: 브레이크(tiltX > 0)면 앞(위), 왼쪽으로 돌면(tiltY < 0) 오른쪽
+                val dx = (-s.tiltY / full).toFloat().coerceIn(-1.2f, 1.2f) * r
+                val dy = (-s.tiltX / full).toFloat().coerceIn(-1.2f, 1.2f) * r
+                val dot = Offset(c.x + dx, c.y + dy)
+                val col = if (s.spilling) Neon.Red else Neon.Cyan
+                drawLine(col.copy(alpha = 0.5f), c, dot, 1.5f)
+                drawCircle(col.copy(alpha = 0.3f), 9f, dot)
+                drawCircle(col, 5f, dot)
+            }
         }
-        Text(label, color = Neon.Dim, fontSize = 12.sp)
-        Text(g?.let { "${signed(it, 2)} g" } ?: "-", color = Neon.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Text("쏠림", color = Neon.Dim, fontSize = 11.sp)
+        Text("${fmt(tilt, 2)} g", color = if (s?.spilling == true) Neon.Red else Neon.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        if (s != null) Text("넘침 ${fmt(s.freeboard, 2)}", color = Neon.Red.copy(alpha = 0.85f), fontSize = 10.sp)
     }
 }
 
