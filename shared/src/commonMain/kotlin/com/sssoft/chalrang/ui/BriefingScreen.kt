@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,6 +75,8 @@ fun BriefingScreen(
     onClose: () -> Unit,
     /** 위험 구간 둘레의 자세한 지형 (가까이 들어갈 때 쓴다, 없으면 전체 지형) */
     detail: (suspend (RiskSegment) -> TerrainGrid?)? = null,
+    /** 전체 지형을 자세히 (GPU 로 그릴 때) */
+    fine: (suspend () -> TerrainGrid?)? = null,
 ) {
     var t by remember { mutableDoubleStateOf(0.0) }
     var caption by remember { mutableStateOf("") }
@@ -85,6 +88,10 @@ fun BriefingScreen(
     LaunchedEffect(plan) {
         val load = detail ?: return@LaunchedEffect
         plan.segs.forEachIndexed { i, seg -> launch { load(seg)?.let { details[i] = it } } }
+    }
+    LaunchedEffect(plan) {
+        val load = fine ?: return@LaunchedEffect
+        load()?.let { details[FINE] = it }
     }
 
     LaunchedEffect(plan) {
@@ -311,16 +318,37 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
     val glow = remember { Path() }
     val curtain = remember { Path() }
     val wire = remember { Path() }
-    // 지형마다 색·그림자 (한 번만 계산)
+    // 지형마다 색·그림자 (한 번만 계산) — GPU 셰이더를 못 쓸 때
     val shades = remember(path) { HashMap<TerrainGrid, TerrainShade>() }
+    // GPU 지형: 화소마다 매끄러운 그림자·색·등고선 (물컵과 같은 방식)
+    val gpu = remember { TerrainShader() }
+    val tu = remember { TerrainUniforms() }
+    var loaded by remember { mutableStateOf<TerrainGrid?>(null) }
+    var encoded by remember { mutableStateOf<EncodedGrid?>(null) }
+    DisposableEffect(Unit) { onDispose { gpu.release() } }
     Canvas(modifier) {
         val st = plan.steps[plan.stepIndex(t)]
         val u = plan.progress(t)
         val cam = poseFor(plan, st, u, t).camera(path, size.width, size.height)
         // 위험 구간에 들어가 있으면 그 둘레의 자세한 지형, 아니면 전체 지형
         val close = st.seg >= 0 && (st.kind == BriefPlan.Kind.DIVE || st.kind == BriefPlan.Kind.DRIVE || st.kind == BriefPlan.Kind.RISE)
-        val tg = (if (close) details[st.seg] else null) ?: path.grid
-        if (tg != null) {
+        val tg = (if (close) details[st.seg] else null) ?: details[FINE] ?: path.grid
+        if (tg != null && gpu.supported) {
+            if (loaded !== tg) {
+                val e = EncodedGrid.of(tg)
+                gpu.setGrid(e.argb, e.w, e.h)
+                loaded = tg
+                encoded = e
+            }
+            val e = encoded!!
+            cam.fill(tu)
+            tu.ox = tg.x0.toFloat(); tu.oy = tg.y0.toFloat(); tu.step = tg.step.toFloat()
+            tu.nx = tg.nx.toFloat(); tu.ny = tg.ny.toFloat()
+            tu.hMin = e.hMin.toFloat(); tu.hRange = e.hRange.toFloat()
+            tu.far = (cam.range * 2.2).toFloat()
+            gpu.setUniforms(tu)
+            gpu.brush()?.let { drawRect(it) }
+        } else if (tg != null) {
             shades.getOrPut(tg) { TerrainShade(tg) }.draw(this, cam, wire)
         } else {
             // 지형이 없으면 바닥 격자
@@ -432,6 +460,9 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
     }
 }
 
+/** [details] 에서 전체 자세한 지형의 자리 */
+private const val FINE = -1
+
 /** 경로 선을 지형 위로 살짝 띄운다 (지형 자료가 성겨서 길이 산에 묻히지 않게, m) */
 private const val LIFT = 12.0
 
@@ -511,11 +542,19 @@ private class ViewCamera(pose: Pose, path: RoutePath, w: Float, h: Float) {
     private val cy = h * 0.42f
     private val focal = h * 0.95
     private val c = doubleArrayOf(pose.ex, pose.ey, pose.ez)
+    private val z0p = path.z[0]
     private val f = doubleArrayOf(pose.tx - pose.ex, pose.ty - pose.ey, pose.tz - pose.ez)
     private val r = DoubleArray(3)
     private val u = DoubleArray(3)
 
     fun zOf(z: Double) = (z - z0) * zScale
+
+    /** GPU 지형 셰이더에 같은 카메라를 넘긴다 */
+    fun fill(t: TerrainUniforms) {
+        for (k in 0..2) { t.eye[k] = c[k].toFloat(); t.f[k] = f[k].toFloat(); t.r[k] = r[k].toFloat(); t.u[k] = u[k].toFloat() }
+        t.focal = focal.toFloat(); t.cx = cx; t.cy = cy
+        t.zScale = zScale.toFloat(); t.z0 = z0p.toFloat()
+    }
 
     init {
         norm(f)

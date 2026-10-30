@@ -648,6 +648,14 @@ class ChalrangEngine(
         return GeoFetch.detail(la, lo, minX, minY, maxX, maxY)
     }
 
+    /** 브리핑 전체 지형을 약 30m 로 (GPU 지형 셰이더가 매끄럽게 그린다, 512칸·타일 16장까지) */
+    suspend fun briefFine(path: RoutePath): TerrainGrid? {
+        val la = path.lat0 ?: return null
+        val lo = path.lng0 ?: return null
+        if (!settings.terrain) return null
+        return GeoFetch.detail(la, lo, path.x.min(), path.y.min(), path.x.max(), path.y.max(), margin = 2_500.0, step = 30.0, maxCells = 512, maxTiles = 16)
+    }
+
     fun endBriefing() = _ui.update { it.copy(briefing = null) }
 
     /** 브리핑 화면의 설명 (설정에서 음성을 끄면 글로만) */

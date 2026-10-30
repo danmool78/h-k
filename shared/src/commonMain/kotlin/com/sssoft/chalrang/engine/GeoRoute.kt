@@ -72,7 +72,7 @@ object GeoFetch {
      * 위험 구간처럼 가까이 볼 곳의 자세한 지형: 출발점 기준 ([lat0], [lng0]) x·y 범위 둘레 [margin] m 를
      * [step] m 간격(칸 수는 [maxCells] 까지)으로, 더 자세한 줌의 타일에서.
      */
-    suspend fun detail(lat0: Double, lng0: Double, minX: Double, minY: Double, maxX: Double, maxY: Double, margin: Double = 800.0, step: Double = 40.0, maxCells: Int = 88): TerrainGrid? {
+    suspend fun detail(lat0: Double, lng0: Double, minX: Double, minY: Double, maxX: Double, maxY: Double, margin: Double = 800.0, step: Double = 40.0, maxCells: Int = 88, maxTiles: Int = 9): TerrainGrid? {
         val kx = 111_320.0 * cos(lat0 * PI / 180)
         val ky = 110_540.0
         val x0 = minX - margin
@@ -80,7 +80,7 @@ object GeoFetch {
         val st = max(step, max(maxX - minX, maxY - minY).plus(2 * margin) / maxCells)
         val nx = ((maxX + margin - x0) / st).toInt() + 1
         val ny = ((maxY + margin - y0) / st).toInt() + 1
-        val m = TerrainTiles.mosaic(lat0 + y0 / ky, lng0 + x0 / kx, lat0 + (y0 + ny * st) / ky, lng0 + (x0 + nx * st) / kx, st, maxTiles = 9) ?: return null
+        val m = TerrainTiles.mosaic(lat0 + y0 / ky, lng0 + x0 / kx, lat0 + (y0 + ny * st) / ky, lng0 + (x0 + nx * st) / kx, st, maxTiles = maxTiles) ?: return null
         val h = DoubleArray(nx * ny) { k -> m.height(lat0 + (y0 + (k / nx) * st) / ky, lng0 + (x0 + (k % nx) * st) / kx) }
         return TerrainGrid(x0, y0, st, nx, ny, h)
     }
