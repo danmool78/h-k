@@ -429,6 +429,72 @@ float exitDist(float3 q, float3 dir) {
     return max(t, 0.0);
 }
 
+// 위에서 본 수면: 프레넬 반사·하이라이트·굴절해 보이는 바닥 빛 무늬·물 두께
+float3 shadeSurface(float3 pS, float3 rd) {
+    float3 v = -rd;
+    float3 L = normalize(float3(-0.45, -0.35, 0.82));
+    float3 n = surfNormal(pS.xy);
+    float F = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    float3 refl = env(reflect(rd, n));
+    float3 spec = float3(1.0) * pow(max(dot(n, normalize(L + v)), 0.0), 220.0) * 3.0;
+    float3 dir = refract(rd, n, 0.75);
+    float d = exitDist(pS, dir);
+    float3 q = pS + dir * d;
+    // 바닥 빛 무늬: 물결이 오목하면 빛이 모인다
+    float lap = wave(q.xy + float2(0.05, 0.0)) + wave(q.xy - float2(0.05, 0.0)) + wave(q.xy + float2(0.0, 0.05)) + wave(q.xy - float2(0.0, 0.05)) - 4.0 * wave(q.xy);
+    float caustic = clamp(1.0 - lap * 160.0, 0.5, 2.4);
+    float onFloor = q.z < BASE + 0.03 ? 1.0 : 0.55;
+    float3 floorCol = float3(0.80, 0.92, 1.0) * (0.45 + 0.35 * caustic) * onFloor;
+    float thick = 1.0 - exp(-d * 1.4);
+    float3 body = mix(floorCol * mix(float3(1.0), uWater, 0.6), uWater, 0.55 + thick * 0.35);
+    return mix(body, refl, F) + spec;
+}
+
+// 옆에서 본 물: 물속 거리만큼 물 색, 위쪽이 밝다 (빛이 위에서)
+float3 shadeWall(float3 pW, float3 rd) {
+    float d = exitDist(pW, rd);
+    float thick = 1.0 - exp(-d * 1.4);
+    float lift = smoothstep(BASE, uH0 + 0.2, pW.z);
+    // 위쪽(빛이 드는 쪽)이 밝고 두꺼울수록 물 색이 진하다
+    float3 body = uWater * (0.62 + 0.38 * lift) * (0.85 + 0.2 * thick) + float3(0.04, 0.05, 0.06);
+    // 수면 바로 아래의 밝은 띠 (전반사)
+    float meniscus = smoothstep(0.05, 0.0, surfSmooth(pW.xy) + 0.022 - pW.z);
+    // 수면 물결이 모은 빛이 물속으로 내려오며 퍼지는 줄무늬 (위에서 가깝게 진하다)
+    float2 sx = pW.xy * 0.9;
+    float lapS = wave(sx + float2(0.06, 0.0)) + wave(sx - float2(0.06, 0.0)) + wave(sx + float2(0.0, 0.06)) + wave(sx - float2(0.0, 0.06)) - 4.0 * wave(sx);
+    float depthFade = exp(-max(surfSmooth(pW.xy) - pW.z, 0.0) * 2.2);
+    float streak = clamp(-lapS * 60.0, -0.2, 0.4) * depthFade;
+    return body * (1.0 + streak * 0.2) + float3(0.85, 0.95, 1.0) * meniscus * 0.5;
+}
+
+// 컵 실루엣 안쪽으로 몇 픽셀인지 → 0~1 덮임. 옆면(원뿔대): 축에 가장 가까운 점에서 반지름 여유,
+// 위·아래 원: 그 평면에서 반지름 여유 (앞뒤 방향은 비스듬히 보여 짧아지는 만큼 줄여서)
+float coverage(float3 ro, float3 rd, float tTop, float3 pTop, float tBottom, float3 pBot) {
+    float best = -1.0;
+    float a = dot(rd.xy, rd.xy);
+    if (a > 1e-6) {
+        float t = -dot(ro.xy, rd.xy) / a;
+        float3 p = ro + rd * t;
+        if (p.z >= 0.0 && p.z <= H) {
+            float pix = t / (DIST * uUnit);
+            best = max(best, ((RB + CONE * p.z) - length(p.xy)) / pix);
+        }
+    }
+    float rT = length(pTop.xy);
+    if (tTop > 0.0) {
+        float pix = tTop / (DIST * uUnit);
+        float squash = mix(SINP, 1.0, abs(pTop.x) / max(rT, 1e-4));
+        best = max(best, (RT - rT) * squash / pix);
+    }
+    float rB = length(pBot.xy);
+    if (tBottom > 0.0) {
+        float pix = tBottom / (DIST * uUnit);
+        float squash = mix(SINP, 1.0, abs(pBot.x) / max(rB, 1e-4));
+        best = max(best, (RB - rB) * squash / pix);
+    }
+    return clamp(best + 0.5, 0.0, 1.0);
+}
+
 half4 main(float2 fc) {
     float xs = (fc.x - uCx) / uUnit;
     float ys = (uCy - fc.y) / uUnit;
@@ -453,7 +519,14 @@ half4 main(float2 fc) {
     float tBottom = -ro.z / rd.z;
     float3 pBot = ro + rd * tBottom;
     bool hitsBase = tBottom > 0.0 && length(pBot.xy) <= RB;
-    if (tFront < 0.0 && !throughTop && !hitsBase) return half4(0.0);
+    // 윤곽 안티에일리어싱: 컵 실루엣까지의 거리(픽셀)로 가장자리 픽셀을 부분만 칠한다 (계단 없이 매끈한 테두리)
+    float cover = coverage(ro, rd, tTop, pTop, tBottom, pBot);
+    if (cover <= 0.0) return half4(0.0);
+    if (tFront < 0.0 && !throughTop && !hitsBase) {
+        // 실루엣 바로 바깥 픽셀: 유리 가장자리 빛만
+        float3 edgeCol = env(rd) * 0.6 + float3(0.54, 0.58, 0.6);
+        return half4(half3(edgeCol * cover), half(cover));
+    }
 
     float3 col = float3(0.0);
     float alpha = 0.0;
@@ -469,21 +542,29 @@ half4 main(float2 fc) {
     if (rd.z < 0.0) tOut = min(tOut, (BASE - ro.z) / rd.z);
     bool surfHit = false;
     bool wallHit = false;
-    float3 pS = float3(0.0);
-    float3 pW = float3(0.0);
+    float3 sCol = float3(0.0);
+    float sA = 0.0;
+    float wallW = 0.0;
     if (tIn > 0.0 && tOut > tIn) {
         float3 p0 = ro + rd * tIn;
-        // 유리에 닿은 물 높이는 잔물결 없이 (가장자리가 매끈하게)
-        if (p0.z <= surfSmooth(p0.xy) + 0.022) {
+        // 유리에 닿은 물 높이는 잔물결 없이 (가장자리가 매끈하게). 경계 픽셀은 옆면·수면을 섞는다
+        float pix0 = tIn / (DIST * uUnit);
+        wallW = clamp((surfSmooth(p0.xy) + 0.022 - p0.z) / pix0 + 0.5, 0.0, 1.0);
+        if (wallW > 0.0) {
             wallHit = true;
-            pW = p0;
-        } else {
+            col = shadeWall(p0, rd);
+            alpha = 0.95;
+        }
+        if (wallW < 1.0) {
             float dt = (tOut - tIn) / 40.0;
             float prev = tIn;
+            float minGap = 9.0;
+            float tMin = tIn;
             for (int k = 1; k <= 40; k++) {
                 float t = tIn + dt * float(k);
                 float3 p = ro + rd * t;
-                if (p.z <= surf(p.xy)) {
+                float gap = p.z - surf(p.xy);
+                if (gap <= 0.0) {
                     float lo = prev;
                     float hi = t;
                     for (int m = 0; m < 7; m++) {
@@ -491,48 +572,42 @@ half4 main(float2 fc) {
                         float3 q = ro + rd * mid;
                         if (q.z > surf(q.xy)) lo = mid; else hi = mid;
                     }
-                    pS = ro + rd * hi;
+                    sCol = shadeSurface(ro + rd * hi, rd);
+                    sA = 0.97;
                     surfHit = true;
                     break;
                 }
+                if (gap < minGap) { minGap = gap; tMin = t; }
                 prev = t;
             }
+            // 수면 뒤쪽 윤곽: 광선이 수면을 아슬아슬하게 비껴가면 그만큼만 칠한다
+            if (!surfHit) {
+                float pm = tMin / (DIST * uUnit);
+                float c = clamp(0.5 - minGap / pm, 0.0, 1.0);
+                if (c > 0.0) {
+                    float3 pm3 = ro + rd * tMin;
+                    sCol = shadeSurface(float3(pm3.xy, surf(pm3.xy)), rd);
+                    sA = 0.97 * c;
+                    surfHit = true;
+                }
+            }
+        }
+        if (surfHit) {
+            col = mix(sCol, col, wallW);
+            alpha = mix(sA, alpha, wallW);
         }
     }
 
-    if (surfHit) {
-        float3 n = surfNormal(pS.xy);
-        float F = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
-        float3 refl = env(reflect(rd, n));
-        float3 spec = float3(1.0) * pow(max(dot(n, normalize(L + v)), 0.0), 220.0) * 3.0;
-        float3 dir = refract(rd, n, 0.75);
-        float d = exitDist(pS, dir);
-        float3 q = pS + dir * d;
-        // 바닥 빛 무늬: 물결이 오목하면 빛이 모인다
-        float lap = wave(q.xy + float2(0.05, 0.0)) + wave(q.xy - float2(0.05, 0.0)) + wave(q.xy + float2(0.0, 0.05)) + wave(q.xy - float2(0.0, 0.05)) - 4.0 * wave(q.xy);
-        float caustic = clamp(1.0 - lap * 160.0, 0.5, 2.4);
-        float onFloor = q.z < BASE + 0.03 ? 1.0 : 0.55;
-        float3 floorCol = float3(0.80, 0.92, 1.0) * (0.45 + 0.35 * caustic) * onFloor;
-        float thick = 1.0 - exp(-d * 1.4);
-        float3 body = mix(floorCol * mix(float3(1.0), uWater, 0.6), uWater, 0.55 + thick * 0.35);
-        col = mix(body, refl, F) + spec;
-        alpha = 0.97;
-    } else if (wallHit) {
-        // 옆에서 본 물: 물속 거리만큼 물 색, 위쪽이 밝다 (빛이 위에서)
-        float d = exitDist(pW, rd);
-        float thick = 1.0 - exp(-d * 1.4);
-        float lift = smoothstep(BASE, uH0 + 0.2, pW.z);
-        // 위쪽(빛이 드는 쪽)이 밝고 두꺼울수록 물 색이 진하다
-        float3 body = uWater * (0.62 + 0.38 * lift) * (0.85 + 0.2 * thick) + float3(0.04, 0.05, 0.06);
-        // 수면 바로 아래의 밝은 띠 (전반사)
-        float meniscus = smoothstep(0.05, 0.0, surfSmooth(pW.xy) + 0.022 - pW.z);
-        // 수면 물결이 모은 빛이 물속으로 내려오며 퍼지는 줄무늬 (위에서 가깝게 진하다)
-        float2 sx = pW.xy * 0.9;
-        float lapS = wave(sx + float2(0.06, 0.0)) + wave(sx - float2(0.06, 0.0)) + wave(sx + float2(0.0, 0.06)) + wave(sx - float2(0.0, 0.06)) - 4.0 * wave(sx);
-        float depthFade = exp(-max(surfSmooth(pW.xy) - pW.z, 0.0) * 2.2);
-        float streak = clamp(-lapS * 60.0, -0.2, 0.4) * depthFade;
-        col = body * (1.0 + streak * 0.2) + float3(0.85, 0.95, 1.0) * meniscus * 0.5;
-        alpha = 0.95;
+    // 물 옆 윤곽(안쪽 원뿔 실루엣)도 픽셀 일부만 칠해 매끈하게
+    if (surfHit || wallHit) {
+        float a2 = dot(rd.xy, rd.xy);
+        float tc = -dot(ro.xy, rd.xy) / max(a2, 1e-6);
+        float3 pc = ro + rd * tc;
+        if (pc.z >= BASE && pc.z <= H) {
+            float ci = clamp(((RBI + CONE * pc.z) - length(pc.xy)) / (tc / (DIST * uUnit)) + 0.5, 0.0, 1.0);
+            col *= ci;
+            alpha *= ci;
+        }
     }
 
     // 뒤쪽 유리: 물 위 빈 컵 너머로 비치는 뒷벽 (안쪽에서 본 반사와 세로 빛줄기)
@@ -578,6 +653,7 @@ half4 main(float2 fc) {
         col = col * (1.0 - lip * 0.4) + rimCol;
         alpha = max(alpha, max(lip * 0.6, edges));
     }
+    alpha *= cover;
     return half4(half3(col * alpha), half(alpha));
 }
 """
