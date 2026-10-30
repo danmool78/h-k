@@ -58,7 +58,8 @@
 - 요구: Android Studio, Android SDK 36, Pleos Connect Emulator v2.1.0 (설치는 [docs/PLEOS_SDK.md](docs/PLEOS_SDK.md))
 - 빌드: `./gradlew :app:assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
 - 테스트: `./gradlew :app:testDebugUnitTest` (물컵·판단·기준 맞추기·흔들림 추정, 화면·차량 없이)
-- 시연: 화면 아래 "시연 거칠게 / 시연 부드럽게" → 주말 나들이 경로(도심 → 고속도로 → 진출로 → 산길 → 휴게소, 13분)를 6배속으로 재생.
+- 시연: "시연 길"에서 실제 지역(대관령·한계령·서울 도심·고속도로) 또는 만든 주말 나들이를 고르고 "시연 거칠게 / 부드럽게" → 6배속 재생.
+  실제 지역 길은 `tools/make_demo_routes.py` 로 OSRM(도로)·Open-Meteo(높이·주변 지형)에서 미리 받아 앱에 넣었다.
   에뮬레이터 좌석이 비어 있으면 처음 등록한 아이가 자기 자리에 탄 것으로 본다. 공조·창문 제어는 실제로 에뮬레이터 차량에 내려간다.
 - **웹에서 화면 점검: https://h-y-server.web.app/app/** — 차량 앱과 같은 코드(`shared`)를 웹으로 빌드한 것이라 화면이 늘 같다.
   아래 점검 도구로 좌석 탑승·비를 바꾸고, 공조·창문 조치는 가짜 차량이 받아 같은 문구로 보여 준다.

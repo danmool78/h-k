@@ -1,5 +1,6 @@
 package com.sssoft.chalrang.ui
 
+import com.sssoft.chalrang.engine.DemoRoute
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
@@ -351,6 +352,25 @@ private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
         Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(Color(0x332A8BE0))) {
             Box(Modifier.fillMaxWidth(s.demoProgress.coerceIn(0f, 1f)).height(6.dp).background(Brush.horizontalGradient(listOf(Neon.Blue, Neon.Cyan))))
         }
+    }
+    // 시연 길 고르기 (실제 지역: 대관령·한계령·서울 도심·고속도로, 또는 만든 길)
+    var choosing by remember { mutableStateOf(false) }
+    if (s.demo == null) {
+        NeonChip("시연 길 · ${DemoRoute.of(s.settings.demoRoute).short}", false, onClick = { choosing = true }, icon = Icons.Filled.Route, modifier = Modifier.fillMaxWidth())
+    }
+    if (choosing) {
+        AlertDialog(
+            onDismissRequest = { choosing = false },
+            title = { Text("시연 길") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DemoRoute.entries.forEach { r ->
+                        NeonChip(r.label, r.id == s.settings.demoRoute, onClick = { vm.chooseDemoRoute(r); choosing = false }, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { choosing = false }) { Text("닫기") } },
+        )
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         NeonChip("설정", false, onClick = onEdit, icon = Icons.Filled.Settings, modifier = Modifier.weight(1f))

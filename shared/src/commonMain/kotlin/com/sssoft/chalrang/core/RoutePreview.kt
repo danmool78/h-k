@@ -14,7 +14,11 @@ data class RoutePoint(val kind: ManeuverKind, val atM: Double, val dir: Int = 0)
  * 내비가 경로 선을 주지 않아 지금 위치 → 목적지 직선 위에서 잰 값을 경로 길이에 맞춰 늘린 추정이다.
  */
 class Terrain(val spacingM: Double, val heights: DoubleArray) {
-    /** [from]~[to] (m) 구간에서 1km 당 오르내린 높이 합 (m/km) */
+    /**
+     * [from]~[to] (m) 구간의 오르내림 (m/km): 오르고 내린 높이 합에서 전체 높이 차를 뺀 것.
+     * 한쪽으로 꾸준히 오르거나 내려가는 길(고갯길의 긴 내리막)은 흔들림이 아니라 0 에 가깝고,
+     * 둔덕이 이어지는 길만 커진다.
+     */
     fun climbPerKm(from: Double, to: Double): Double {
         if (heights.size < 2 || spacingM <= 0) return 0.0
         val a = (from / spacingM).toInt().coerceIn(0, heights.size - 1)
@@ -22,7 +26,8 @@ class Terrain(val spacingM: Double, val heights: DoubleArray) {
         if (b <= a) return 0.0
         var sum = 0.0
         for (i in a + 1..b) sum += abs(heights[i] - heights[i - 1])
-        return sum / ((b - a) * spacingM / 1000)
+        val net = abs(heights[b] - heights[a])
+        return (sum - net) / ((b - a) * spacingM / 1000)
     }
 }
 

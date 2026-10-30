@@ -53,7 +53,8 @@ data class Frame(
     val distM: Double = 0.0,
 )
 
-class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
+/** [route] 가 있으면 실제 지역 길 (높이·굽이·안내 지점을 그 길에서) */
+class DriveScenario(val legs: List<Leg>, val style: DriverStyle, val route: RoutePath? = null) {
 
     val durationSec: Double = legs.sumOf { it.durationSec }
 
@@ -85,7 +86,17 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
             // 위아래: 길 높이 h(x) = A·sin(2πx/λ) 를 지나면 az = -A·(2πv/λ)²·sin(2πx/λ)
             var az = 0.0
             var grade = 0.0
-            if (leg.hillM > 0) {
+            val r = route
+            if (r != null) {
+                // 실제 길 높이: 경사 = dz/dx (앞뒤 25m), 위아래 = v²·d²z/dx² (앞뒤 100m: 지형 자료 90m 간격의 잔 꺾임은 빼고 둔덕만)
+                val i = r.index(dist)
+                val g = (GRADE_M / RoutePath.STEP).toInt()
+                grade = (r.z[(i + g).coerceAtMost(r.size - 1)] - r.z[(i - g).coerceAtLeast(0)]) / (2 * GRADE_M)
+                val h = (CURVE_M / RoutePath.STEP).toInt()
+                val a = r.z[(i - h).coerceAtLeast(0)]
+                val b = r.z[(i + h).coerceAtMost(r.size - 1)]
+                az = v * v * (a - 2 * r.z[i] + b) / (CURVE_M * CURVE_M)
+            } else if (leg.hillM > 0) {
                 val k = 2 * PI / leg.hillWaveM
                 az += -leg.hillM * (k * v) * (k * v) * sin(k * dist)
                 grade = leg.hillM * k * cos(k * dist)
@@ -115,7 +126,7 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
     }
 
     /** 경로 미리보기용: 안내·방지턱·굽은 길 지점 (출발점부터 m) */
-    fun routePoints(): List<RoutePoint> = buildList {
+    fun routePoints(): List<RoutePoint> = route?.marks ?: buildList {
         for (i in legs.indices) {
             val leg = legs[i]
             leg.maneuver?.let { add(RoutePoint(it, legStartM[i])) }
@@ -126,6 +137,7 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
 
     /** 경로 미리보기용: 100m 마다 길 높이 (둔덕 구간) */
     fun terrain(): Terrain {
+        route?.let { return Terrain(RoutePath.STEP, it.z) }
         val total = legStartM.last()
         val n = (total / TERRAIN_STEP).toInt() + 1
         val h = DoubleArray(n) { k ->
@@ -159,6 +171,38 @@ class DriveScenario(val legs: List<Leg>, val style: DriverStyle) {
 
     companion object {
         const val TERRAIN_STEP = 100.0
+        /** 도심 교차로에서 서 있는 시간 (초) */
+        const val STOP_SEC = 8.0
+        const val GRADE_M = 25.0
+        const val CURVE_M = 100.0
+
+        /**
+         * 실제 지역 길로 시나리오 만들기: 50m 마다 한 구간 (그 구간의 굽은 정도·편안한 속도).
+         * 거친 운전은 15% 빠르게 (굽이에서 더 쏠린다), 부드러운 운전은 그 속도대로.
+         */
+        fun fromRoute(r: RoutePath, style: DriverStyle): DriveScenario {
+            val legs = ArrayList<Leg>()
+            legs += Leg(3.0, 0.0)
+            val chunk = 10
+            var i = 0
+            while (i < r.size - 1) {
+                val e = minOf(r.size - 1, i + chunk)
+                var k = 0.0
+                var v = 0.0
+                for (q in i until e) { k += r.curvature[q]; v += r.speedKmh[q] }
+                k /= (e - i); v /= (e - i)
+                val kmh = (v * (if (style == DriverStyle.ROUGH) 1.15 else 1.0)).coerceIn(15.0, 80.0)
+                val len = (e - i) * RoutePath.STEP
+                // 급한 회전이 시작되는 구간에는 안내를 달아 둔다 (내비 예고처럼)
+                val sharp = r.marks.any { it.kind == ManeuverKind.SHARP_TURN && it.atM >= i * RoutePath.STEP && it.atM < e * RoutePath.STEP }
+                legs += Leg(len / (kmh / 3.6), kmh, radiusM = if (kotlin.math.abs(k) > 1 / 400.0) 1 / k else null, maneuver = if (sharp) ManeuverKind.SHARP_TURN else null)
+                // 도심 교차로: 잠깐 선다 (신호)
+                if (r.stops.any { it >= i * RoutePath.STEP && it < e * RoutePath.STEP }) legs += Leg(STOP_SEC, 0.0)
+                i = e
+            }
+            legs += Leg(20.0, 0.0)
+            return DriveScenario(legs, style, r)
+        }
 
         /** 가다 서다 [n] 번 */
         fun stopAndGo(n: Int, topKmh: Double = 40.0, bumps: Boolean = false): List<Leg> =

@@ -41,6 +41,6 @@ class RoutePreviewTest {
     fun `고도 응답 읽기`() {
         val t = Elevation.parse("""{"elevation":[10.0, 50.0, 10.0]}""", 2_000.0)!!
         assertEquals(1_000.0, t.spacingM, 1e-9)
-        assertEquals(40.0, t.climbPerKm(0.0, 1_000.0), 1e-9)
+        assertEquals("올랐다 내려온 만큼", 40.0, t.climbPerKm(0.0, 2_000.0), 1e-9)
     }
 }

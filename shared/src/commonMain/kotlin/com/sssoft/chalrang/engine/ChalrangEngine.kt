@@ -241,6 +241,7 @@ class ChalrangEngine(
     suspend fun run() = coroutineScope {
         launch { loop() }
         launch { routeLoop() }
+        launch { loadRegion() }
         remote?.let { launch { it.run() } }
     }
 
@@ -468,10 +469,11 @@ class ChalrangEngine(
         resetTrip()
         // 시연 시간은 배속으로 흐르므로 창문 질문은 실제 20초 동안 기다린다
         policy = CarePolicy(askTimeoutSec = CarePolicy.ASK_TIMEOUT * DEMO_SPEED).also { applySettings(it) }
-        val s = DriveScenario.weekendTrip(style)
+        // 실제 지역 길(받아 두었으면) 또는 만든 주말 나들이 시나리오
+        val s = demoPaths[DemoRoute.of(settings.demoRoute)]?.let { DriveScenario.fromRoute(it, style) } ?: DriveScenario.weekendTrip(style)
         clearRoute()
         // 시연 경로 미리보기: 시나리오의 안내·방지턱·굽은 길과 길 높이로 (시연 시간은 배속)
-        demoRoute = RoutePlanner.plan(s.routePoints(), s.totalM, s.durationSec, s.terrain())
+        demoRoute = s.route?.preview ?: RoutePlanner.plan(s.routePoints(), s.totalM, s.durationSec, s.terrain())
         demo = Demo(s, s.frames(SCENARIO_DT).iterator())
         // 설정에서 브리핑을 켰으면 출발 전에 3D 브리핑 (보는 동안 시연은 멈춤)
         if (settings.briefing && settings.routePreview) {
@@ -548,7 +550,16 @@ class ChalrangEngine(
             }
             if (!terrainTried && settings.terrain && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
                 terrainTried = true
-                terrain = Elevation.along(a.hereLat, a.hereLng, a.destLat, a.destLng, remain)
+                // 실제 도로 선(OSRM)과 높이: 되면 굽이까지, 안 되면 직선 지형 추정
+                val g = GeoFetch.route(a.hereLat, a.hereLng, a.destLat, a.destLng)
+                if (g != null) {
+                    val p = RoutePath.fromPolyline(g.xs, g.ys, g.zs, etaSec = a.remainSec, grid = g.grid)
+                    livePath = p
+                    terrain = Terrain(RoutePath.STEP, p.z)
+                    for (b in p.marks) known["${b.kind}@g${(b.atM / 200).roundToInt()}"] = b.copy(atM = b.atM + travelled)
+                } else {
+                    terrain = Elevation.along(a.hereLat, a.hereLng, a.destLat, a.destLng, remain)
+                }
                 changed = true
             }
             val current = _ui.value.route
@@ -594,6 +605,20 @@ class ChalrangEngine(
         _ui.update { it.copy(lastSaid = text) }
     }
 
+    // ---- 실제 지역 길 ----
+
+    /** 시연용 실제 지역 길 (앱에 넣어 둔 것, 고를 수 있음) */
+    private val demoPaths = HashMap<DemoRoute, RoutePath>()
+    /** 길 안내 중인 실제 도로 (OSRM) */
+    private var livePath: RoutePath? = null
+
+    private suspend fun loadRegion() {
+        for (r in DemoRoute.entries) if (r !in demoPaths) DemoRoutes.load(r)?.let { demoPaths[r] = it }
+    }
+
+    /** 시연 길 고르기 (설정에 남는다) */
+    fun chooseDemoRoute(r: DemoRoute) = updateSettings(settings.copy(demoRoute = r.id))
+
     // ---- 3D 경로 브리핑 ----
 
     private var briefedThisRoute = false
@@ -603,8 +628,8 @@ class ChalrangEngine(
 
     /** 지금 경로(시연 또는 길 안내)로 3D 브리핑을 연다 */
     fun startBriefing() {
-        val path = demo?.let { d -> demoRoute?.let { RoutePath.of(d.scenario, it) } }
-            ?: _ui.value.route?.let { RoutePath.synthesize(known.values.toList(), it.totalM, terrain, it) }
+        val path = demo?.let { d -> d.scenario.route ?: demoRoute?.let { RoutePath.of(d.scenario, it) } }
+            ?: _ui.value.route?.let { plan -> livePath?.withPreview(plan) ?: RoutePath.synthesize(known.values.toList(), plan.totalM, terrain, plan) }
             ?: return
         _ui.update { it.copy(briefing = path) }
     }
@@ -619,6 +644,7 @@ class ChalrangEngine(
 
     private fun clearRoute() {
         briefedThisRoute = false
+        livePath = null
         routeKey = null
         known.clear()
         terrain = null

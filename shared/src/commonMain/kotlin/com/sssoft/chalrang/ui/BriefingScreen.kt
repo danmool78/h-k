@@ -50,6 +50,7 @@ import com.sssoft.chalrang.core.ManeuverKind
 import com.sssoft.chalrang.core.RiskSegment
 import com.sssoft.chalrang.core.RoutePath
 import com.sssoft.chalrang.core.RoutePreview
+import com.sssoft.chalrang.core.TerrainGrid
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -66,7 +67,7 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
     val speakNow by rememberUpdatedState(speak)
     val close by rememberUpdatedState(onClose)
     val pv = path.preview
-    // 기본 속도: 전체를 약 24초에 (위험 구간은 0.5배로 천천히)
+    // 기본 속도: 전체를 약 24초에 (안전한 길은 그 3배 넘게, 위험 구간은 따로)
     val base = (path.lengthM / 24.0).coerceIn(150.0, 4_000.0)
 
     LaunchedEffect(path) {
@@ -94,8 +95,10 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
                             speakNow(line)
                         }
                     }
-                    val slow = if (path.riskAt(at + 100) > 0) 0.5 else 1.0
-                    at = min(path.lengthM, at + base * slow * dt)
+                    // 안전한 길은 건너뛰듯 빠르게, 위험 구간은 구간마다 약 10초에 (설명을 들을 시간)
+                    val seg = pv.segments.firstOrNull { at + 150 >= it.startM && at < it.endM }
+                    val speed = seg?.let { (it.lengthM / SEGMENT_SEC).coerceIn(120.0, 600.0) } ?: max(SKIP_MPS, base * 3)
+                    at = min(path.lengthM, at + speed * dt)
                     if (at >= path.lengthM) {
                         ended = true
                         val outro = "브리핑을 마쳤어요." + (pv.restAdvice?.let { " $it." } ?: "") + " 안전하게 다녀오세요."
@@ -119,7 +122,8 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
             Column {
                 Text("경로 브리핑", color = Neon.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    if (path.synthetic) "내비 안내 지점과 지형으로 그린 길이에요" else "시연 경로",
+                    path.region?.let { "실제 지역 · $it" }
+                        ?: if (path.synthetic) "내비 안내 지점과 지형으로 그린 길이에요" else if (path.grid != null) "실제 도로 · 지형" else "시연 경로",
                     color = Neon.Dim, fontSize = 13.sp,
                 )
             }
@@ -158,6 +162,10 @@ fun BriefingScreen(path: RoutePath, speak: (String) -> Unit, onClose: () -> Unit
         }
     }
 }
+
+/** 위험 구간 하나를 지나는 시간 (초), 안전한 길을 지나는 최소 속도 (m/s) */
+private const val SEGMENT_SEC = 10.0
+private const val SKIP_MPS = 900.0
 
 private fun intro(p: RoutePreview): String {
     val km = RoutePreview.fmtKm(p.totalM)
@@ -201,18 +209,27 @@ private fun RouteScene(path: RoutePath, at: Double, modifier: Modifier) {
     val lines = remember { Array(3) { Path() } }
     val curtain = remember { Path() }
     val grid = remember { Path() }
+    val mesh = remember { Array(3) { Path() } }
     Canvas(modifier) {
         val cam = ChaseCamera(path, at, size.width, size.height)
-        // 바닥 격자 (포인터 높이 아래)
-        grid.reset()
         val gz = cam.groundZ
-        val gx0 = ((cam.px / 100).roundToInt() - 15) * 100.0
-        val gy0 = ((cam.py / 100).roundToInt() - 15) * 100.0
-        for (k in 0..30) {
-            cam.segment(grid, gx0 + k * 100, gy0, gz, gx0 + k * 100, gy0 + 3000, gz)
-            cam.segment(grid, gx0, gy0 + k * 100, gz, gx0 + 3000, gy0 + k * 100, gz)
+        val tg = path.grid
+        if (tg != null) {
+            // 주변 지형: 실제 높이 격자를 같은 네온 선으로 (가까울수록 진하게)
+            terrainMesh(cam, tg, mesh)
+            val hues = listOf(Color(0x9950B8F0), Color(0x5A4FA3E0), Color(0x2E4FA3E0))
+            for (b in 2 downTo 0) drawPath(mesh[b], hues[b], style = Stroke(if (b == 0) 1.3f else 1f))
+        } else {
+            // 바닥 격자 (포인터 높이 아래)
+            grid.reset()
+            val gx0 = ((cam.px / 100).roundToInt() - 15) * 100.0
+            val gy0 = ((cam.py / 100).roundToInt() - 15) * 100.0
+            for (k in 0..30) {
+                cam.segment(grid, gx0 + k * 100, gy0, gz, gx0 + k * 100, gy0 + 3000, gz)
+                cam.segment(grid, gx0, gy0 + k * 100, gz, gx0 + 3000, gy0 + k * 100, gz)
+            }
+            drawPath(grid, Color(0x1A4FA3E0), style = Stroke(1f))
         }
-        drawPath(grid, Color(0x1A4FA3E0), style = Stroke(1f))
 
         // 경로: 앞 3km·뒤 300m
         val i0 = path.index(at - 300)
@@ -232,7 +249,10 @@ private fun RouteScene(path: RoutePath, at: Double, modifier: Modifier) {
             }
             line.lineTo(p.x, p.y)
             // 높이 기둥 (50m 마다): 3D 로 떠 있는 느낌
-            if (i % 10 == 0) cam.project(path.x[i], path.y[i], gz)?.let { g -> curtain.moveTo(p.x, p.y); curtain.lineTo(g.x, g.y) }
+            if (i % 10 == 0) {
+                val ground = tg?.let { cam.zOf(heightAt(it, path.x[i], path.y[i])) } ?: gz
+                cam.project(path.x[i], path.y[i], ground)?.let { g -> curtain.moveTo(p.x, p.y); curtain.lineTo(g.x, g.y) }
+            }
             prev = p
             prevLevel = level
         }
@@ -268,7 +288,8 @@ private fun RouteScene(path: RoutePath, at: Double, modifier: Modifier) {
         val pi = path.index(at)
         cam.project(path.x[pi], path.y[pi], cam.zOf(path.z[pi]))?.let { p ->
             val c = riskColor(path.riskAt(at))
-            cam.project(path.x[pi], path.y[pi], gz)?.let { g -> drawLine(c.copy(alpha = 0.5f), p, g, 2f) }
+            val ground = tg?.let { cam.zOf(heightAt(it, path.x[pi], path.y[pi])) } ?: gz
+            cam.project(path.x[pi], path.y[pi], ground)?.let { g -> drawLine(c.copy(alpha = 0.5f), p, g, 2f) }
             drawCircle(c.copy(alpha = 0.15f), 34f, p)
             drawCircle(c.copy(alpha = 0.35f), 18f, p)
             drawCircle(Neon.White, 8f, p)
@@ -276,7 +297,49 @@ private fun RouteScene(path: RoutePath, at: Double, modifier: Modifier) {
     }
 }
 
-/** 포인터 뒤 위에서 앞을 보는 카메라. 높이는 3배 키운다 (오르내림이 보이게) */
+/** 지형 격자를 가로·세로 선으로: 카메라에서 멀수록 옅은 묶음 (가까이 1.5km, 3.5km, 6km) */
+private fun terrainMesh(cam: ChaseCamera, g: TerrainGrid, out: Array<Path>) {
+    out.forEach { it.reset() }
+    fun band(x: Double, y: Double): Int {
+        val d = kotlin.math.hypot(x - cam.px, y - cam.py)
+        return when { d < 1_500 -> 0; d < 3_500 -> 1; d < 6_000 -> 2; else -> -1 }
+    }
+    for (dir in 0..1) {
+        val outer = if (dir == 0) g.ny else g.nx
+        val inner = if (dir == 0) g.nx else g.ny
+        for (a in 0 until outer) {
+            var last: Offset? = null
+            for (b in 0 until inner) {
+                val i = if (dir == 0) b else a
+                val j = if (dir == 0) a else b
+                val x = g.x0 + i * g.step
+                val y = g.y0 + j * g.step
+                val k = band(x, y)
+                val p = if (k < 0) null else cam.project(x, y, cam.zOf(g.at(i, j)))
+                if (p != null && last != null) {
+                    out[k].moveTo(last.x, last.y)
+                    out[k].lineTo(p.x, p.y)
+                }
+                last = p
+            }
+        }
+    }
+}
+
+/** 지형 격자에서 (x, y) 높이 (쌍선형) */
+private fun heightAt(g: TerrainGrid, x: Double, y: Double): Double {
+    val fx = ((x - g.x0) / g.step).coerceIn(0.0, g.nx - 1.001)
+    val fy = ((y - g.y0) / g.step).coerceIn(0.0, g.ny - 1.001)
+    val i = fx.toInt()
+    val j = fy.toInt()
+    val tx = fx - i
+    val ty = fy - j
+    val a = g.at(i, j) * (1 - tx) + g.at(i + 1, j) * tx
+    val b = g.at(i, j + 1) * (1 - tx) + g.at(i + 1, j + 1) * tx
+    return a * (1 - ty) + b * ty
+}
+
+/** 포인터 뒤 위에서 앞을 보는 카메라. 높이는 키운다 (오르내림이 보이게: 만든 길 3배, 실제 지형 1.5배) */
 private class ChaseCamera(path: RoutePath, at: Double, w: Float, h: Float) {
     val px: Double
     val py: Double
@@ -290,7 +353,8 @@ private class ChaseCamera(path: RoutePath, at: Double, w: Float, h: Float) {
     private val u = DoubleArray(3)
     private val f = DoubleArray(3)
 
-    fun zOf(z: Double) = (z - z0) * Z_SCALE
+    private val zScale = if (path.grid != null) 1.5 else Z_SCALE
+    fun zOf(z: Double) = (z - z0) * zScale
 
     init {
         val i = path.index(at)

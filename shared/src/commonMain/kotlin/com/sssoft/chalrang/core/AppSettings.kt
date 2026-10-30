@@ -31,12 +31,14 @@ data class AppSettings(
     // 시연
     /** 관리자 휴대폰 시연 받기 */
     val phoneDemo: Boolean = true,
+    /** 시연 길 (engine.DemoRoute id, "" = 만든 주말 나들이) */
+    val demoRoute: String = "daegwallyeong",
 ) {
     fun encode(): String = listOf(
         "voice" to voice, "chime" to chime, "fewerAlerts" to fewerAlerts,
         "autoVent" to autoVent, "askWindow" to askWindow, "windowPercent" to windowPercent,
         "routePreview" to routePreview, "terrain" to terrain, "briefing" to briefing,
-        "tripReport" to tripReport, "habitFill" to habitFill, "phoneDemo" to phoneDemo,
+        "tripReport" to tripReport, "habitFill" to habitFill, "phoneDemo" to phoneDemo, "demoRoute" to demoRoute,
     ).joinToString("\n") { (k, v) -> "$k=$v" }
 
     companion object {
@@ -52,6 +54,7 @@ data class AppSettings(
                 windowPercent = m["windowPercent"]?.toIntOrNull()?.coerceIn(5, 60) ?: d.windowPercent,
                 routePreview = b("routePreview", d.routePreview), terrain = b("terrain", d.terrain), briefing = b("briefing", d.briefing),
                 tripReport = b("tripReport", d.tripReport), habitFill = b("habitFill", d.habitFill), phoneDemo = b("phoneDemo", d.phoneDemo),
+                demoRoute = m["demoRoute"] ?: d.demoRoute,
             )
         }
     }
