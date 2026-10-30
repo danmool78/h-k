@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.ShowChart
@@ -76,7 +77,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.sssoft.chalrang.core.Child
 import com.sssoft.chalrang.core.DriveTrace
+import com.sssoft.chalrang.core.Sensitivity
 import com.sssoft.chalrang.core.Lag
 import com.sssoft.chalrang.core.ShakeAnalysis
 import com.sssoft.chalrang.core.ShakeReport
@@ -165,16 +168,16 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Column(Modifier.width(340.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             CupCard(sample, Modifier.fillMaxWidth().height(232.dp))
-                            SummaryCard(sample, trace.startTime, lag, stats, shake)
+                            SummaryCard(sample, trace.startTime, lag, stats, shake, ui.setup.primary)
                             MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier.weight(1f))
                         }
-                        Charts(trace, frame, range, cursorAt, following, events, shake, sample, stats, pick, Modifier.weight(1f).fillMaxHeight(), null)
+                        Charts(trace, frame, range, cursorAt, following, events, shake, ui.setup.primary, sample, stats, pick, Modifier.weight(1f).fillMaxHeight(), null)
                     }
                 } else {
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         CupCard(sample, Modifier.fillMaxWidth().height(220.dp))
-                        SummaryCard(sample, trace.startTime, lag, stats, shake)
-                        Charts(trace, frame, range, cursorAt, following, events, shake, sample, stats, pick, Modifier.fillMaxWidth(), 200.dp)
+                        SummaryCard(sample, trace.startTime, lag, stats, shake, ui.setup.primary)
+                        Charts(trace, frame, range, cursorAt, following, events, shake, ui.setup.primary, sample, stats, pick, Modifier.fillMaxWidth(), 200.dp)
                         MessagesCard(events, trace.startTime, onPick = pick, modifier = Modifier.height(220.dp))
                     }
                 }
@@ -327,7 +330,7 @@ private fun Gauge(label: String, g: Double?) {
 }
 
 @Composable
-private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: WindowStats, shake: ShakeReport?, modifier: Modifier = Modifier) {
+private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: WindowStats, shake: ShakeReport?, child: Child?, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().neonCard().padding(horizontal = 16.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.Speed, null, tint = Neon.Cyan, modifier = Modifier.size(22.dp))
@@ -352,6 +355,15 @@ private fun SummaryCard(s: TraceSample?, start: Double, lag: Lag?, stats: Window
             lag?.let { when { it.correlation >= 0.6 -> "높음"; it.correlation >= 0.3 -> "보통"; else -> "낮음" } } ?: "",
         )
         if (shake != null) SummaryRow(Icons.Filled.GraphicEq, "멀미 주기", "${fmt(shake.sicknessPeriod, 1)}초", "MSDV ${fmt(shake.msdv, 1)}")
+        if (child != null) {
+            val sens = child.sensitivity
+            SummaryRow(
+                Icons.Filled.Face, "${child.name} 민감",
+                if (sens.active) "${fmt(sens.peakPeriod, 1)}초" else "학습 중",
+                if (sens.active) "×${fmt(sens.gain, 2)} 강조 · ${sens.count}번" else "${sens.count}/${Sensitivity.MIN_EVENTS}번 · 표준 사용",
+                if (sens.active) Neon.Amber else Neon.White,
+            )
+        }
     }
 }
 
@@ -403,7 +415,7 @@ private fun MessagesCard(events: List<TraceEvent>, start: Double, onPick: (Doubl
 @Composable
 private fun Charts(
     trace: DriveTrace, frame: State<Long>, range: () -> Pair<Double, Double>, cursorAt: () -> Double, following: Boolean,
-    events: List<TraceEvent>, shake: ShakeReport?, s: TraceSample?, stats: WindowStats,
+    events: List<TraceEvent>, shake: ShakeReport?, child: Child?, s: TraceSample?, stats: WindowStats,
     onCursor: (Double) -> Unit, modifier: Modifier, fixedHeight: Dp?,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -464,7 +476,8 @@ private fun Charts(
         }
         ChartCard(
             Icons.Filled.GraphicEq, "흔들림 주기", "",
-            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "Wf 가중" to Neon.Dim),
+            listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "Wf 가중" to Neon.Dim) +
+                (child?.sensitivity?.takeIf { it.active }?.let { listOf("${child.name} 가중" to Neon.Red) } ?: emptyList()),
             if (shake == null) {
                 buildAnnotatedString { withStyle(SpanStyle(color = Neon.Dim)) { append("30초 넘게 기록되면 분석해요") } }
             } else {
@@ -475,7 +488,7 @@ private fun Charts(
             },
             slot(0.95f),
         ) {
-            if (shake != null) SpectrumChart(shake)
+            if (shake != null) SpectrumChart(shake, child?.sensitivity?.takeIf { it.active })
         }
     }
 }
@@ -661,7 +674,7 @@ private fun TimeChart(
  * 보라 띠 = 멀미 주기(2~10초), 점선 = ISO 2631-1 Wf 가중, 빨간 선 = 멀미에 가장 영향을 준 주기.
  */
 @Composable
-private fun SpectrumChart(r: ShakeReport) {
+private fun SpectrumChart(r: ShakeReport, sens: Sensitivity?) {
     val measurer = rememberTextMeasurer()
     val labels = remember(measurer) { Labels(measurer, 11.sp, Neon.Dim) }
     val bandLabel = remember(measurer) { Labels(measurer, 11.sp, Neon.Purple) }
@@ -699,6 +712,8 @@ private fun SpectrumChart(r: ShakeReport) {
             }
         }
         glowPath(path(r.wf, 1.0), Neon.Dim, 1.3f, dash = true)
+        // 아이별 가중: 표준 Wf × 민감 주기 강조
+        if (sens != null) glowPath(path(DoubleArray(r.freqs.size) { sens.weight(r.freqs[it]) }, sens.gain), Neon.Red.copy(alpha = 0.8f), 1.4f, dash = true)
         for ((amp, c) in listOf(r.longAmp to Neon.Amber, r.latAmp to Neon.Cyan)) {
             val line = path(amp, top)
             val fill = Path().apply { addPath(line); lineTo(x(r.freqs.last()), h); lineTo(x(r.freqs.first()), h); close() }

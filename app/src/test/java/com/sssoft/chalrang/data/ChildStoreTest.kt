@@ -9,7 +9,7 @@ class ChildStoreTest {
 
     @Test
     fun `저장했다 읽으면 그대로`() {
-        val list = listOf(Child("1", "민지", Seat.REAR_LEFT, 0.72, 2), Child("2", "준호", Seat.FRONT_RIGHT))
+        val list = listOf(Child("1", "민지", Seat.REAR_LEFT, 0.72, 2, com.sssoft.chalrang.core.Sensitivity(listOf(4.8, 5.1))), Child("2", "준호", Seat.FRONT_RIGHT))
         assertEquals(list, ChildStore.decode(ChildStore.encode(list)))
     }
 

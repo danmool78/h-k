@@ -3,6 +3,7 @@ package com.sssoft.chalrang.data
 import android.content.Context
 import com.sssoft.chalrang.core.Child
 import com.sssoft.chalrang.core.Seat
+import com.sssoft.chalrang.core.Sensitivity
 import com.sssoft.chalrang.engine.ChildRepo
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,7 +27,8 @@ class ChildStore(context: Context) : ChildRepo {
                 put(
                     JSONObject()
                         .put("id", it.id).put("name", it.name).put("seat", it.seat.name)
-                        .put("level", it.level).put("calibrations", it.calibrations),
+                        .put("level", it.level).put("calibrations", it.calibrations)
+                        .put("periods", JSONArray(it.sensitivity.periods)),
                 )
             }
         }.toString()
@@ -43,6 +45,9 @@ class ChildStore(context: Context) : ChildRepo {
                         seat = Seat.valueOf(o.getString("seat")),
                         level = o.getDouble("level"),
                         calibrations = o.optInt("calibrations", 0),
+                        sensitivity = Sensitivity(
+                            o.optJSONArray("periods")?.let { p -> (0 until p.length()).map { k -> p.getDouble(k) } }.orEmpty(),
+                        ),
                     )
                 }
             }.getOrDefault(emptyList())

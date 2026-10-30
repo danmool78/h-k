@@ -2,6 +2,7 @@ package com.sssoft.chalrang.web
 
 import com.sssoft.chalrang.core.Child
 import com.sssoft.chalrang.core.Seat
+import com.sssoft.chalrang.core.Sensitivity
 import com.sssoft.chalrang.engine.ChildRepo
 import com.sssoft.chalrang.engine.VoicePort
 
@@ -60,12 +61,15 @@ class BrowserChildRepo : ChildRepo {
         val raw = runCatching { lsGet(KEY) }.getOrNull() ?: return listOf(Child("demo", "민지", Seat.REAR_LEFT))
         return raw.lines().filter { it.isNotBlank() }.mapNotNull { line ->
             val p = line.split('\t')
-            runCatching { Child(p[0], p[1], Seat.valueOf(p[2]), p[3].toDouble(), p[4].toInt()) }.getOrNull()
+            runCatching {
+                val periods = p.getOrNull(5)?.split(',')?.mapNotNull { it.toDoubleOrNull() }.orEmpty()
+                Child(p[0], p[1], Seat.valueOf(p[2]), p[3].toDouble(), p[4].toInt(), Sensitivity(periods))
+            }.getOrNull()
         }
     }
 
     override fun save(children: List<Child>) {
-        val raw = children.joinToString("\n") { listOf(it.id, it.name.replace('\t', ' '), it.seat.name, it.level, it.calibrations).joinToString("\t") }
+        val raw = children.joinToString("\n") { listOf(it.id, it.name.replace('\t', ' '), it.seat.name, it.level, it.calibrations, it.sensitivity.periods.joinToString(",")).joinToString("\t") }
         runCatching { lsSet(KEY, raw) }
     }
 

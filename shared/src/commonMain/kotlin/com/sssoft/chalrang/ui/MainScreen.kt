@@ -289,8 +289,11 @@ private fun ChildrenDialog(children: List<Child>, vm: ChalrangEngine, onDismiss:
                         Column(Modifier.weight(1f)) {
                             Text("${c.name} · ${c.seat.label}", fontSize = 18.sp)
                             Text(
-                                if (c.calibrations == 0) "처음 기준 · 멀미하면 '지금 멀미'를 눌러 주세요"
-                                else "'지금 멀미'로 ${c.calibrations}번 맞춤",
+                                when {
+                                    c.calibrations == 0 -> "처음 기준 · 멀미하면 '지금 멀미'를 눌러 주세요"
+                                    c.sensitivity.active -> "'지금 멀미'로 ${c.calibrations}번 맞춤 · ${(c.sensitivity.peakPeriod * 10).toInt() / 10.0}초 흔들림에 약함"
+                                    else -> "'지금 멀미'로 ${c.calibrations}번 맞춤 · 멀미 패턴 학습 ${c.sensitivity.count}/${com.sssoft.chalrang.core.Sensitivity.MIN_EVENTS}"
+                                },
                                 fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }

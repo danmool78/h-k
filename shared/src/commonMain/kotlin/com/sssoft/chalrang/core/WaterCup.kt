@@ -6,7 +6,8 @@ import kotlin.math.hypot
 /**
  * 물컵 출렁임과 멀미 누적량.
  *
- * 수면 기울기(단위 g) = 차의 앞뒤·좌우 가속도에 ISO 2631-1 멀미 주파수 가중 [Wf] 를 건 값.
+ * 수면 기울기(단위 g) = 차의 앞뒤·좌우 가속도에 ISO 2631-1 멀미 주파수 가중 [Wf] 를 건 값
+ * (아이별 민감 주기를 학습했으면 그 주기를 [sensitivity] 만큼 더 강조).
  * Wf 는 0.16Hz(약 6초 주기)에서 가장 크고, 그보다 느리거나 빠른 흔들림은 줄인다. 물은 차 흔들림을 늦게 따라온다.
  * → 물이 많이 출렁이는 운전 = 국제 규격이 멀미를 일으킨다고 보는 흔들림.
  *
@@ -24,6 +25,18 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
     var tiltY = 0.0; private set
     private val wfX = Wf.Filter(STEP)
     private val wfY = Wf.Filter(STEP)
+
+    /** 아이별 민감 주기. 바뀌면 강조 필터를 새로 만든다 (학습 전에는 강조 없음) */
+    var sensitivity: Sensitivity = Sensitivity()
+        set(value) {
+            if (value.peakHz == field.peakHz && value.gain == field.gain) { field = value; return }
+            field = value
+            peakX = makePeak(value)
+            peakY = makePeak(value)
+        }
+    private var peakX: PeakFilter? = null
+    private var peakY: PeakFilter? = null
+    private fun makePeak(s: Sensitivity) = if (s.gain > 1.0) PeakFilter(STEP, s.peakHz, s.gain) else null
     /** 아직 필터에 넣지 않은 시간 (Wf 는 [STEP] 간격으로 돈다) */
     private var pending = 0.0
 
@@ -54,8 +67,10 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
         pending += dt
         while (pending >= STEP * 0.999) {
             pending -= STEP
-            tiltX = wfX.step(gx)
-            tiltY = wfY.step(gy)
+            val wx = wfX.step(gx)
+            val wy = wfY.step(gy)
+            tiltX = peakX?.step(wx) ?: wx
+            tiltY = peakY?.step(wy) ?: wy
             spilled += spillRate(tilt, level) * STEP
         }
         val nowSpilling = tilt > freeboard

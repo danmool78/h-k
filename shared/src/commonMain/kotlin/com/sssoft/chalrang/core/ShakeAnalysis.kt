@@ -51,11 +51,14 @@ object ShakeAnalysis {
         val ax = DoubleArray(n)
         val ay = DoubleArray(n)
         var wfEnergy = 0.0
+        // MSDV 는 표준 그대로: 기록된 가속도에 Wf 를 다시 건다 (물 기울기에는 아이별 강조가 들어 있을 수 있다)
+        val fx = Wf.Filter(dt)
+        val fy = Wf.Filter(dt)
         for (k in 0 until n) {
-            val s = trace[i0 + k]
-            ax[k] = s.ax; ay[k] = s.ay
-            // 물 기울기 = Wf 가중 가속도 / g 이므로 기록에서 바로 MSDV 를 얻는다
-            wfEnergy += (s.tiltX * s.tiltX + s.tiltY * s.tiltY) * WaterCup.G * WaterCup.G * dt
+            ax[k] = trace.axAt(i0 + k); ay[k] = trace.ayAt(i0 + k)
+            val wx = fx.step(ax[k])
+            val wy = fy.step(ay[k])
+            wfEnergy += (wx * wx + wy * wy) * dt
         }
         listOf(ax, ay).forEach { a -> val m = a.average(); for (k in a.indices) a[k] -= m }
         val win = DoubleArray(n) { 0.5 - 0.5 * cos(2 * PI * it / (n - 1)) }

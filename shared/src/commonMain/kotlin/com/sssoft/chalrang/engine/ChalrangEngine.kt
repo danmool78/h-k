@@ -14,6 +14,8 @@ import com.sssoft.chalrang.core.Frame
 import com.sssoft.chalrang.core.MotionEstimator
 import com.sssoft.chalrang.core.Seat
 import com.sssoft.chalrang.core.SeatState
+import com.sssoft.chalrang.core.Sensitivity
+import com.sssoft.chalrang.core.SickPeriod
 import com.sssoft.chalrang.core.TiltLog
 import com.sssoft.chalrang.core.WaterCup
 import com.sssoft.chalrang.core.Window
@@ -179,6 +181,7 @@ class ChalrangEngine(
     /** 탄 사람이 바뀌면 물 높이를 바꾼다 (누적량은 그대로) */
     private fun applySetup(setup: CupSetup): CupSetup {
         cup.level = setup.level ?: ALONE_LEVEL
+        cup.sensitivity = setup.primary?.sensitivity ?: Sensitivity()
         return setup
     }
 
@@ -228,9 +231,19 @@ class ChalrangEngine(
         if (child != null && log.size > 0) {
             val found = Calibration.levelForSickness(log)
             val level = Calibration.blend(child.level.takeIf { child.calibrations > 0 }, found)
-            updateChild(child.copy(level = level, calibrations = child.calibrations + 1))
+            // 멀미 패턴: 직전 흔들림에서 평소보다 유독 많았던 멀미 주기를 쌓는다
+            val period = SickPeriod.find(trace, clock)
+            val before = child.sensitivity
+            val sens = period?.let { before.with(it) } ?: before
+            updateChild(child.copy(level = level, calibrations = child.calibrations + 1, sensitivity = sens))
             cup.level = level
-            val text = "${child.name} 기준을 맞췄어요. 다음에는 멀미하기 전에 알려 드릴게요"
+            cup.sensitivity = sens
+            val pattern = when {
+                sens.active && !before.active -> " ${topic(child.name)} ${periodText(sens.peakPeriod)} 흔들림에 특히 약해요."
+                period != null && sens.count < Sensitivity.MIN_EVENTS -> " 멀미 패턴을 배우는 중이에요 (${sens.count}/${Sensitivity.MIN_EVENTS})."
+                else -> ""
+            }
+            val text = "${child.name} 기준을 맞췄어요. 다음에는 멀미하기 전에 알려 드릴게요." + pattern
             voice.say(text)
             _ui.update { it.copy(lastSaid = text) }
         }
@@ -282,6 +295,15 @@ class ChalrangEngine(
         cup.reset()
         log.clear()
         trace.clear()
+    }
+
+    private fun periodText(sec: Double): String = "${(sec * 10).toInt() / 10.0}초"
+
+    /** "민지" → "민지는", "하준" → "하준은" */
+    private fun topic(name: String): String {
+        val last = name.lastOrNull() ?: return name
+        val hasFinal = last in '가'..'힣' && (last - '가') % 28 != 0
+        return name + if (hasFinal) "은" else "는"
     }
 
     /** 끝낼 때: 하던 차량 조치를 되돌린다 */

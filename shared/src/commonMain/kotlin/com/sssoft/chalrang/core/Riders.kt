@@ -15,13 +15,15 @@ enum class Window(val label: String) {
     REAR_RIGHT("뒷좌석 오른쪽"),
 }
 
-/** 아이 프로필. [level] = 물 높이 (멀미 기준), [calibrations] = "지금 멀미" 로 맞춘 횟수 */
+/** 아이 프로필. [level] = 물 높이 (멀미 기준), [calibrations] = "지금 멀미" 로 맞춘 횟수, [sensitivity] = 민감 주기 */
 data class Child(
     val id: String,
     val name: String,
     val seat: Seat,
     val level: Double = WaterCup.DEFAULT_LEVEL,
     val calibrations: Int = 0,
+    /** 멀미 패턴: 이 아이가 특히 약한 흔들림 주기 */
+    val sensitivity: Sensitivity = Sensitivity(),
 )
 
 /** 좌석 하나의 상태. 벨트 정보가 없으면 탑승만 본다 (짐과 구분 못 함) */
