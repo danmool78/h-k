@@ -207,12 +207,16 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHud() {
     drawArc(Color(0x1429C4F6), 20f, 140f, false, Offset(c.x - r, c.y - r), Size(r * 2, r * 2), style = Stroke(1.2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(4f, 8f))))
 }
 
+/** 눈금자 숫자 한 칸 높이 (13sp 글자가 잘리지 않게) */
+private val LABEL_H = 22.dp
+
 /** 왼쪽 ml 눈금자 (0~250ml, 50 마다 숫자). 화살표 = 지금 물 높이 */
 @Composable
 private fun MlRuler(level: Double, modifier: Modifier) {
     val arrow = remember { Path() }
     Row(modifier.width(72.dp)) {
-        Canvas(Modifier.width(30.dp).fillMaxHeight().padding(vertical = 8.dp)) {
+        // 숫자 칸(높이 LABEL_H) 가운데에 눈금이 오도록 위아래를 반 칸씩 띄운다
+        Canvas(Modifier.width(30.dp).fillMaxHeight().padding(vertical = LABEL_H / 2)) {
             val x0 = size.width - 2f
             drawLine(Color(0x664FA3E0), Offset(x0, 0f), Offset(x0, size.height), 1.5f)
             for (k in 0..25) {
@@ -236,8 +240,8 @@ private fun MlRuler(level: Double, modifier: Modifier) {
         Spacer(Modifier.width(8.dp))
         Column(Modifier.fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
             for (label in listOf("250", "200", "150", "100", "50", "ml")) {
-                Box(Modifier.height(16.dp), contentAlignment = Alignment.CenterStart) {
-                    Text(label, color = Neon.Dim, fontSize = 13.sp, maxLines = 1)
+                Box(Modifier.height(LABEL_H), contentAlignment = Alignment.CenterStart) {
+                    Text(label, color = Neon.Dim, fontSize = 13.sp, lineHeight = 16.sp, maxLines = 1, softWrap = false)
                 }
             }
         }
