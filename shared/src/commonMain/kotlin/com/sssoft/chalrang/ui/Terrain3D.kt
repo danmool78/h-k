@@ -126,14 +126,16 @@ half4 main(float2 fc) {
     float t = tNear;
     float prev = t;
     bool hit = false;
+    bool side = false;
     for (int i = 0; i < 128; i++) {
         float3 p = uEye + d * t;
-        if (p.z < hW(p.xy)) { hit = true; break; }
+        if (p.z < hW(p.xy)) { hit = true; side = (i == 0); break; }
         prev = t;
         t += max(2.0, t * 0.006);
         if (t > tFar) break;
     }
-    if (!hit) return half4(0.0);
+    // 상자 옆면으로 바로 들어온 것은 땅이 아니라 벽: 그리지 않는다
+    if (!hit || side) return half4(0.0);
     float a = prev;
     float b = t;
     for (int k = 0; k < 6; k++) {
@@ -158,10 +160,20 @@ half4 main(float2 fc) {
     float w = 0.035 + b / uFar * 0.05;
     float line = smoothstep(w, 0.0, min(c, 1.0 - c));
     col += float3(0.30, 0.78, 0.96) * line * 0.35;
+    // 가까이 볼 때: 10m 잔 등고선과 100m 네온 격자 (땅이 밋밋해 보이지 않고 달리는 느낌이 나게)
+    float near = 1.0 - smoothstep(600.0, 2200.0, b);
+    float c10 = fract(h / 10.0);
+    float line10 = smoothstep(0.08, 0.0, min(c10, 1.0 - c10));
+    float2 g = fract(p.xy / 100.0);
+    float gridL = smoothstep(0.02, 0.0, min(min(g.x, 1.0 - g.x), min(g.y, 1.0 - g.y)));
+    col += float3(0.30, 0.78, 0.96) * near * (line10 * 0.16 + gridL * 0.12);
     // 거리 안개 (배경 남색으로)
     float fog = smoothstep(uFar * 0.35, uFar, b);
     col = mix(col, float3(0.035, 0.075, 0.145), fog);
-    return half4(half3(col), 1.0);
+    // 가장자리는 부드럽게 사라지게 (지형 상자의 끝이 보이지 않게)
+    float2 edge = min(p.xy - lo, hi - p.xy);
+    float alpha = smoothstep(0.0, uStep * 12.0, min(edge.x, edge.y)) * (1.0 - fog * 0.6);
+    return half4(half3(col) * half(alpha), half(alpha));
 }
 """
 }

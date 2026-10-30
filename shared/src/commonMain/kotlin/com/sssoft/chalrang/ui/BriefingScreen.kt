@@ -332,7 +332,10 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
         val cam = poseFor(plan, st, u, t).camera(path, size.width, size.height)
         // 위험 구간에 들어가 있으면 그 둘레의 자세한 지형, 아니면 전체 지형
         val close = st.seg >= 0 && (st.kind == BriefPlan.Kind.DIVE || st.kind == BriefPlan.Kind.DRIVE || st.kind == BriefPlan.Kind.RISE)
-        val tg = (if (close) details[st.seg] else null) ?: details[FINE] ?: path.grid
+        // 가장 자세한 것: 전체 30m(받았으면), 위험 구간에 들어가 있으면 그 둘레 것과 견줘 더 촘촘한 쪽
+        val fineG = details[FINE]
+        val segG = if (close) details[st.seg] else null
+        val tg = listOfNotNull(fineG, segG).minByOrNull { it.step } ?: path.grid
         if (tg != null && gpu.supported) {
             if (loaded !== tg) {
                 val e = EncodedGrid.of(tg)
