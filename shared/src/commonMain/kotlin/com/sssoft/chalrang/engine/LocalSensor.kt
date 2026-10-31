@@ -30,12 +30,22 @@ class LocalSensor {
 
     /** 놓인 자세 이름 (화면에 보여 줄 때): 아직 모르면 null */
     var mount: String? = null; private set
+    /** 최근 1초에 받은 값 수 (넘겨주는 쪽이 채움, 화면에 보여 줄 때) */
+    var rateHz = 0
+    /** 기기가 순수 가속을 주는지 (아니면 느린 평균으로 중력을 뺀 값) */
+    var linear = true
+
+    /** 화면 한 줄: "세워서 · 60Hz" */
+    val status: String get() = listOfNotNull(mount, if (rateHz > 0) "${rateHz}Hz" else null, if (!linear) "자이로 없음" else null).joinToString(" · ")
 
     /** 엔진 시계로 마지막에 값을 받은 때 ([received]) */
-    private var receivedAt = Double.NaN
+    var receivedAt = Double.NaN; private set
 
     /** 최근 [IDLE_SEC] 안에 값이 왔는지 ([now] = 엔진 시계) */
     fun active(now: Double): Boolean = !receivedAt.isNaN() && now - receivedAt < IDLE_SEC
+
+    /** 값이 왔었고 [GRACE_SEC] 안에 끊긴 것 (그동안은 같은 기록을 이어 간다) */
+    fun recent(now: Double): Boolean = !receivedAt.isNaN() && now - receivedAt < GRACE_SEC
 
     /** 값을 넘겨준 쪽이 엔진 시계([now])로 받은 때를 알린다 (기기 값의 [onMotion] 시각은 기기 시계) */
     fun received(now: Double) { receivedAt = now }
@@ -112,6 +122,8 @@ class LocalSensor {
         const val DT = 0.05
         const val UP_TAU = 0.5
         const val IDLE_SEC = 2.0
+        /** 이만큼 끊겨도 기록을 끝내지 않는다 (초): 탭을 잠깐 바꾸거나 손을 뗐을 때 */
+        const val GRACE_SEC = 30.0
         const val MAX_QUEUE = 100
         /** 한 번에 채우는 시료 한도 (0.5초): 그보다 오래 끊기면 채우지 않고 이어 간다 */
         const val MAX_FILL = 10

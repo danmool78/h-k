@@ -80,7 +80,7 @@ data class UiState(
     val askWindows: List<Window>? = null,
     /** 휴대폰 시연 중 */
     val remote: Boolean = false,
-    /** 그중 이 화면 기기 센서로 (놓인 자세: "세워서"·"눕혀서") */
+    /** 그중 이 화면 기기 센서로 (상태: "세워서 · 60Hz") */
     val localMount: String? = null,
     /** 방금 끝난 주행의 평가 (닫으면 null) */
     val report: TripReport? = null,
@@ -317,7 +317,9 @@ class ChalrangEngine(
                 stopDemo()
                 return
             }
-        } else if ((remote != null && remote.active && settings.phoneDemo) || local?.active(now) == true) {
+        } else if ((remote != null && remote.active && settings.phoneDemo) || local?.active(now) == true ||
+            (remoteSession == LOCAL_SESSION && local?.recent(now) == true)
+        ) {
             // 휴대폰 시연(다른 휴대폰에서 받은 가속도) 또는 이 기기 센서: 차 흔들림 대신
             val fromPhone = remote != null && remote.active && settings.phoneDemo
             val source = if (fromPhone) remote!!.session else LOCAL_SESSION
@@ -332,7 +334,7 @@ class ChalrangEngine(
             }
             val step = if (fromPhone) remote!!.sampleDt else LocalSensor.DT
             var spillStarted = false
-            for (r in if (fromPhone) remote!!.take(dt) else local!!.take()) {
+            for (r in if (fromPhone) remote!!.take(dt) else localSamples(now, dt)) {
                 remoteT += step
                 val before = cup.spillCount
                 cup.gradeX = r.gradeX; cup.gradeY = r.gradeY
@@ -398,7 +400,7 @@ class ChalrangEngine(
                 tiltX = cup.tiltX, tiltY = cup.tiltY, tiltZ = cup.tiltZ, gradeX = cup.gradeX, gradeY = cup.gradeY, level = water, freeboard = WaterCup.freeboardOf(water), canAdjust = canAdjustWater(),
                 dose = cup.dose, spilling = waterSpilling, setup = input.setup, car = car.status.value,
                 demoProgress = demo?.let { dm -> ((dm.frame?.t ?: 0.0) / dm.scenario.durationSec).toFloat() } ?: 0f,
-                assumedSeat = assumed, raining = input.raining, remote = remoteWas, localMount = if (remoteWas && remoteSession == LOCAL_SESSION) local?.mount ?: "" else null,
+                assumedSeat = assumed, raining = input.raining, remote = remoteWas, localMount = if (remoteWas && remoteSession == LOCAL_SESSION) local?.status ?: "" else null,
             )
         }
     }
@@ -746,6 +748,19 @@ class ChalrangEngine(
     fun dismissReport() = _ui.update { it.copy(report = null) }
 
     /** 새 주행: 하던 차량 조치를 되돌리고 물컵·기록을 비운다 */
+    private var localGap = 0.0
+
+    /** 이 기기 센서 시료. 잠깐 끊긴 동안은 흔들림 0 으로 시간을 채워 기록이 실제 시간대로 이어지게 */
+    private fun localSamples(now: Double, dt: Double): List<RemoteSample> {
+        val l = local ?: return emptyList()
+        val got = l.take()
+        if (got.isNotEmpty() || now - l.receivedAt < 0.3) { localGap = 0.0; return got }
+        localGap += dt
+        val n = (localGap / LocalSensor.DT).toInt()
+        localGap -= n * LocalSensor.DT
+        return List(n) { STILL }
+    }
+
     private fun resetTrip() {
         sickThisTrip = false
         rodeThisTrip.clear()
@@ -789,6 +804,7 @@ class ChalrangEngine(
         /** 휴대폰 시연에서 쓰는 속도 (창문 판단용) */
         const val REMOTE_KMH = 40.0
         private const val LOCAL_SESSION = "이 기기"
+        private val STILL = RemoteSample(0.0, 0.0)
         /** 혼자 주행일 때 그리는 물 높이 */
         const val ALONE_LEVEL = 0.3
         /** 실제 주행 평가: 이만큼 달린 뒤 (초) */
