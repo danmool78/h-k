@@ -27,8 +27,10 @@ expect suspend fun httpRequest(url: String, method: String = "GET", body: String
  *
  * - 2초마다 `demo/live` 를 보고 시연 중인지 안다
  * - 시연 중이면 0.4초마다 새 묶음을 받는다 (Firestore REST, 라이브러리 없이)
- * - 10초 동안 새 묶음이 없거나 휴대폰에서 끝내면 끝난 것으로 본다.
+ * - 10초 동안 새 묶음이 없으면 멈춘 것으로, 휴대폰에서 끝내면 끝난 것으로 본다.
  *   요청 한 번 실패(망 지연)로는 끊지 않는다 — 끊으면 엔진이 주행을 새로 시작해 물컵·그래프가 처음부터 다시 그려진다
+ * - 휴대폰 페이지를 그냥 닫으면 서버에 "시연 중" 이 남는다. 그래서 새 세션은 가장 최근 묶음부터 받고,
+ *   만들어진 지 [FRESH_SEC] 초 넘은 묶음은 버린다 (지난 시연을 다시 재생하지 않게). 시연 중 여부는 새 묶음이 오는지로.
  */
 class RemoteFeed {
 
@@ -70,7 +72,7 @@ class RemoteFeed {
             delay(BATCH_MS)
             sinceState += BATCH_MS
             clockMs += BATCH_MS
-            if (active && clockMs - lastBatchAt > STALE_MS) stop()
+            if (active && clockMs - lastBatchAt > STALE_MS) pause()
         }
     }
 
@@ -93,6 +95,13 @@ class RemoteFeed {
     }
     private var acc = 0.0
 
+    /** 새 묶음이 끊김: 세션과 받은 순번은 두고 재생만 멈춘다 (다시 오면 이어 받는다) */
+    private fun pause() {
+        active = false
+        queue.clear()
+        playing = false
+    }
+
     private fun stop() {
         active = false
         session = null
@@ -114,9 +123,19 @@ class RemoteFeed {
         if (s != session) {
             stop()
             session = s
-            active = true
-            lastBatchAt = clockMs
+            // 가장 최근 묶음 바로 앞부터 (지난 묶음을 처음부터 받지 않게). active 는 새 묶음이 와야 켠다
+            lastSeq = latestSeq(s)?.let { it - 1 } ?: -1
         }
+    }
+
+    private suspend fun latestSeq(s: String): Long? {
+        val body = """{"structuredQuery":{"from":[{"collectionId":"$s"}],"orderBy":[{"field":{"fieldPath":"seq"},"direction":"DESCENDING"}],"limit":1}}"""
+        val text = httpRequest("${FirebaseWeb.DOCS}/demo/live:runQuery?key=${FirebaseWeb.API_KEY}", "POST", body) ?: return null
+        return runCatching {
+            Json.parseToJsonElement(text).jsonArray.firstNotNullOfOrNull { r ->
+                r.jsonObject["document"]?.jsonObject?.get("fields")?.jsonObject?.get("seq")?.let { num(it) }?.toLong()
+            }
+        }.getOrNull()
     }
 
     private suspend fun pollBatches() {
@@ -132,10 +151,15 @@ class RemoteFeed {
     internal fun accept(text: String) {
         val rows = runCatching { Json.parseToJsonElement(text).jsonArray }.getOrNull() ?: return
         for (row in rows) {
-            val f = row.jsonObject["document"]?.jsonObject?.get("fields")?.jsonObject ?: continue
+            val docu = row.jsonObject["document"]?.jsonObject ?: continue
+            val f = docu["fields"]?.jsonObject ?: continue
             val seq = f["seq"]?.let { num(it) }?.toLong() ?: continue
             if (seq <= lastSeq) continue
             lastSeq = seq
+            // 지난 시연의 묶음 (서버 시각으로 만들어진 지 오래됨) 은 건너뛴다
+            val made = docu["createTime"]?.jsonPrimitive?.content?.let { isoSec(it) }
+            val read = row.jsonObject["readTime"]?.jsonPrimitive?.content?.let { isoSec(it) }
+            if (made != null && read != null && read - made > FRESH_SEC) continue
             f["dt"]?.let { num(it) }?.let { if (it in 0.01..0.5) sampleDt = it }
             val ax = f["ax"]?.let { arr(it) } ?: continue
             val ay = f["ay"]?.let { arr(it) } ?: continue
@@ -163,8 +187,29 @@ class RemoteFeed {
         /** 받는 기울기 한도 (rad, 약 17도: 아주 가파른 길) */
         const val MAX_GRADE = 0.3
         const val STALE_MS = 10_000L
+        /** 이보다 오래된 묶음은 지난 시연으로 보고 버린다 (초) */
+        const val FRESH_SEC = 20.0
         const val START_BUFFER = 20
         const val MAX_BUFFER = 120
+
+        /** "2026-10-30T09:51:10.123456Z" → 초 (UTC). 모르는 모양이면 null */
+        fun isoSec(s: String): Double? {
+            if (s.length < 20 || s[4] != '-' || s[10] != 'T') return null
+            val y = s.substring(0, 4).toIntOrNull() ?: return null
+            val mo = s.substring(5, 7).toIntOrNull() ?: return null
+            val d = s.substring(8, 10).toIntOrNull() ?: return null
+            val h = s.substring(11, 13).toIntOrNull() ?: return null
+            val mi = s.substring(14, 16).toIntOrNull() ?: return null
+            val sec = s.substring(17).trimEnd('Z').toDoubleOrNull() ?: return null
+            // 그레고리력 날짜 → 1970-01-01 부터 날 수
+            val yy = if (mo <= 2) y - 1 else y
+            val era = yy / 400
+            val yoe = yy - era * 400
+            val doy = (153 * (mo + (if (mo > 2) -3 else 9)) + 2) / 5 + d - 1
+            val doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+            val days = era * 146097L + doe - 719468
+            return days * 86400.0 + h * 3600 + mi * 60 + sec
+        }
 
         // Firestore REST 값 꺼내기
         private fun value(e: JsonElement): JsonObject = e.jsonObject

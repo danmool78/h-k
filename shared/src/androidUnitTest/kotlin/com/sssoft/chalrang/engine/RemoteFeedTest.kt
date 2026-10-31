@@ -7,11 +7,12 @@ import org.junit.Test
 class RemoteFeedTest {
 
     /** Firestore REST runQuery 응답 모양 (휴대폰 페이지가 쓴 묶음 두 개 + 빈 줄) */
-    private fun batch(seq: Int, ax: List<Double>, ay: List<Double>, az: List<Double>? = null, px: Double? = null): String {
+    private fun batch(seq: Int, ax: List<Double>, ay: List<Double>, az: List<Double>? = null, px: Double? = null, made: String? = null, read: String = "t"): String {
         fun arr(v: List<Double>) = v.joinToString(",") { if (it % 1.0 == 0.0) """{"integerValue":"${it.toLong()}"}""" else """{"doubleValue":$it}""" }
         val extra = (az?.let { ""","az":{"arrayValue":{"values":[${arr(it)}]}}""" } ?: "") + (px?.let { ""","px":{"doubleValue":$it}""" } ?: "")
-        return """{"document":{"name":"x","fields":{"seq":{"integerValue":"$seq"},"dt":{"doubleValue":0.05},""" +
-            """"ax":{"arrayValue":{"values":[${arr(ax)}]}},"ay":{"arrayValue":{"values":[${arr(ay)}]}}$extra}},"readTime":"t"}"""
+        val ct = made?.let { ""","createTime":"$it"""" } ?: ""
+        return """{"document":{"name":"x"$ct,"fields":{"seq":{"integerValue":"$seq"},"dt":{"doubleValue":0.05},""" +
+            """"ax":{"arrayValue":{"values":[${arr(ax)}]}},"ay":{"arrayValue":{"values":[${arr(ay)}]}}$extra}},"readTime":"$read"}"""
     }
 
     @Test
@@ -52,5 +53,25 @@ class RemoteFeedTest {
         feed.accept("{oops")
         feed.accept("""[{"readTime":"t"}]""")
         assertTrue(feed.take(0.5).isEmpty())
+    }
+
+    @Test
+    fun `지난 시연의 오래된 묶음은 재생하지 않는다`() {
+        val feed = RemoteFeed()
+        val ten = List(10) { 1.0 }
+        val now = "2026-10-31T01:00:00.000Z"
+        feed.accept("[" + (1..3).joinToString(",") { batch(it, ten, ten, made = "2026-10-30T09:51:1$it.5Z", read = now) } + "]")
+        assertTrue("어제 묶음은 버림", !feed.active)
+        assertTrue(feed.take(1.0).isEmpty())
+        feed.accept("[" + (4..5).joinToString(",") { batch(it, ten, ten, made = "2026-10-31T00:59:59.123456Z", read = now) } + "]")
+        assertTrue("방금 묶음은 받음", feed.active)
+        assertEquals(20, feed.take(2.0).size)
+    }
+
+    @Test
+    fun `시각 읽기`() {
+        assertEquals(0.0, RemoteFeed.isoSec("1970-01-01T00:00:00Z")!!, 1e-9)
+        assertEquals(1_793_352_000.5, RemoteFeed.isoSec("2026-10-30T09:20:00.5Z")!!, 1e-6)
+        assertEquals(null, RemoteFeed.isoSec("t"))
     }
 }
