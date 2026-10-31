@@ -150,7 +150,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
 
         val (t0, t1) = remember(version, windowSec, frozenEnd) { range() }
         val lag = remember(trace.size / 10, trace.startTime, windowSec, frozenEnd) { trace.lag(t0, t1) }
-        val shake = remember(trace.size / 20, trace.startTime, windowSec, frozenEnd) { ShakeAnalysis.analyze(trace, t0, t1) }
+        val shake = remember(trace.size / 20, trace.startTime, windowSec, frozenEnd) { ShakeAnalysis.analyze(trace, t0, t1, ShakeAnalysis.SHOW_MIN_SEC) }
         val events = remember(trace.events.size, trace.startTime, t0.toLong(), t1.toLong()) { trace.events.filter { it.t in t0..t1 } }
         val stats = remember(version, windowSec, frozenEnd) { windowStats(trace, t0, t1, events) }
         val at = cursor?.coerceIn(t0, t1) ?: t1
@@ -539,12 +539,17 @@ private fun Charts(
             listOf("앞뒤" to Neon.Amber, "좌우" to Neon.Cyan, "위아래" to Neon.Green, "Wf 가중" to Neon.Dim) +
                 (child?.sensitivity?.takeIf { it.active }?.let { listOf("${child.name} 가중" to Neon.Red) } ?: emptyList()),
             if (shake == null || shake.quiet) {
-                buildAnnotatedString { withStyle(SpanStyle(color = Neon.Dim)) { append(if (shake == null) "30초 넘게 기록되면 분석해요" else "이 구간은 흔들림이 거의 없어요") } }
+                buildAnnotatedString { withStyle(SpanStyle(color = Neon.Dim)) { append(if (shake == null) "10초 넘게 기록되면 분석해요" else "이 구간은 흔들림이 거의 없어요") } }
             } else {
-                stat(
+                val st = stat(
                     "가장 센 주기" to "${fmt(shake.peakPeriod, 1)}초", "멀미 주기" to "${fmt(shake.sicknessPeriod, 1)}초",
                     "2~10초" to "${(shake.bandShare * 100).roundToInt()}%",
                 )
+                // 30초 전에는 몇 초째인지 보인다 (짧을수록 긴 주기가 덜 정확)
+                if (shake.durationSec >= ShakeAnalysis.MIN_SEC) st else buildAnnotatedString {
+                    withStyle(SpanStyle(color = Neon.Faint)) { append("${shake.durationSec.roundToInt()}초째 · ") }
+                    append(st)
+                }
             },
             slot(0.95f),
         ) {

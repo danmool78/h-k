@@ -82,6 +82,8 @@ data class UiState(
     val remote: Boolean = false,
     /** 그중 이 화면 기기 센서로 (상태: "세워서 · 60Hz") */
     val localMount: String? = null,
+    /** 이 기기에 센서가 있을 텐데 아직 값이 안 옴 (화면을 한 번 눌러야 함) */
+    val sensorTap: Boolean = false,
     /** 방금 끝난 주행의 평가 (닫으면 null) */
     val report: TripReport? = null,
     /** 그 전 주행 점수 (비교용) */
@@ -400,7 +402,7 @@ class ChalrangEngine(
                 tiltX = cup.tiltX, tiltY = cup.tiltY, tiltZ = cup.tiltZ, gradeX = cup.gradeX, gradeY = cup.gradeY, level = water, freeboard = WaterCup.freeboardOf(water), canAdjust = canAdjustWater(),
                 dose = cup.dose, spilling = waterSpilling, setup = input.setup, car = car.status.value,
                 demoProgress = demo?.let { dm -> ((dm.frame?.t ?: 0.0) / dm.scenario.durationSec).toFloat() } ?: 0f,
-                assumedSeat = assumed, raining = input.raining, remote = remoteWas, localMount = if (remoteWas && remoteSession == LOCAL_SESSION) local?.status ?: "" else null,
+                assumedSeat = assumed, raining = input.raining, remote = remoteWas, sensorTap = local?.needsTap == true && demo == null, localMount = if (remoteWas && remoteSession == LOCAL_SESSION) local?.status ?: "" else null,
             )
         }
     }

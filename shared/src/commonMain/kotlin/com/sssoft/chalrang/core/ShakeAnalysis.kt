@@ -45,14 +45,15 @@ object ShakeAnalysis {
     const val BAND_HI = 0.5
 
     /**
-     * [trace] 의 [from]~[to] 구간을 분석한다. 30초보다 짧으면 null.
+     * [trace] 의 [from]~[to] 구간을 분석한다. [minSec] (기본 30초) 보다 짧으면 null.
+     * 화면은 [SHOW_MIN_SEC] 부터 먼저 그린다 (짧으면 긴 주기는 덜 정확). 학습·주행 평가는 30초 넘게.
      * 해닝 창을 씌운 이산 푸리에 변환을 로그 간격 주파수에서 직접 계산한다 (기록은 0.1초 간격).
      */
-    fun analyze(trace: DriveTrace, from: Double, to: Double): ShakeReport? {
+    fun analyze(trace: DriveTrace, from: Double, to: Double, minSec: Double = MIN_SEC): ShakeReport? {
         val i0 = trace.indexAt(from).coerceAtLeast(0)
         val i1 = trace.indexAt(to)
         val n = i1 - i0 + 1
-        if (n < 2 || trace.timeAt(i1) - trace.timeAt(i0) < MIN_SEC) return null
+        if (n < 2 || trace.timeAt(i1) - trace.timeAt(i0) < minSec) return null
         val dt = trace.interval
         val ax = DoubleArray(n)
         val ay = DoubleArray(n)
@@ -115,6 +116,8 @@ object ShakeAnalysis {
     }
 
     const val MIN_SEC = 30.0
+    /** 화면에 먼저 그리는 길이 (초): 10초면 5초 주기까지 두 번 넘게 본다 */
+    const val SHOW_MIN_SEC = 10.0
     /** 이보다 약하면 (m/s², 사인 진폭) 흔들림 없음으로 본다 */
     const val QUIET_AMP = 0.02
 }

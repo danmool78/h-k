@@ -35,21 +35,27 @@ private fun startMotion(): Unit = js(
         };
         // 바로 듣는다 (안드로이드·최신 크롬은 권한이 필요 없다). 아이폰은 권한을 받아야 값이 오므로 첫 터치 때 묻는다
         window.addEventListener('devicemotion', on);
+        // 권한을 묻는 기기: 먼저 바로 물어 보고(크롬은 바로 허락), 안 되면(아이폰) 첫 터치 때 — 앱 화면보다 먼저 잡는다(capture)
         if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
             const ask = () => { DeviceMotionEvent.requestPermission().catch(() => {}); };
-            window.addEventListener('touchend', ask, { once: true });
-            window.addEventListener('click', ask, { once: true });
+            ask();
+            for (const k of ['pointerdown', 'touchend', 'click']) window.addEventListener(k, ask, { once: true, capture: true });
         }
+        window.__chalrangTouch = (navigator.maxTouchPoints || 0) > 0;
     }""",
 )
 
 private fun takeMotion(): String = js("{ const s = window.__chalrangMotion || ''; window.__chalrangMotion = ''; return s; }")
+
+private fun touchDevice(): Boolean = js("window.__chalrangTouch === true")
 
 /** 화면이 떠 있는 동안 [DT] 마다 쌓인 센서 값을 [sensor] 로 넘긴다. [now] = 엔진 시계 */
 suspend fun pumpMotion(sensor: LocalSensor, now: () -> Double) {
     startMotion()
     var count = 0
     var since = now()
+    val started = since
+    var ever = false
     while (currentCoroutineContext().isActive) {
         delay((LocalSensor.DT * 1000).toLong())
         // 한 번 잘못돼도 멈추지 않게
@@ -67,10 +73,12 @@ suspend fun pumpMotion(sensor: LocalSensor, now: () -> Double) {
                     linear = v[7] == "1"
                     got++
                 }
-                if (got > 0) { sensor.received(now()); sensor.linear = linear }
+                if (got > 0) { sensor.received(now()); sensor.linear = linear; ever = true }
                 count += got
             }
             val t = now()
+            // 터치 기기인데 값이 안 오면: 권한(아이폰)을 받으려면 화면을 한 번 눌러야 한다
+            sensor.needsTap = !ever && touchDevice() && t - started > 1.5
             if (t - since >= 1.0) { sensor.rateHz = (count / (t - since)).toInt(); count = 0; since = t }
         }
     }

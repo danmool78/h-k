@@ -34,6 +34,8 @@ class LocalSensor {
     var rateHz = 0
     /** 기기가 순수 가속을 주는지 (아니면 느린 평균으로 중력을 뺀 값) */
     var linear = true
+    /** 터치 기기인데 아직 값이 안 옴: 화면을 한 번 눌러야 센서 권한을 받는다 (아이폰) */
+    var needsTap = false
 
     /** 화면 한 줄: "세워서 · 60Hz" */
     val status: String get() = listOfNotNull(mount, if (rateHz > 0) "${rateHz}Hz" else null, if (!linear) "자이로 없음" else null).joinToString(" · ")

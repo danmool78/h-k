@@ -551,6 +551,13 @@ private fun BigChoice(label: String, primary: Boolean, modifier: Modifier, onCli
 
 @Composable
 private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
+    if (s.sensorTap && !s.remote) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.PhoneAndroid, null, tint = Neon.Amber, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("화면을 한 번 누르면 이 기기 센서로 물컵이 흔들려요", color = Neon.Amber, fontSize = 14.sp, lineHeight = 19.sp)
+        }
+    }
     if (s.remote) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.PhoneAndroid, null, tint = Neon.Cyan, modifier = Modifier.size(20.dp))
