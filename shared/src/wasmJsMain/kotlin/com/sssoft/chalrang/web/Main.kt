@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.ComposeViewport
 import com.sssoft.chalrang.core.Seat
 import com.sssoft.chalrang.engine.ChalrangEngine
+import com.sssoft.chalrang.engine.LocalSensor
 import com.sssoft.chalrang.ui.ChalrangTheme
 import com.sssoft.chalrang.ui.MainScreen
 import kotlin.math.min
@@ -82,11 +83,13 @@ private fun BarDivider() {
 fun main() {
     val car = SimCar()
     val voice = BrowserVoice()
-    val engine = ChalrangEngine(car, SimNavi(), voice, BrowserChildRepo())
+    // 휴대폰·태블릿으로 열면 그 기기 센서로 바로 물컵이 흔들린다
+    val engine = ChalrangEngine(car, SimNavi(), voice, BrowserChildRepo(), local = LocalSensor())
     ComposeViewport("chalrang") {
         ChalrangTheme {
             // 화면이 떠 있는 동안만 돈다
             LaunchedEffect(Unit) { engine.run() }
+            LaunchedEffect(Unit) { engine.local?.let { pumpMotion(it, engine::now) } }
             WebApp(engine, car, voice)
         }
     }

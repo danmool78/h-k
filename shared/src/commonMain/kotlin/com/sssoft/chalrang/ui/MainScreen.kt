@@ -555,7 +555,9 @@ private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.PhoneAndroid, null, tint = Neon.Cyan, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("휴대폰 시연 중 · 휴대폰을 2~10초에 한 번씩 앞뒤·좌우로 움직여 보세요", color = Neon.Cyan, fontSize = 14.sp, lineHeight = 19.sp)
+            val text = s.localMount?.let { m -> "이 기기 센서로 흔들림 받는 중" + (if (m.isNotEmpty()) " ($m)" else "") + " · 2~10초에 한 번씩 앞뒤·좌우로 움직여 보세요" }
+                ?: "휴대폰 시연 중 · 휴대폰을 2~10초에 한 번씩 앞뒤·좌우로 움직여 보세요"
+            Text(text, color = Neon.Cyan, fontSize = 14.sp, lineHeight = 19.sp)
         }
     }
     if (s.demo != null) {
