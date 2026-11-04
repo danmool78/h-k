@@ -2,6 +2,11 @@ package com.sssoft.chalrang.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +31,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
@@ -52,49 +58,285 @@ import androidx.compose.ui.unit.sp
 import com.sssoft.chalrang.core.ManeuverKind
 import com.sssoft.chalrang.core.RiskSegment
 import com.sssoft.chalrang.core.RoutePath
+import com.sssoft.chalrang.core.RoutePlanner
+import com.sssoft.chalrang.core.RoutePoint
 import com.sssoft.chalrang.core.RoutePreview
 import com.sssoft.chalrang.core.TerrainGrid
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * 경로 브리핑: 가는 길을 파란 3D 선으로 그리고 멀미 위험 구간은 빨갛게(조심 구간은 주황).
- * 1) 전체 길을 한 바퀴 돌며 보여 주고 요약,
- * 2) 위험 구간마다 차례로 "여기서 여기까지" 짚고 → 그 구간으로 쏙 빨려 들어가 그 구간만 달려 보고 → 다시 위로,
- * 3) 마무리. 안전한 길을 따라 계속 달리지 않아 덜 어지럽다.
+ * 경로 브리핑 (출발 전). 길 전체를 3D 로 보여 주지 않는다 — 수백 km 길은 높이서 내려다보면 선 하나뿐이고 지형도 무겁다.
+ * 1) 분석이 끝나면 멀미 위험 구간만 카드로 (어디서·얼마나·왜·언제 닿는지, 그 구간 길 모양),
+ * 2) 카드를 누르면 그 구간만 3D 로: 구간 둘레를 돌며 짚고 → 쏙 들어가 달려 보고 → 올라와 → 카드로 돌아온다.
+ * 지형은 그 구간 둘레만 받는다 (엔진이 길을 평가하자마자 미리 받아 둔다).
  */
 @Composable
 fun BriefingScreen(
     path: RoutePath,
     speak: (String) -> Unit,
     onClose: () -> Unit,
-    /** 위험 구간 둘레의 자세한 지형 (가까이 들어갈 때 쓴다, 없으면 전체 지형) */
+    /** 위험 구간 둘레의 자세한 지형 (3D 로 볼 때) */
     detail: (suspend (RiskSegment) -> TerrainGrid?)? = null,
-    /** 전체 지형을 자세히 (GPU 로 그릴 때) */
-    fine: (suspend () -> TerrainGrid?)? = null,
+    /** 즐겨찾기인지 (null 이면 저장할 수 없는 길: 시연 등 → 별 버튼 없음) */
+    favorite: Boolean? = null,
+    /** 저장해 둔 길을 불러왔는지 */
+    fromSaved: Boolean = false,
+    onFavorite: () -> Unit = {},
 ) {
-    var t by remember { mutableDoubleStateOf(0.0) }
-    var caption by remember { mutableStateOf("") }
-    val speakNow by rememberUpdatedState(speak)
-    val close by rememberUpdatedState(onClose)
     val plan = remember(path) { BriefPlan(path) }
     val details = remember(path) { mutableStateMapOf<Int, TerrainGrid>() }
-    // 한 바퀴 도는 동안 위험 구간의 자세한 지형을 미리 받아 둔다 (동시에)
+    /** 구간마다 지형을 받는 중인지 (카드에 "준비 중" 표시, 3D 를 열 때 기다림) */
+    val loading = remember(path) { mutableStateMapOf<Int, Boolean>() }
+    var selected by remember(plan) { mutableStateOf<Int?>(null) }
+    // 위험 구간 지형은 바로(엔진이 미리 받아 둔 것), 조심 구간은 카드를 눌렀을 때
     LaunchedEffect(plan) {
         val load = detail ?: return@LaunchedEffect
-        plan.segs.forEachIndexed { i, seg -> launch { load(seg)?.let { details[i] = it } } }
+        plan.segs.forEachIndexed { i, seg ->
+            if (!plan.eager(i)) return@forEachIndexed
+            loading[i] = true
+            launch { load(seg)?.let { details[i] = it }; loading[i] = false }
+        }
     }
-    LaunchedEffect(plan) {
-        val load = fine ?: return@LaunchedEffect
-        load()?.let { details[FINE] = it }
+    LaunchedEffect(plan, selected) {
+        val i = selected ?: return@LaunchedEffect
+        val load = detail ?: return@LaunchedEffect
+        if (details[i] != null || loading[i] == true) return@LaunchedEffect
+        loading[i] = true
+        // 다 받기 전에 목록으로 돌아가면 취소된다: 다음에 다시 받게 표시를 지운다
+        try { load(plan.segs[i])?.let { details[i] = it } } finally { loading[i] = false }
     }
+    val viewed = remember(plan) { mutableStateMapOf<Int, Boolean>() }
+    val speakNow by rememberUpdatedState(speak)
+    LaunchedEffect(plan) { speakNow(plan.intro()) }
 
-    LaunchedEffect(plan) {
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF050B18), Color(0xFF0A1A33), Color(0xFF040A16))))) {
+        val sel = selected
+        if (sel == null) {
+            SegmentCards(plan, loading, viewed, favorite, fromSaved, onFavorite, onPick = { selected = it }, onClose = onClose)
+        } else {
+            SegmentBriefing(
+                plan, sel, details[sel], loading[sel] == true, speak,
+                onBack = { viewed[sel] = true; selected = null },
+            )
+        }
+    }
+}
+
+/** 카드 목록: 위쪽 요약, 가운데 구간 카드(가로로 넘김), 아래 전체 길 띠 */
+@Composable
+private fun SegmentCards(
+    plan: BriefPlan,
+    loading: Map<Int, Boolean>,
+    viewed: Map<Int, Boolean>,
+    favorite: Boolean?,
+    fromSaved: Boolean,
+    onFavorite: () -> Unit,
+    onPick: (Int) -> Unit,
+    onClose: () -> Unit,
+) {
+    val path = plan.path
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Route, null, tint = Neon.Cyan, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text("경로 브리핑", color = Neon.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (fromSaved) "저장해 둔 길 · 인터넷 없이 바로 불러왔어요" else sourceLabel(path),
+                        color = if (fromSaved) Neon.Green else Neon.Dim, fontSize = 13.sp,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (favorite != null) {
+                    // 즐겨찾기: 분석한 길과 지형을 계속 저장해 둔다 (아니면 최근 길 몇 곳만)
+                    NeonChip(if (favorite) "즐겨찾기 ★" else "즐겨찾기 ☆", favorite, onClick = onFavorite)
+                    Spacer(Modifier.width(10.dp))
+                }
+                NeonChip("출발하기", true, onClick = onClose, icon = Icons.Filled.Close)
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(plan.headline(), color = Neon.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            path.preview.restAdvice?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, color = Neon.Green, fontSize = 15.sp)
+            }
+            Spacer(Modifier.height(18.dp))
+            if (plan.segs.isEmpty()) {
+                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    Text("멀미 걱정 구간이 없는 편한 길이에요", color = Neon.Text, fontSize = 20.sp)
+                }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().weight(1f).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    plan.segs.indices.forEach { i ->
+                        SegmentCard(plan, i, loading[i] == true, viewed[i] == true, onClick = { onPick(i) })
+                    }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            RouteStrip(plan)
+        }
+    }
+}
+
+/** 구간 카드: 번호·등급, 그 구간 길 모양(위에서 본), 위치·길이·닿는 시간, 이유, 흔들림 세기 */
+@Composable
+private fun SegmentCard(plan: BriefPlan, i: Int, loading: Boolean, viewed: Boolean, onClick: () -> Unit) {
+    val s = plan.segs[i]
+    val c = riskColor(s.level)
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        Modifier.width(270.dp).fillMaxHeight().clip(shape)
+            .background(Brush.verticalGradient(listOf(Neon.CardTop, Neon.CardBottom)))
+            .border(1.5.dp, c.copy(alpha = if (viewed) 0.3f else 0.7f), shape)
+            .clickable(onClick = onClick).padding(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(30.dp).clip(RoundedCornerShape(15.dp)).background(c.copy(alpha = 0.22f)), contentAlignment = Alignment.Center) {
+                Text("${i + 1}", color = c, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(if (s.level >= 2) "멀미 위험" else "조심", color = c, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            if (viewed) Text("봤어요", color = Neon.Dim, fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        SegmentShape(plan, i, Modifier.fillMaxWidth().weight(1f))
+        Spacer(Modifier.height(10.dp))
+        Text(plan.placeOf(s), color = Neon.White, fontSize = if (plan.hasName(s)) 18.sp else 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+        Text(
+            listOfNotNull(if (plan.hasName(s)) RoutePreview.place(s) else km(s.lengthM), plan.arriveText(s.startM)).joinToString(" · "),
+            color = Neon.Dim, fontSize = 14.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(s.reasons.take(3).joinToString(" · ").ifEmpty { "흔들림" }, color = Neon.Text, fontSize = 15.sp, maxLines = 2)
+        Spacer(Modifier.height(10.dp))
+        ShakeMeter(plan.peak[i], c)
+        Spacer(Modifier.height(12.dp))
+        Text(if (loading) "3D 지형 준비 중…" else "▶ 3D 로 미리 보기", color = if (loading) Neon.Dim else c, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** 그 구간 길 모양 (위에서, 앞뒤 조금 포함): 구간은 위험 색, 앞뒤는 옅게 */
+@Composable
+private fun SegmentShape(plan: BriefPlan, i: Int, modifier: Modifier) {
+    val path = plan.path
+    val s = plan.segs[i]
+    val c = riskColor(s.level)
+    val a = path.index(s.startM - SHAPE_LEAD)
+    val b = path.index(s.endM + SHAPE_LEAD)
+    val sa = path.index(s.startM)
+    val sb = path.index(s.endM)
+    val stride = max(1, (b - a) / 400)
+    Canvas(modifier.clip(RoundedCornerShape(12.dp)).background(Color(0x66040A16))) {
+        var minX = Double.MAX_VALUE; var maxX = -Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
+        for (k in a..b step stride) {
+            minX = min(minX, path.x[k]); maxX = max(maxX, path.x[k]); minY = min(minY, path.y[k]); maxY = max(maxY, path.y[k])
+        }
+        val pad = 14f
+        val sc = min((size.width - 2 * pad) / max(1.0, maxX - minX), (size.height - 2 * pad) / max(1.0, maxY - minY))
+        val ox = (size.width - (maxX - minX) * sc) / 2
+        val oy = (size.height - (maxY - minY) * sc) / 2
+        fun pt(k: Int) = Offset((ox + (path.x[k] - minX) * sc).toFloat(), (size.height - oy - (path.y[k] - minY) * sc).toFloat())
+        val lead = Path()
+        val seg = Path()
+        var k = a
+        var segStarted = false
+        while (k <= b) {
+            val p = pt(k)
+            if (k == a) lead.moveTo(p.x, p.y) else lead.lineTo(p.x, p.y)
+            if (k in sa..sb) { if (!segStarted) { seg.moveTo(p.x, p.y); segStarted = true } else seg.lineTo(p.x, p.y) }
+            k = if (k < b && k + stride > b) b else k + stride
+        }
+        drawPath(lead, Neon.Cyan.copy(alpha = 0.35f), style = Stroke(3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(seg, c.copy(alpha = 0.25f), style = Stroke(12f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(seg, c, style = Stroke(4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        // 가는 방향: 들어가는 곳에 흰 점
+        drawCircle(Neon.White, 5f, pt(sa))
+    }
+}
+
+/** 흔들림 세기 막대 (가장 센 1km 의 a_w, 위험 기준을 4/5 지점에) */
+@Composable
+private fun ShakeMeter(aw: Double, c: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("흔들림", color = Neon.Dim, fontSize = 13.sp)
+        Spacer(Modifier.width(8.dp))
+        Canvas(Modifier.weight(1f).height(8.dp)) {
+            val h = size.height
+            drawRoundRect(Neon.Grid, Offset.Zero, size, CornerRadius(h / 2))
+            val f = (aw / (RoutePlanner.DANGER_AW * 1.25)).coerceIn(0.05, 1.0).toFloat()
+            drawRoundRect(c, Offset.Zero, Size(size.width * f, h), CornerRadius(h / 2))
+            val danger = (1 / 1.25f) * size.width
+            drawLine(Neon.White.copy(alpha = 0.5f), Offset(danger, -2f), Offset(danger, h + 2f), 1.5f)
+        }
+    }
+}
+
+/** 전체 길 띠: 출발 → 도착, 카드 구간에 번호 */
+@Composable
+private fun RouteStrip(plan: BriefPlan) {
+    val path = plan.path
+    val measurer = rememberTextMeasurer()
+    Column {
+        Canvas(Modifier.fillMaxWidth().height(40.dp)) {
+            val y = size.height - 10.dp.toPx()
+            val h = 8.dp.toPx()
+            val total = path.lengthM.coerceAtLeast(1.0)
+            fun x(m: Double) = (m / total * size.width).toFloat().coerceIn(0f, size.width)
+            drawRoundRect(Neon.Grid, Offset(0f, y - h / 2), Size(size.width, h), CornerRadius(h / 2))
+            for (seg in path.preview.segments) {
+                drawRoundRect(riskColor(seg.level).copy(alpha = 0.5f), Offset(x(seg.startM), y - h / 2), Size((x(seg.endM) - x(seg.startM)).coerceAtLeast(3f), h), CornerRadius(h / 2))
+            }
+            plan.segs.forEachIndexed { k, seg ->
+                val c = riskColor(seg.level)
+                val cx = x((seg.startM + seg.endM) / 2)
+                drawRoundRect(c, Offset(x(seg.startM), y - h / 2), Size((x(seg.endM) - x(seg.startM)).coerceAtLeast(4f), h), CornerRadius(h / 2))
+                val l = measurer.measure("${k + 1}", androidx.compose.ui.text.TextStyle(color = c, fontSize = 13.sp, fontWeight = FontWeight.Bold))
+                drawText(l, topLeft = Offset(cx - l.size.width / 2f, y - h / 2 - l.size.height - 2))
+            }
+            drawCircle(Neon.White, 5.dp.toPx(), Offset(0f + 5.dp.toPx(), y))
+        }
+        Row(Modifier.fillMaxWidth()) {
+            Text("출발", color = Neon.Dim, fontSize = 12.sp)
+            Spacer(Modifier.weight(1f))
+            Text("도착 ${RoutePreview.fmtKm(path.lengthM)}", color = Neon.Dim, fontSize = 12.sp)
+        }
+    }
+}
+
+/** 한 구간 3D 브리핑: 끝나면(또는 "목록") 카드로 */
+@Composable
+private fun SegmentBriefing(
+    plan: BriefPlan,
+    seg: Int,
+    grid: TerrainGrid?,
+    loading: Boolean,
+    speak: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    val show = remember(plan, seg) { plan.show(seg) }
+    var t by remember(show) { mutableDoubleStateOf(0.0) }
+    var caption by remember(show) { mutableStateOf("") }
+    // 지형을 받는 중이면 조금 기다린다 (인터넷이 느려도 [BriefPlan.LOAD_MAX_MS] 뒤엔 시작)
+    var waited by remember(show) { mutableStateOf(false) }
+    LaunchedEffect(show) { delay(BriefPlan.LOAD_MAX_MS); waited = true }
+    val ready = !loading || waited
+    val speakNow by rememberUpdatedState(speak)
+    val back by rememberUpdatedState(onBack)
+    LaunchedEffect(show, ready) {
+        if (!ready) return@LaunchedEffect
         var last = 0L
         var told = -1
         while (true) {
@@ -102,191 +344,280 @@ fun BriefingScreen(
                 val dt = if (last == 0L) 0.0 else ((now - last) / 1e9).coerceAtMost(0.25)
                 last = now
                 t += dt
-                // 장면이 바뀔 때 한 줄씩 말한다
-                val i = plan.stepIndex(t)
+                val i = show.stepIndex(t)
                 if (i != told) {
                     told = i
-                    plan.line(i)?.let { caption = it; speakNow(it) }
+                    show.line(i)?.let { caption = it; speakNow(it) }
                 }
             }
-            if (t >= plan.total) { close(); break }
+            if (t >= show.total) { back(); break }
         }
     }
 
-    val step = plan.steps[plan.stepIndex(t)]
-    val at = plan.pointerAt(t)
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF050B18), Color(0xFF0A1A33), Color(0xFF040A16))))) {
-        RouteScene(plan, t, details, Modifier.fillMaxSize())
-        // 위: 제목·거리·닫기
+    val path = plan.path
+    val s = plan.segs[seg]
+    val step = show.steps[show.stepIndex(t)]
+    val at = show.pointerAt(t)
+    Box(Modifier.fillMaxSize()) {
+        RouteScene(show, t, grid, Modifier.fillMaxSize())
+        if (!ready) LoadingBar(Modifier.align(Alignment.Center))
         Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Route, null, tint = Neon.Cyan, modifier = Modifier.size(28.dp))
-            Spacer(Modifier.width(10.dp))
+            NeonChip("구간 목록", false, onClick = onBack, icon = Icons.Filled.Close)
+            Spacer(Modifier.width(14.dp))
             Column {
-                Text("경로 브리핑", color = Neon.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    path.region?.let { "실제 지역 · $it" }
-                        ?: if (path.synthetic) "내비 안내 지점과 지형으로 그린 길이에요" else if (path.grid != null) "실제 도로 · 지형" else "시연 경로",
-                    color = Neon.Dim, fontSize = 13.sp,
-                )
+                Text("${seg + 1}. ${if (s.level >= 2) "멀미 위험 구간" else "조심할 구간"} · ${plan.placeOf(s)}", color = riskColor(s.level), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(sourceLabel(path), color = Neon.Dim, fontSize = 13.sp)
             }
             Spacer(Modifier.weight(1f))
-            Text(
-                if (step.seg >= 0) "${step.seg + 1} / ${plan.segs.size} 구간" else "전체 ${km(path.lengthM)}",
-                color = Neon.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.width(16.dp))
-            NeonChip("건너뛰기", false, onClick = onClose, icon = Icons.Filled.Close)
+            Text("${seg + 1} / ${plan.segs.size}", color = Neon.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         }
-        MiniMap(path, at, Modifier.align(Alignment.TopEnd).padding(top = 84.dp, end = 20.dp).size(190.dp))
+        MiniMap(plan, at, Modifier.align(Alignment.TopEnd).padding(top = 84.dp, end = 20.dp).size(190.dp))
         if (step.kind == BriefPlan.Kind.DRIVE) SloshGauge(path, at, Modifier.align(Alignment.CenterStart).padding(start = 20.dp))
-        // 아래: 지금 장면 + 말 + 전체 띠
         Column(
             Modifier.align(Alignment.BottomCenter).padding(20.dp).widthIn(max = 980.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val seg = plan.segs.getOrNull(step.seg)
-                val (label, c) = when {
-                    seg == null -> "전체 경로" to Neon.Cyan
-                    seg.level >= 2 -> "멀미 위험 구간 ${RoutePreview.place(seg)}" to Neon.Red
-                    else -> "조심할 구간 ${RoutePreview.place(seg)}" to Neon.Amber
-                }
-                Box(Modifier.clip(RoundedCornerShape(8.dp)).background(c.copy(alpha = 0.18f)).padding(horizontal = 12.dp, vertical = 5.dp)) {
-                    Text(label, color = c, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                }
-                Spacer(Modifier.width(12.dp))
-                Text(caption, color = Neon.Text, fontSize = 18.sp, lineHeight = 25.sp, maxLines = 3)
-            }
+            Text(caption, color = Neon.Text, fontSize = 18.sp, lineHeight = 25.sp, maxLines = 3)
             ProgressBar(path, at)
         }
     }
 }
 
+private fun sourceLabel(path: RoutePath) = path.region?.let { "실제 지역 · $it" }
+    ?: if (path.synthetic) "내비 안내 지점과 지형으로 그린 길이에요" else if (path.grid != null) "실제 도로 · 지형" else "시연 경로"
+
 /**
- * 브리핑 순서와 시간: 한 바퀴([ORBIT_SEC]) → 위험 구간마다 짚기([SHOW_SEC]) · 빨려 들어가기([DIVE_SEC]) ·
- * 그 구간 달리기(실주행의 [RISK_X] 배, 구간당 [DRIVE_MIN]~ 초) · 올라오기([RISE_SEC]) → 마무리([END_SEC]).
- * 전체가 [CAP_SEC] 를 넘지 않게 달리기 시간을 줄인다. 위험 구간이 많으면 심한 [MAX_SEGS] 곳만.
+ * 브리핑할 구간과 구간별 3D 순서.
+ * 카드: 멀미 위험 구간(빨강)과 조심 구간(노랑), 가는 순서대로. 위험 구간 지형은 미리, 조심 구간은 눌렀을 때 받는다.
+ * 3D([Show]): 구간 둘레 돌며 짚기([SHOW_SEC]) → 들어가기([DIVE_SEC]) → 달리기(실주행의 1/[RISK_X], [DRIVE_MIN]~[DRIVE_MAX] 초)
+ * → 올라오기([RISE_SEC]) → 마무리([END_SEC]).
  */
 internal class BriefPlan(val path: RoutePath) {
-    enum class Kind { ORBIT, SHOW, DIVE, DRIVE, RISE, END }
-    class Step(val kind: Kind, val seg: Int, val start: Double, val dur: Double)
+    enum class Kind { SHOW, DIVE, DRIVE, RISE, END }
+    class Step(val kind: Kind, val start: Double, val dur: Double)
 
-    val segs: List<RiskSegment> = path.preview.segments
-        .sortedWith(compareByDescending<RiskSegment> { it.level }.thenByDescending { it.lengthM })
-        .take(MAX_SEGS).sortedBy { it.startM }
-    /** 구간마다 시작부터 누적 실제 시간 (5m 마다): 달리기에서 실제처럼 굽이는 느리게, 곧은 데는 빠르게 */
-    private val segReal: List<DoubleArray> = segs.map { s ->
-        val a = path.index(s.startM)
-        val b = path.index(s.endM)
-        val out = DoubleArray(b - a + 1)
-        for (i in 1 until out.size) out[i] = out[i - 1] + RoutePath.STEP / realMps(path, (a + i) * RoutePath.STEP)
-        out
+    /** 구간의 흔들림 세기: 그 안에서 가장 센 1km 의 a_w (m/s²) */
+    private fun peakOf(s: RiskSegment): Double {
+        val aw = path.preview.riskPerKm
+        if (aw.isEmpty()) return 0.0
+        val a = (s.startM / RoutePlanner.BIN_M).toInt().coerceIn(0, aw.size - 1)
+        val b = ((s.endM - 1) / RoutePlanner.BIN_M).toInt().coerceIn(a, aw.size - 1)
+        var m = 0.0
+        for (k in a..b) m = max(m, aw[k])
+        return m
     }
-    val steps: List<Step>
-    val total: Double
+
+    /** 카드: 위험 구간 모두(심한 [MAX_CARDS] 곳까지)와 조심 구간(심한 것부터, 합쳐 [MAX_ALL] 곳까지), 가는 순서대로 */
+    val segs: List<RiskSegment> = run {
+        val all = path.preview.segments
+        val danger = all.filter { it.level >= 2 }.sortedByDescending { peakOf(it) }.take(MAX_CARDS)
+        val caution = all.filter { it.level < 2 }.sortedByDescending { peakOf(it) }.take((MAX_ALL - danger.size).coerceAtLeast(0))
+        (danger + caution).sortedBy { it.startM }
+    }
+
+    /** 내비가 이름을 준 지점 (교차로·나들목·목적지), 가는 순서대로 */
+    private val named: List<RoutePoint> = path.marks.filter { !it.name.isNullOrBlank() }.sortedBy { it.atM }
+
+    /** [m] 근처([before] m 앞 ~ [after] m 뒤)에서 가장 가까운 이름 */
+    private fun nameNear(m: Double, before: Double, after: Double): String? =
+        named.filter { it.atM >= m - before && it.atM <= m + after }.minByOrNull { kotlin.math.abs(it.atM - m) }?.name
+
+    /** 구간 이름: 내비 지명으로 "○○부터 △△까지", 이름이 없으면 거리("12~19km") */
+    fun placeOf(s: RiskSegment): String {
+        val a = nameNear(s.startM, NAME_BEFORE, NAME_INSIDE)
+        val b = nameNear(s.endM, NAME_INSIDE, NAME_BEFORE)
+        return when {
+            a != null && b != null && a != b -> "${a}부터 ${b}까지"
+            a != null -> "${a}부터 ${km(s.lengthM)}"
+            b != null -> "${b} 앞 ${km(s.lengthM)}"
+            else -> RoutePreview.place(s)
+        }
+    }
+
+    /** 이름이 있으면 거리도 함께 (카드 아래 줄) */
+    fun hasName(s: RiskSegment) = placeOf(s) != RoutePreview.place(s)
+
+    /** 미리 지형을 받아 둘 카드 (위험 구간만, 조심 구간은 눌렀을 때) */
+    fun eager(i: Int): Boolean = segs[i].level >= 2
+    val peak: List<Double> = segs.map { peakOf(it) }
+
+    /** 점마다 위험 수준 (매 프레임 구간 목록을 훑지 않게 한 번만) */
+    val levels: ByteArray = ByteArray(path.size).also { out ->
+        for (s in path.preview.segments) {
+            val a = path.index(s.startM)
+            val b = (path.index(s.endM) - 1).coerceAtLeast(a)
+            for (i in a..b) if (s.level > out[i]) out[i] = s.level.toByte()
+        }
+    }
+
+    /** 경로가 차지하는 범위 (평면) */
+    val minX: Double; val maxX: Double; val minY: Double; val maxY: Double
 
     init {
-        // 구간이 3곳 넘으면 짚기·들어가기·올라오기를 조금 짧게
-        val q = if (segs.size >= 3) 0.8 else 1.0
-        val fixed = ORBIT_SEC + END_SEC + segs.size * (SHOW_SEC + DIVE_SEC + RISE_SEC) * q
-        val ideal = segReal.map { (it.last() / RISK_X).coerceAtLeast(DRIVE_MIN) }
-        val budget = max(segs.size * DRIVE_MIN, CAP_SEC - fixed)
-        // 구간마다 최소 [DRIVE_MIN] 은 두고, 넘는 몫만 같은 비율로 줄인다 (합이 예산을 넘지 않게)
-        val extra = ideal.sumOf { it - DRIVE_MIN }
-        val k = if (extra > 0 && ideal.sum() > budget) ((budget - segs.size * DRIVE_MIN) / extra).coerceIn(0.0, 1.0) else 1.0
-        val drive = ideal.map { DRIVE_MIN + (it - DRIVE_MIN) * k }
-        val list = ArrayList<Step>()
-        var at = 0.0
-        fun add(kind: Kind, seg: Int, d: Double) { list += Step(kind, seg, at, d); at += d }
-        add(Kind.ORBIT, -1, ORBIT_SEC)
-        segs.indices.forEach { i ->
-            add(Kind.SHOW, i, SHOW_SEC * q)
-            add(Kind.DIVE, i, DIVE_SEC * q)
-            add(Kind.DRIVE, i, drive[i])
-            add(Kind.RISE, i, RISE_SEC * q)
+        var x0 = Double.MAX_VALUE; var x1 = -Double.MAX_VALUE; var y0 = Double.MAX_VALUE; var y1 = -Double.MAX_VALUE
+        for (i in 0 until path.size) {
+            x0 = min(x0, path.x[i]); x1 = max(x1, path.x[i]); y0 = min(y0, path.y[i]); y1 = max(y1, path.y[i])
         }
-        add(Kind.END, -1, END_SEC)
-        steps = list
-        total = at
+        minX = x0; maxX = x1; minY = y0; maxY = y1
     }
 
-    fun stepIndex(t: Double): Int {
-        for (i in steps.indices.reversed()) if (t >= steps[i].start) return i
-        return 0
+    /** 출발부터 [m] 까지 걸리는 시간 (초): 내비 예상 시간이 있으면 거리 비율로, 없으면 길 모양의 편한 속도로 */
+    fun secondsTo(m: Double): Double {
+        path.preview.etaSec?.let { eta -> if (path.lengthM > 0) return eta * (m / path.lengthM).coerceIn(0.0, 1.0) }
+        var s = 0.0
+        for (i in 1..path.index(m)) s += RoutePath.STEP / realMps(path, i * RoutePath.STEP)
+        return s
     }
 
-    /** 장면 안에서 0~1 */
-    fun progress(t: Double): Double = steps[stepIndex(t)].let { ((t - it.start) / it.dur).coerceIn(0.0, 1.0) }
-
-    /** 달리는 중이면 그 구간 안의 위치: 실제 걸리는 시간에 비례해서 */
-    fun driveAt(seg: Int, u: Double): Double {
-        val real = segReal[seg]
-        val target = real.last() * u
-        var lo = 0
-        var hi = real.size - 1
-        while (lo < hi) { val mid = (lo + hi) / 2; if (real[mid] < target) lo = mid + 1 else hi = mid }
-        return segs[seg].startM + lo * RoutePath.STEP
-    }
-
-    /** 포인터(와 작은 지도·띠)의 위치 */
-    fun pointerAt(t: Double): Double {
-        val st = steps[stepIndex(t)]
-        val u = progress(t)
-        return when (st.kind) {
-            Kind.ORBIT -> 0.0
-            Kind.END -> path.lengthM
-            Kind.SHOW, Kind.DIVE -> segs[st.seg].startM
-            Kind.DRIVE -> driveAt(st.seg, u)
-            Kind.RISE -> segs[st.seg].endM
+    fun arriveText(m: Double): String {
+        val min = (secondsTo(m) / 60).roundToInt()
+        return when {
+            min < 1 -> "출발하자마자"
+            min < 60 -> "출발 후 약 ${min}분"
+            else -> "출발 후 약 ${min / 60}시간" + if (min % 60 >= 5) " ${min % 60}분" else ""
         }
     }
 
-    /** 그 장면을 시작할 때 할 말 */
-    fun line(i: Int): String? {
-        val st = steps[i]
-        return when (st.kind) {
-            Kind.ORBIT -> intro(path.preview, segs.size)
-            Kind.SHOW -> showLine(st.seg, segs[st.seg])
-            Kind.DRIVE -> tipLine(segs[st.seg])
-            Kind.END -> "브리핑을 마쳤어요." + (path.preview.restAdvice?.let { " $it." } ?: "") + " 안전하게 다녀오세요."
+    fun headline(): String {
+        val p = path.preview
+        val eta = p.etaSec?.let { " · 약 ${fmtDuration(it)}" } ?: ""
+        val danger = p.dangerCount
+        val caution = p.segments.size - danger
+        val what = listOfNotNull(
+            danger.takeIf { it > 0 }?.let { "멀미 위험 구간 ${it}곳" },
+            caution.takeIf { it > 0 }?.let { "조심할 구간 ${it}곳" },
+        ).joinToString(" · ").ifEmpty { "멀미 걱정 없음" } +
+            if (segs.size < p.segments.size) " (심한 ${segs.size}곳만 카드로)" else ""
+        return "${RoutePreview.fmtKm(p.totalM)}$eta — $what"
+    }
+
+    /** 카드 화면을 열 때 할 말 */
+    fun intro(): String {
+        val km = RoutePreview.fmtKm(path.preview.totalM)
+        if (segs.isEmpty()) return "$km 가는 길, 멀미 걱정 구간이 없는 편한 길이에요."
+        val danger = segs.filter { it.level >= 2 }
+        val caution = segs.size - danger.size
+        val what = listOfNotNull(
+            danger.size.takeIf { it > 0 }?.let { "멀미 위험 구간 ${it}곳" },
+            caution.takeIf { it > 0 }?.let { "조심할 구간 ${it}곳" },
+        ).joinToString(", ")
+        val first = danger.firstOrNull() ?: segs.first()
+        val kind = if (first.level >= 2) "첫 위험 구간" else "첫 구간"
+        return "$km 가는 길에 ${what}이 있어요. ${kind}은 ${arriveText(first.startM)}이에요. 카드를 누르면 그 구간을 미리 볼 수 있어요."
+    }
+
+    fun show(i: Int) = Show(i)
+
+    /** 한 구간 3D 순서 */
+    inner class Show(val seg: Int) {
+        val plan: BriefPlan get() = this@BriefPlan
+        val s: RiskSegment = segs[seg]
+        /** 시작부터 누적 실제 시간 (5m 마다): 달리기에서 실제처럼 굽이는 느리게, 곧은 데는 빠르게 */
+        private val real: DoubleArray = run {
+            val a = path.index(s.startM)
+            val b = path.index(s.endM)
+            val out = DoubleArray(b - a + 1)
+            for (i in 1 until out.size) out[i] = out[i - 1] + RoutePath.STEP / realMps(path, (a + i) * RoutePath.STEP)
+            out
+        }
+        val steps: List<Step>
+        val total: Double
+
+        /** 구간 둘레 범위 (앞뒤 [SHOW_LEAD] 포함) */
+        val minX: Double; val maxX: Double; val minY: Double; val maxY: Double
+
+        init {
+            val drive = (real.last() / RISK_X).coerceIn(DRIVE_MIN, DRIVE_MAX)
+            val list = ArrayList<Step>()
+            var at = 0.0
+            fun add(kind: Kind, d: Double) { list += Step(kind, at, d); at += d }
+            add(Kind.SHOW, SHOW_SEC)
+            add(Kind.DIVE, DIVE_SEC)
+            add(Kind.DRIVE, drive)
+            add(Kind.RISE, RISE_SEC)
+            add(Kind.END, END_SEC)
+            steps = list
+            total = at
+            var x0 = Double.MAX_VALUE; var x1 = -Double.MAX_VALUE; var y0 = Double.MAX_VALUE; var y1 = -Double.MAX_VALUE
+            for (i in path.index(s.startM - SHOW_LEAD)..path.index(s.endM + SHOW_LEAD)) {
+                x0 = min(x0, path.x[i]); x1 = max(x1, path.x[i]); y0 = min(y0, path.y[i]); y1 = max(y1, path.y[i])
+            }
+            minX = x0; maxX = x1; minY = y0; maxY = y1
+        }
+
+        fun stepIndex(t: Double): Int {
+            for (i in steps.indices.reversed()) if (t >= steps[i].start) return i
+            return 0
+        }
+
+        /** 장면 안에서 0~1 */
+        fun progress(t: Double): Double = steps[stepIndex(t)].let { ((t - it.start) / it.dur).coerceIn(0.0, 1.0) }
+
+        /** 달리는 중이면 구간 안의 위치: 실제 걸리는 시간에 비례해서 */
+        fun driveAt(u: Double): Double {
+            val target = real.last() * u
+            var lo = 0
+            var hi = real.size - 1
+            while (lo < hi) { val mid = (lo + hi) / 2; if (real[mid] < target) lo = mid + 1 else hi = mid }
+            return s.startM + lo * RoutePath.STEP
+        }
+
+        /** 포인터(와 작은 지도·띠)의 위치 */
+        fun pointerAt(t: Double): Double {
+            val st = steps[stepIndex(t)]
+            return when (st.kind) {
+                Kind.SHOW, Kind.DIVE -> s.startM
+                Kind.DRIVE -> driveAt(progress(t))
+                Kind.RISE, Kind.END -> s.endM
+            }
+        }
+
+        /** 그 장면을 시작할 때 할 말 */
+        fun line(i: Int): String? = when (steps[i].kind) {
+            Kind.SHOW -> showLine(s, plan.arriveText(s.startM), plan.placeOf(s))
+            Kind.DRIVE -> tipLine(s)
+            Kind.END -> "구간 목록으로 돌아갈게요."
             else -> null
         }
     }
 
     companion object {
-        const val CAP_SEC = 40.0
-        const val ORBIT_SEC = 7.0
-        const val SHOW_SEC = 3.2
-        const val DIVE_SEC = 1.6
-        const val RISE_SEC = 1.4
-        const val END_SEC = 4.0
-        const val DRIVE_MIN = 2.5
+        const val SHOW_SEC = 4.0
+        const val DIVE_SEC = 2.2
+        const val RISE_SEC = 1.8
+        const val END_SEC = 1.6
+        const val DRIVE_MIN = 4.0
+        const val DRIVE_MAX = 18.0
         const val RISK_X = 20.0
-        const val MAX_SEGS = 4
+        const val MAX_CARDS = 6
+        /** 구간 이름을 찾는 범위 (m): 들어가기 전 [NAME_BEFORE] 까지, 구간 안쪽 [NAME_INSIDE] 까지 */
+        const val NAME_BEFORE = 1_500.0
+        const val NAME_INSIDE = 500.0
+        /** 카드 전체 최대 (긴 길에서 조심 구간이 수십 곳이어도) */
+        const val MAX_ALL = 12
+        /** 3D 에서 구간 앞뒤로 함께 보여 줄 거리 (m) */
+        const val SHOW_LEAD = 400.0
+        /** 지형을 기다리는 최대 시간 (ms): 인터넷이 느려도 브리핑은 시작한다 */
+        const val LOAD_MAX_MS = 8_000L
 
         /** 서는 곳·출발 직후에도 멈춰 있지 않게 최소 시속 20km 로 본다 */
         fun realMps(path: RoutePath, m: Double) = max(path.speedKmh[path.index(m)], 20.0) / 3.6
     }
 }
 
-private fun intro(p: RoutePreview, shown: Int): String {
-    val km = RoutePreview.fmtKm(p.totalM)
-    val danger = p.segments.count { it.level >= 2 }
-    val caution = p.segments.size - danger
-    return when {
-        p.segments.isEmpty() -> "가는 길을 한 바퀴 둘러볼게요. $km, 멀미 걱정 구간이 없는 편한 길이에요."
-        else -> "가는 길을 한 바퀴 둘러볼게요. $km 가운데 " +
-            listOfNotNull(danger.takeIf { it > 0 }?.let { "멀미 위험 구간 ${it}곳" }, caution.takeIf { it > 0 }?.let { "조심할 구간 ${it}곳" }).joinToString(", ") +
-            "이 있어요." + if (shown < p.segments.size) " 그중 심한 ${shown}곳을 보여 드릴게요." else ""
-    }
+/** 카드의 길 모양에 함께 그리는 앞뒤 거리 (m) */
+private const val SHAPE_LEAD = 600.0
+
+private fun fmtDuration(sec: Double): String {
+    val m = (sec / 60).roundToInt()
+    return if (m < 60) "${m}분" else "${m / 60}시간" + if (m % 60 > 0) " ${m % 60}분" else ""
 }
 
-private val ORDER = listOf("첫 번째", "두 번째", "세 번째", "네 번째", "다섯 번째")
-
 /** 짚기: "여기서 여기까지" */
-private fun showLine(i: Int, s: RiskSegment): String {
+private fun showLine(s: RiskSegment, arrive: String, place: String): String {
     val what = if (s.level >= 2) "멀미 위험 구간" else "조심할 구간"
-    return "여기서 여기까지, ${ORDER.getOrElse(i) { "${i + 1}번째" }} ${what}이에요. ${RoutePreview.place(s)}, ${s.reasons.take(2).joinToString("·")}."
+    val why = s.reasons.take(2).joinToString("·")
+    return "$arrive, $place ${what}이에요." + if (why.isNotEmpty()) " $why." else ""
 }
 
 /** 달리기: 운전 팁 */
@@ -307,12 +638,14 @@ private fun riskColor(level: Int): Color = when (level) {
 }
 
 /**
- * 3D 장면: 색을 입힌 지형(높이별 색 + 비스듬한 빛 그림자 + 옅은 네온 격자), 경로 선(위험 빨강·조심 주황·편한 길 파랑),
- * 위험 구간 번호, 포인터. 카메라는 장면에 따라 한 바퀴 → 짚기 → 빨려 들어가기 → 달리기 → 올라오기.
+ * 한 구간 3D 장면: 그 구간 둘레의 색을 입힌 지형(높이별 색 + 비스듬한 빛 그림자 + 옅은 네온 격자, 가장자리는 흐려져 떠 있는 판처럼),
+ * 경로 선(위험 빨강·조심 주황·편한 길 파랑), 포인터. 카메라는 둘레 돌며 짚기 → 들어가기 → 달리기 → 올라오기.
  */
 @Composable
-private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid>, modifier: Modifier) {
+private fun RouteScene(show: BriefPlan.Show, t: Double, grid: TerrainGrid?, modifier: Modifier) {
+    val plan = show.plan
     val path = plan.path
+    val seg = show.s
     val measurer = rememberTextMeasurer()
     val labels = remember(measurer) { HashMap<String, androidx.compose.ui.text.TextLayoutResult>() }
     // 매 프레임 새로 만들지 않는 선·면 (메모리)
@@ -329,18 +662,14 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
     var loadedWide by remember { mutableStateOf<TerrainGrid?>(null) }
     DisposableEffect(Unit) { onDispose { gpu.release() } }
     Canvas(modifier) {
-        val st = plan.steps[plan.stepIndex(t)]
-        val u = plan.progress(t)
-        val cam = poseFor(plan, st, u, t).camera(path, size.width, size.height)
-        // 위험 구간에 들어가 있으면 그 둘레의 자세한 지형, 아니면 전체 지형
-        val close = st.seg >= 0 && (st.kind == BriefPlan.Kind.DIVE || st.kind == BriefPlan.Kind.DRIVE || st.kind == BriefPlan.Kind.RISE)
-        // 가장 자세한 것: 전체 30m(받았으면), 위험 구간에 들어가 있으면 그 둘레 것과 견줘 더 촘촘한 쪽
-        val fineG = details[FINE]
-        val segG = if (close) details[st.seg] else null
-        val tg = listOfNotNull(fineG, segG).minByOrNull { it.step } ?: path.grid
+        val st = show.steps[show.stepIndex(t)]
+        val u = show.progress(t)
+        // 그 구간 둘레의 자세한 지형만 (받았으면). 못 받았으면 앱에 넣어 둔 경로 둘레 지형
+        val tg = grid ?: path.grid
+        val cam = aboveGround(poseFor(show, st, u, t), path, tg).camera(path, size.width, size.height)
         if (tg != null && gpu.supported) {
-            // 두 겹: 가까이는 가장 자세한 것, 멀리까지는 넓은 것 (앱에 넣어 둔 경로 둘레 3km, 없으면 같은 것)
-            val wide = path.grid ?: tg
+            // 자세한 것만 있으면 두 겹 모두 그것으로: 둘레 밖은 흐려져 사라진다 (긴 길의 수 km 격자가 뭉개져 보이지 않게)
+            val wide = if (grid != null) grid else tg
             if (loaded !== tg || loadedWide !== wide) {
                 val e = EncodedGrid.of(tg)
                 val ew = if (wide === tg) e else EncodedGrid.of(wide)
@@ -369,29 +698,37 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
             drawPath(wire, Color(0x1A4FA3E0), style = Stroke(1f))
         }
 
-        // 경로: 달릴 때는 앞 3km·뒤 300m, 내려다볼 때는 전체 (조금 성기게)
+        // 경로: 달릴 때는 앞 3km·뒤 300m, 둘러볼 때는 구간과 앞뒤 [ROUTE_LEAD].
+        // 보는 범위가 넓을수록 성기게, 보는 곳에서 먼 점은 더 성기게
         val driving = st.kind == BriefPlan.Kind.DRIVE
-        val at = plan.pointerAt(t)
-        val i0 = if (driving) path.index(at - 300) else 0
-        val i1 = if (driving) path.index(at + 3000) else path.size - 1
-        val stride = if (driving) 1 else 2
+        val at = show.pointerAt(t)
+        val i0 = if (driving) path.index(at - 300) else path.index(seg.startM - ROUTE_LEAD)
+        val i1 = if (driving) path.index(at + 3000) else path.index(seg.endM + ROUTE_LEAD)
+        val nearStride = if (driving) 1 else (cam.range / LINE_DENSITY / RoutePath.STEP).toInt().coerceAtLeast(1)
+        val farStride = max(nearStride, (i1 - i0) / MAX_LINE_POINTS)
+        val near2 = cam.range * cam.range
+        val levels = plan.levels
         lines.forEach { it.reset() }
         curtain.reset()
         glow.reset()
-        val hi = plan.segs.getOrNull(st.seg)
         var prev: Offset? = null
         var prevLevel = -1
         var i = i0
         while (i <= i1) {
             val m = i * RoutePath.STEP
-            val level = path.riskAt(m)
+            val level = levels[i].toInt()
+            val dfx = path.x[i] - cam.fx
+            val dfy = path.y[i] - cam.fy
+            val stride = if (dfx * dfx + dfy * dfy < near2) nearStride else farStride
+            // 마지막 점은 꼭 (성기게 건너뛰다 끝이 잘리지 않게)
+            val next = if (i < i1 && i + stride > i1) i1 else i + stride
             val p = cam.project(path.x[i], path.y[i], cam.zOf(path.z[i]) + LIFT)
-            if (p == null) { prev = null; i += stride; continue }
+            if (p == null) { prev = null; i = next; continue }
             val line = lines[level]
             if (prev == null || level != prevLevel) line.moveTo((prev ?: p).x, (prev ?: p).y)
             line.lineTo(p.x, p.y)
-            // 짚는 구간은 한 번 더 빛나게
-            if (hi != null && m >= hi.startM && m <= hi.endM) {
+            // 이 구간은 한 번 더 빛나게
+            if (m >= seg.startM && m <= seg.endM) {
                 if (glow.isEmpty || prev == null) glow.moveTo(p.x, p.y) else glow.lineTo(p.x, p.y)
             }
             if (driving && i % 10 == 0) {
@@ -400,10 +737,10 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
             }
             prev = p
             prevLevel = level
-            i += stride
+            i = next
         }
         drawPath(curtain, Color(0x334FA3E0), style = Stroke(1.2f))
-        if (hi != null && st.kind != BriefPlan.Kind.DRIVE) {
+        if (!driving) {
             val pulse = 0.5f + 0.5f * kotlin.math.sin((t * 6).toFloat())
             drawPath(glow, Neon.Red.copy(alpha = 0.18f + 0.22f * pulse), style = Stroke(26f, cap = StrokeCap.Round, join = StrokeJoin.Round))
         }
@@ -435,27 +772,26 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
                 }
             }
         } else {
-            // 위험 구간 번호 (구간 가운데 위에)
-            plan.segs.forEachIndexed { k, seg ->
-                val mid = path.index((seg.startM + seg.endM) / 2)
-                val base = cam.project(path.x[mid], path.y[mid], cam.zOf(path.z[mid]) + LIFT) ?: return@forEachIndexed
+            // 구간 번호 (가운데 위에)
+            val mid = path.index((seg.startM + seg.endM) / 2)
+            cam.project(path.x[mid], path.y[mid], cam.zOf(path.z[mid]) + LIFT)?.let { base ->
                 val top = Offset(base.x, base.y - 42f)
                 val c = riskColor(seg.level)
                 drawLine(c.copy(alpha = 0.8f), base, top, 2f)
                 drawCircle(Color(0xE6081426), 17f, top)
                 drawCircle(c, 17f, top, style = Stroke(2.5f))
-                val l = labels.getOrPut("#${k + 1}") {
-                    measurer.measure("${k + 1}", androidx.compose.ui.text.TextStyle(color = Neon.White, fontSize = 16.sp, fontWeight = FontWeight.Bold))
+                val l = labels.getOrPut("#${show.seg + 1}") {
+                    measurer.measure("${show.seg + 1}", androidx.compose.ui.text.TextStyle(color = Neon.White, fontSize = 16.sp, fontWeight = FontWeight.Bold))
                 }
                 drawText(l, topLeft = Offset(top.x - l.size.width / 2f, top.y - l.size.height / 2f))
             }
         }
 
-        // 포인터 (한 바퀴·마무리 때는 숨김)
-        if (st.kind != BriefPlan.Kind.ORBIT && st.kind != BriefPlan.Kind.END) {
+        // 포인터 (둘러볼 때·마무리 때는 숨김)
+        if (st.kind != BriefPlan.Kind.SHOW && st.kind != BriefPlan.Kind.END) {
             val pi = path.index(at)
             cam.project(path.x[pi], path.y[pi], cam.zOf(path.z[pi]) + LIFT)?.let { p ->
-                val c = riskColor(path.riskAt(at))
+                val c = riskColor(levels[pi].toInt())
                 val ground = tg?.let { cam.zOf(heightAt(it, path.x[pi], path.y[pi])) } ?: (cam.zOf(path.z[pi]) - 40)
                 cam.project(path.x[pi], path.y[pi], ground)?.let { g -> drawLine(c.copy(alpha = 0.5f), p, g, 2f) }
                 drawCircle(c.copy(alpha = 0.15f), 34f, p)
@@ -466,8 +802,28 @@ private fun RouteScene(plan: BriefPlan, t: Double, details: Map<Int, TerrainGrid
     }
 }
 
-/** [details] 에서 전체 자세한 지형의 자리 */
-private const val FINE = -1
+/** 둘러볼 때 구간 앞뒤로 함께 그리는 경로 (m) */
+private const val ROUTE_LEAD = 1_500.0
+
+/** 눈이 땅에서 적어도 이만큼 위에 (그리는 높이, m) */
+private const val EYE_CLEAR = 60.0
+
+/**
+ * 눈이 산 속에 들어가지 않게: 뒤따라 달릴 때 눈은 길 높이 + 90m 인데, 자세한 지형에서는 굽이길 뒤 비탈이
+ * 그보다 높을 때가 있다. 그러면 모든 시선이 땅 속에서 시작해 지형이 통째로 안 그려졌다(검은 화면).
+ */
+private fun aboveGround(p: Pose, path: RoutePath, g: TerrainGrid?): Pose {
+    if (g == null) return p
+    val ground = (heightAt(g, p.ex, p.ey) - path.z[0]) * zScaleOf(path)
+    val min = ground + EYE_CLEAR
+    return if (p.ez >= min) p else Pose(p.ex, p.ey, min, p.tx, p.ty, p.tz, p.fx, p.fy, p.range)
+}
+
+/** 경로 선 점 간격: 보는 범위의 1/[LINE_DENSITY] 쯤 (화면에서 1~2 화소) */
+private const val LINE_DENSITY = 700.0
+
+/** 보는 곳에서 먼 경로 선은 이만큼 점으로 */
+private const val MAX_LINE_POINTS = 1500
 
 /** 경로 선을 지형 위로 살짝 띄운다 (지형 자료가 성겨서 길이 산에 묻히지 않게, m) */
 private const val LIFT = 12.0
@@ -483,39 +839,61 @@ private class Pose(
         return Pose(l(ex, o.ex), l(ey, o.ey), l(ez, o.ez), l(tx, o.tx), l(ty, o.ty), l(tz, o.tz), l(fx, o.fx), l(fy, o.fy), l(range, o.range))
     }
 
+    /**
+     * 빨려 들어가기·올라오기: 거리는 배율로(같은 시간에 같은 배만큼 가까워진다), 바라보는 곳은 거리가 준 만큼 옮긴다.
+     * 그냥 섞으면 긴 길(수백 km 위)에서는 거의 끝까지 멀리 있다가 마지막 몇 프레임에 땅으로 떨어진다.
+     */
+    fun zoom(o: Pose, k: Double): Pose {
+        val ax = ex - tx; val ay = ey - ty; val az = ez - tz
+        val bx = o.ex - o.tx; val by = o.ey - o.ty; val bz = o.ez - o.tz
+        val d0 = sqrt(ax * ax + ay * ay + az * az).coerceAtLeast(1.0)
+        val d1 = sqrt(bx * bx + by * by + bz * bz).coerceAtLeast(1.0)
+        val d = d0 * (d1 / d0).pow(k)
+        val kt = if (abs(d0 - d1) < 1.0) k else ((d0 - d) / (d0 - d1)).coerceIn(0.0, 1.0)
+        fun l(a: Double, b: Double, w: Double) = a + (b - a) * w
+        // 바라보는 방향 (눈 ← 바라보는 곳): 단위 벡터를 섞어 다시 단위로
+        var ux = l(ax / d0, bx / d1, k); var uy = l(ay / d0, by / d1, k); var uz = l(az / d0, bz / d1, k)
+        val un = sqrt(ux * ux + uy * uy + uz * uz).coerceAtLeast(1e-9)
+        ux /= un; uy /= un; uz /= un
+        val ntx = l(tx, o.tx, kt); val nty = l(ty, o.ty, kt); val ntz = l(tz, o.tz, kt)
+        val r = range * (o.range / range).pow(k)
+        return Pose(ntx + ux * d, nty + uy * d, ntz + uz * d, ntx, nty, ntz, l(fx, o.fx, kt), l(fy, o.fy, kt), r)
+    }
+
     fun camera(path: RoutePath, w: Float, h: Float) = ViewCamera(this, path, w, h)
 }
 
 private fun ease(u: Double) = u * u * (3 - 2 * u)
 
-/** 장면마다 카메라: 한 바퀴(위에서 빙 돎) ↔ 짚기(천천히 돎) → 빨려 들어가기 → 뒤따라 달리기 → 올라오기 */
-private fun poseFor(plan: BriefPlan, st: BriefPlan.Step, u: Double, t: Double): Pose {
-    val path = plan.path
-    // 한 바퀴는 처음 장면 안에서, 그 뒤로는 아주 천천히 계속 돈다
-    val angle = BASE_ANGLE + if (t < BriefPlan.ORBIT_SEC) 2 * PI * ease(t / BriefPlan.ORBIT_SEC) else 2 * PI + DRIFT * (t - BriefPlan.ORBIT_SEC)
-    val over = overview(path, angle)
+/** 장면마다 카메라: 구간 둘레를 천천히 돌며 짚기 ↔ 빨려 들어가기 → 뒤따라 달리기 → 올라오기 */
+private fun poseFor(show: BriefPlan.Show, st: BriefPlan.Step, u: Double, t: Double): Pose {
+    val path = show.plan.path
+    val over = overview(show, BASE_ANGLE + ORBIT_RATE * t)
     return when (st.kind) {
-        BriefPlan.Kind.ORBIT, BriefPlan.Kind.SHOW, BriefPlan.Kind.END -> over
-        BriefPlan.Kind.DIVE -> over.lerp(chase(path, plan.segs[st.seg].startM), ease(u))
-        BriefPlan.Kind.DRIVE -> chase(path, plan.driveAt(st.seg, u))
-        BriefPlan.Kind.RISE -> chase(path, plan.segs[st.seg].endM).lerp(over, ease(u))
+        BriefPlan.Kind.SHOW, BriefPlan.Kind.END -> over
+        BriefPlan.Kind.DIVE -> over.zoom(chase(path, show.s.startM), ease(u))
+        BriefPlan.Kind.DRIVE -> chase(path, show.driveAt(u))
+        BriefPlan.Kind.RISE -> chase(path, show.s.endM).zoom(over, ease(u))
     }
 }
 
 private const val BASE_ANGLE = -PI / 2
-private const val DRIFT = 0.04
+/** 둘러볼 때 도는 빠르기 (rad/s) */
+private const val ORBIT_RATE = 0.12
 
-/** 전체 길을 비스듬히 내려다보는 자리 ([angle] 방향에서) */
-private fun overview(path: RoutePath, angle: Double): Pose {
-    var minX = Double.MAX_VALUE; var maxX = -Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
-    for (i in 0 until path.size step 8) {
-        minX = min(minX, path.x[i]); maxX = max(maxX, path.x[i]); minY = min(minY, path.y[i]); maxY = max(maxY, path.y[i])
-    }
-    val cx = (minX + maxX) / 2
-    val cy = (minY + maxY) / 2
-    val r = max(maxX - minX, maxY - minY) * 0.62 + 600
+/** 구간(앞뒤 조금)을 비스듬히 내려다보는 자리 ([angle] 방향에서) */
+private fun overview(show: BriefPlan.Show, angle: Double): Pose {
+    val path = show.plan.path
+    val cx = (show.minX + show.maxX) / 2
+    val cy = (show.minY + show.maxY) / 2
+    val r = max(show.maxX - show.minX, show.maxY - show.minY) * 0.62 + 600
     val zs = zScaleOf(path)
-    val cz = ((path.z.max() + path.z.min()) / 2 - path.z[0]) * zs
+    var zMin = Double.MAX_VALUE
+    var zMax = -Double.MAX_VALUE
+    for (i in path.index(show.s.startM - BriefPlan.SHOW_LEAD)..path.index(show.s.endM + BriefPlan.SHOW_LEAD)) {
+        zMin = min(zMin, path.z[i]); zMax = max(zMax, path.z[i])
+    }
+    val cz = ((zMax + zMin) / 2 - path.z[0]) * zs
     return Pose(cx + r * cos(angle), cy + r * sin(angle), cz + r * 0.85, cx, cy, cz, cx, cy, r * 1.6)
 }
 
@@ -759,13 +1137,11 @@ private fun heightAt(g: TerrainGrid, x: Double, y: Double): Double {
 
 /** 위에서 본 전체 경로 (빨강 = 위험, 주황 = 조심, 흰 점 = 지금) */
 @Composable
-private fun MiniMap(path: RoutePath, at: Double, modifier: Modifier) {
+private fun MiniMap(plan: BriefPlan, at: Double, modifier: Modifier) {
+    val path = plan.path
     val parts = remember { Array(3) { Path() } }
     Canvas(modifier.clip(RoundedCornerShape(14.dp)).background(Color(0xB306111F))) {
-        var minX = Double.MAX_VALUE; var maxX = -Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
-        for (i in 0 until path.size step 4) {
-            minX = min(minX, path.x[i]); maxX = max(maxX, path.x[i]); minY = min(minY, path.y[i]); maxY = max(maxY, path.y[i])
-        }
+        val minX = plan.minX; val maxX = plan.maxX; val minY = plan.minY; val maxY = plan.maxY
         val pad = 14f
         val s = min((size.width - 2 * pad) / max(1.0, maxX - minX), (size.height - 2 * pad) / max(1.0, maxY - minY))
         val ox = pad + ((size.width - 2 * pad) - (maxX - minX) * s) / 2
@@ -774,8 +1150,9 @@ private fun MiniMap(path: RoutePath, at: Double, modifier: Modifier) {
         parts.forEach { it.reset() }
         var lastLevel = -1
         var last: Offset? = null
-        for (i in 0 until path.size step 2) {
-            val level = path.riskAt(i * RoutePath.STEP)
+        // 작은 지도라 600 점이면 충분 (긴 길도 같은 비용)
+        for (i in 0 until path.size step max(2, path.size / 600)) {
+            val level = plan.levels[i].toInt()
             val p = pt(i)
             val line = parts[level]
             if (level != lastLevel) line.moveTo((last ?: p).x, (last ?: p).y)
@@ -806,6 +1183,17 @@ private fun SloshGauge(path: RoutePath, at: Double, modifier: Modifier) {
         Spacer(Modifier.height(6.dp))
         Text("좌우 ${(g * 100).roundToInt() / 100.0} g", color = Neon.White, fontSize = 13.sp)
         Text("오르내림 ${climb.roundToInt()} m", color = Neon.Dim, fontSize = 11.sp)
+    }
+}
+
+/** 3D 를 열 때 그 구간 지형을 아직 받는 중 */
+@Composable
+private fun LoadingBar(modifier: Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(14.dp)).background(Color(0xD906111F)).padding(horizontal = 28.dp, vertical = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("이 구간의 지형을 불러오고 있어요", color = Neon.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

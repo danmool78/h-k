@@ -159,13 +159,22 @@ half4 main(float2 fc) {
     float prev = t;
     bool hit = false;
     bool side = false;
-    // 걸음: 가까이는 1.5m, 멀수록 거리의 3.5% (192걸음이면 10km 넘게 간다 — 1인칭에서도 먼 땅까지)
+    // 걸음: 가까이는 1.5m, 멀수록 거리의 3.5% (192걸음이면 10km 넘게 간다 — 1인칭에서도 먼 땅까지).
+    // 다만 지형 상자를 지나는 길이의 1/48 을 넘지 않게: 긴 경로를 높이서 내려다보면 한 걸음(수 km)이
+    // 얇은 지형 상자(수 km)보다 커서 땅을 건너뛰고 아무것도 안 그려졌다.
+    float maxStep = max(1.5, (tFar - tNear) / 48.0);
     for (int i = 0; i < 192; i++) {
         float3 p = uEye + d * t;
         if (p.z < hW(p.xy)) { hit = true; side = (i == 0); break; }
         prev = t;
-        t += max(1.5, t * 0.035);
-        if (t > tFar) break;
+        t += min(max(1.5, t * 0.035), maxStep);
+        if (t >= tFar) {
+            // 상자를 나가는 자리에서 한 번 더 (바닥으로 나가면 그 앞 어딘가에 땅이 있다)
+            t = tFar;
+            float3 q = uEye + d * t;
+            if (q.z < hW(q.xy)) hit = true;
+            break;
+        }
     }
     // 상자 옆면으로 바로 들어온 것은 땅이 아니라 벽: 그리지 않는다
     if (!hit || side) return half4(0.0);

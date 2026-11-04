@@ -8,8 +8,8 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-/** 경로 위 지점 (출발점부터 거리, m). [dir] 회전 방향 -1 왼쪽, +1 오른쪽, 0 모름 */
-data class RoutePoint(val kind: ManeuverKind, val atM: Double, val dir: Int = 0)
+/** 경로 위 지점 (출발점부터 거리, m). [dir] 회전 방향 -1 왼쪽, +1 오른쪽, 0 모름. [name] 내비가 준 지명 (구간을 이름으로 말할 때) */
+data class RoutePoint(val kind: ManeuverKind, val atM: Double, val dir: Int = 0, val name: String? = null)
 
 /**
  * 가는 길의 지형: 경로를 따라 같은 간격으로 잰 높이 (m).

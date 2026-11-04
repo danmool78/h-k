@@ -57,6 +57,8 @@ data class RoadAhead(
     val hereLng: Double? = null,
     val destLat: Double? = null,
     val destLng: Double? = null,
+    /** 목적지 이름 (내비) */
+    val destName: String? = null,
 )
 
 interface NaviPort {
@@ -81,4 +83,7 @@ interface ChildRepo {
     /** 설정 ([AppSettings.encode] 글) */
     fun loadSettings(): String? = null
     fun saveSettings(text: String) {}
+    /** 저장해 둔 길 ([RouteBook]): 이름별 글. [text] 가 null 이면 지운다 */
+    fun loadText(name: String): String? = null
+    fun saveText(name: String, text: String?) {}
 }

@@ -3,6 +3,8 @@ package com.sssoft.chalrang.engine
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.floor
@@ -78,13 +80,17 @@ object TerrainTiles {
         return Mosaic(z, got.associate { it.first to it.second!! })
     }
 
+    /** 여러 곳(브리핑 미리 받기, 백그라운드 계산)에서 동시에 불러도 기억 목록이 깨지지 않게 (받는 동안은 잠그지 않는다) */
+    private val lock = Mutex()
+
     private suspend fun tile(z: Int, x: Int, y: Int): ShortArray? {
         val k = key(z, x, y)
-        cache[k]?.let { return it }
+        lock.withLock { cache[k] }?.let { return it }
         val t = fetchTerrarium(z, x, y) ?: return null
-        cache[k] = t
-        order.addLast(k)
-        while (order.size > KEEP) cache.remove(order.removeFirst())
+        lock.withLock {
+            if (cache.put(k, t) == null) order.addLast(k)
+            while (order.size > KEEP) cache.remove(order.removeFirst())
+        }
         return t
     }
 }

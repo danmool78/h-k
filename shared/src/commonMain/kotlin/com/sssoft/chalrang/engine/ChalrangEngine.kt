@@ -21,6 +21,7 @@ import com.sssoft.chalrang.core.TerrainGrid
 import com.sssoft.chalrang.core.TripSummary
 import com.sssoft.chalrang.core.DriverStyle
 import com.sssoft.chalrang.core.Frame
+import com.sssoft.chalrang.core.ManeuverKind
 import com.sssoft.chalrang.core.MotionEstimator
 import com.sssoft.chalrang.core.Seat
 import com.sssoft.chalrang.core.SeatState
@@ -29,8 +30,16 @@ import com.sssoft.chalrang.core.SickPeriod
 import com.sssoft.chalrang.core.TiltLog
 import com.sssoft.chalrang.core.WaterCup
 import com.sssoft.chalrang.core.Window
+import com.sssoft.chalrang.ui.BriefPlan
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -93,6 +102,10 @@ data class UiState(
     val routeAtM: Double = 0.0,
     /** 3D 경로 브리핑 중이면 그 경로 */
     val briefing: RoutePath? = null,
+    /** 지금 길 안내 경로를 저장해 두었는지 (즐겨찾기·최근), 즐겨찾기인지, 저장해 둔 것을 불러왔는지 */
+    val routeSaved: Boolean = false,
+    val routeFavorite: Boolean = false,
+    val routeFromSaved: Boolean = false,
 )
 
 /**
@@ -254,6 +267,7 @@ class ChalrangEngine(
      * 호출한 쪽이 취소하면 둘 다 멈춘다. 끝없이 도는 루프를 남기지 않는다.
      */
     suspend fun run() = coroutineScope {
+        bg = this
         launch { loop() }
         launch { routeLoop() }
         launch { loadRegion() }
@@ -605,14 +619,36 @@ class ChalrangEngine(
             for (u in a.points) {
                 val at = travelled + u.distanceM
                 val key = "${u.kind}@${(at / 200).roundToInt()}"
-                if (key !in known) { known[key] = RoutePoint(u.kind, at, u.dir); changed = true }
+                val had = known[key]
+                // 같은 지점을 이름과 함께 다시 받으면 이름을 채운다 (구간을 지명으로 말할 때)
+                if (had == null || (had.name == null && u.name != null)) { known[key] = RoutePoint(u.kind, at, u.dir, u.name); changed = true }
+            }
+            // 목적지 이름: 마지막 구간을 "○○ 앞" 으로 말할 수 있게 (도착 지점에 이름만 있는 지점)
+            a.destName?.let { n ->
+                val k = "dest"
+                val at = travelled + remain
+                if (known[k]?.name != n) { known[k] = RoutePoint(ManeuverKind.OTHER, at, 0, n); changed = true }
             }
             if (!terrainTried && settings.terrain && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
                 terrainTried = true
-                // 실제 도로 선(OSRM)과 높이: 되면 굽이까지, 안 되면 직선 지형 추정
-                val g = GeoFetch.route(a.hereLat, a.hereLng, a.destLat, a.destLng)
+                // 실제 도로 선(OSRM)과 높이: 되면 굽이까지, 안 되면 직선 지형 추정.
+                // 긴 길(수백 km)은 점이 수만 개라 계산을 화면 스레드 밖에서
+                // 즐겨찾기·최근 길에 같은 출발지→목적지가 있으면 인터넷 없이 그것을 쓴다
+                val book = RouteBook.decodeList(store.loadText(BOOK))
+                val hit = RouteBook.find(book, a.hereLat, a.hereLng, a.destLat, a.destLng)
+                val saved = hit?.let { h -> withContext(Dispatchers.Default) { RouteBook.decode(store.loadText(h.key)) } }
+                val g = saved?.route ?: withContext(Dispatchers.Default) { GeoFetch.route(a.hereLat, a.hereLng, a.destLat, a.destLng) }
                 if (g != null) {
-                    val p = RoutePath.fromPolyline(g.xs, g.ys, g.zs, etaSec = a.remainSec, grid = g.grid, lat0 = g.lat0, lng0 = g.lng0)
+                    rememberRoute(
+                        SavedRoute(
+                            hit?.key ?: RouteBook.keyOf(a.hereLat, a.hereLng, a.destLat, a.destLng), a.destName ?: hit?.name,
+                            a.hereLat, a.hereLng, a.destLat, a.destLng, favorite = hit?.favorite ?: false, used = 0,
+                        ),
+                        g, saved,
+                    )
+                    val p = withContext(Dispatchers.Default) {
+                        RoutePath.fromPolyline(g.xs, g.ys, g.zs, etaSec = a.remainSec, grid = g.grid, lat0 = g.lat0, lng0 = g.lng0)
+                    }
                     livePath = p
                     livePathStartM = travelled
                     terrain = Terrain(RoutePath.STEP, p.z)
@@ -625,6 +661,8 @@ class ChalrangEngine(
             val current = _ui.value.route
             val plan = if (changed || current == null) livePlan(a.remainSec) else current
             route(plan, travelled)
+            // 길을 평가하자마자 브리핑 지형을 미리 받기 시작 (출발 전 브리핑이 기다리지 않게)
+            if (changed && livePath != null) briefingPath()?.let { prefetchBriefing(it) }
         }
     }
 
@@ -700,14 +738,95 @@ class ChalrangEngine(
 
     /** 지금 경로(시연 또는 길 안내)로 3D 브리핑을 연다 */
     fun startBriefing() {
-        val path = demo?.let { d -> d.scenario.route ?: demoRoute?.let { RoutePath.of(d.scenario, it) } }
-            ?: _ui.value.route?.let { plan -> livePath?.withPreview(plan) ?: RoutePath.synthesize(known.values.toList(), plan.totalM, terrain, plan) }
-            ?: return
+        val path = briefingPath() ?: return
+        prefetchBriefing(path)
         _ui.update { it.copy(briefing = path) }
+    }
+
+    /** 지금 경로(시연 또는 길 안내)의 브리핑용 길 모양 */
+    private fun briefingPath(): RoutePath? =
+        demo?.let { d -> d.scenario.route ?: demoRoute?.let { RoutePath.of(d.scenario, it) } }
+            ?: _ui.value.route?.let { plan -> livePath?.withPreview(plan) ?: RoutePath.synthesize(known.values.toList(), plan.totalM, terrain, plan) }
+
+    /** 엔진이 도는 범위 (미리 받기를 띄울 곳) */
+    private var bg: CoroutineScope? = null
+
+    /** 브리핑 지형 미리 받기: 카드로 보여 줄 위험 구간마다. 받는 중이면 같은 것을 기다린다 (두 번 받지 않게) */
+    private val prefetched = HashMap<String, Deferred<TerrainGrid?>>()
+
+    private fun segKey(seg: RiskSegment) = "${seg.startM.roundToInt()}-${seg.endM.roundToInt()}"
+
+    /**
+     * 목적지를 정해 길을 평가하자마자(또는 브리핑을 열 때) 브리핑이 쓸 자세한 지형을 백그라운드에서 받아 둔다.
+     * 브리핑이 열릴 때쯤이면 다 받아 있어 바로 시작한다.
+     */
+    private fun prefetchBriefing(path: RoutePath) {
+        val scope = bg ?: return
+        if (path.lat0 == null || path.lng0 == null || !settings.terrain) return
+        val plan = BriefPlan(path)
+        plan.segs.forEachIndexed { i, seg ->
+            // 위험 구간만 미리 (조심 구간은 카드를 눌렀을 때)
+            if (!plan.eager(i)) return@forEachIndexed
+            val k = segKey(seg)
+            // 저장해 둔 길이면 받아 둔 지형을 그대로
+            savedDetails[k]?.let { prefetched.getOrPut(k) { CompletableDeferred(it) } }
+            prefetched.getOrPut(k) { scope.async { loadDetail(path, seg)?.also { keepDetail(k, it) } } }
+        }
     }
 
     /** 브리핑에서 가까이 볼 위험 구간의 자세한 지형 (실제 지역일 때, 인터넷이 되면) */
     suspend fun briefDetail(path: RoutePath, seg: RiskSegment): TerrainGrid? {
+        val k = segKey(seg)
+        savedDetails[k]?.let { return it }
+        return (prefetched[k]?.await() ?: loadDetail(path, seg))?.also { keepDetail(k, it) }
+    }
+
+    // ---- 즐겨찾기·최근 길 ([RouteBook]) ----
+
+    /** 지금 길 안내 경로의 저장 이름, 길 자료, 받아 둔 위험 구간 지형 */
+    private var savedKey: String? = null
+    private var savedRoute: GeoRoute? = null
+    private val savedDetails = HashMap<String, TerrainGrid>()
+    private val saveLock = Mutex()
+
+    /** 길을 받았으면(또는 저장된 것을 불러왔으면) 최근 길로 적고 자료를 저장한다 */
+    private fun rememberRoute(entry: SavedRoute, route: GeoRoute, saved: RouteBook.Payload?) {
+        savedKey = entry.key
+        savedRoute = route
+        savedDetails.clear()
+        saved?.details?.let { savedDetails.putAll(it) }
+        val (list, removed) = RouteBook.touch(RouteBook.decodeList(store.loadText(BOOK)), entry)
+        store.saveText(BOOK, RouteBook.encodeList(list))
+        removed.forEach { store.saveText(it, null) }
+        if (saved == null) persistRoute()
+        _ui.update { it.copy(routeSaved = true, routeFavorite = entry.favorite, routeFromSaved = saved != null) }
+    }
+
+    /** 위험 구간 지형을 받으면 저장해 둔 길에도 넣는다 (다음에 같은 길이면 바로) */
+    private fun keepDetail(k: String, g: TerrainGrid) {
+        if (savedKey == null || savedDetails[k] === g) return
+        savedDetails[k] = g
+        persistRoute()
+    }
+
+    private fun persistRoute() {
+        val key = savedKey ?: return
+        val route = savedRoute ?: return
+        val details = HashMap(savedDetails)
+        bg?.launch(Dispatchers.Default) { saveLock.withLock { store.saveText(key, RouteBook.encode(route, details)) } }
+    }
+
+    /** 지금 길을 즐겨찾기에 넣고 빼기 */
+    fun toggleFavorite() {
+        val key = savedKey ?: return
+        val on = !_ui.value.routeFavorite
+        val (list, removed) = RouteBook.setFavorite(RouteBook.decodeList(store.loadText(BOOK)), key, on)
+        store.saveText(BOOK, RouteBook.encodeList(list))
+        removed.forEach { store.saveText(it, null) }
+        _ui.update { it.copy(routeFavorite = on) }
+    }
+
+    private suspend fun loadDetail(path: RoutePath, seg: RiskSegment): TerrainGrid? {
         val la = path.lat0 ?: return null
         val lo = path.lng0 ?: return null
         if (!settings.terrain) return null
@@ -715,15 +834,7 @@ class ChalrangEngine(
         for (i in path.index(seg.startM)..path.index(seg.endM)) {
             minX = minOf(minX, path.x[i]); maxX = maxOf(maxX, path.x[i]); minY = minOf(minY, path.y[i]); maxY = maxOf(maxY, path.y[i])
         }
-        return GeoFetch.detail(la, lo, minX, minY, maxX, maxY)
-    }
-
-    /** 브리핑 전체 지형을 약 30m 로 (GPU 지형 셰이더가 매끄럽게 그린다, 512칸·타일 16장까지) */
-    suspend fun briefFine(path: RoutePath): TerrainGrid? {
-        val la = path.lat0 ?: return null
-        val lo = path.lng0 ?: return null
-        if (!settings.terrain) return null
-        return GeoFetch.detail(la, lo, path.x.min(), path.y.min(), path.x.max(), path.y.max(), margin = 2_500.0, step = 30.0, maxCells = 512, maxTiles = 16)
+        return withContext(Dispatchers.Default) { GeoFetch.detail(la, lo, minX, minY, maxX, maxY) }
     }
 
     fun endBriefing() = _ui.update { it.copy(briefing = null) }
@@ -743,7 +854,12 @@ class ChalrangEngine(
         terrainTried = false
         routeSpoken = false
         announced.clear()
-        _ui.update { it.copy(route = null, routeAtM = 0.0) }
+        prefetched.values.forEach { it.cancel() }
+        prefetched.clear()
+        savedKey = null
+        savedRoute = null
+        savedDetails.clear()
+        _ui.update { it.copy(route = null, routeAtM = 0.0, routeSaved = false, routeFavorite = false, routeFromSaved = false) }
     }
 
     /** 평가 창 닫기 */
@@ -799,6 +915,8 @@ class ChalrangEngine(
     private fun newId(): String = Random.nextLong().toULong().toString(16)
 
     companion object {
+        /** 저장해 둔 길 목록의 이름 */
+        private const val BOOK = "routebook"
         const val TICK_MS = 50L
         const val SCENARIO_DT = 0.1
         /** 시연 배속 (13분 경로 → 약 2분 10초) */

@@ -21,7 +21,13 @@ enum class ManeuverKind(val label: String, val shaky: Boolean, val risk: Double 
 }
 
 /** [dir] 회전 방향: -1 왼쪽, +1 오른쪽, 0 모름 */
-data class Upcoming(val kind: ManeuverKind, val distanceM: Double, val dir: Int = 0)
+data class Upcoming(
+    val kind: ManeuverKind,
+    val distanceM: Double,
+    val dir: Int = 0,
+    /** 내비가 준 지명·안내 문구 (교차로·나들목 이름 등, 없으면 null) */
+    val name: String? = null,
+)
 
 /** 차량에 내리는 조치 */
 sealed interface CareAction {

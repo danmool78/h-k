@@ -107,7 +107,7 @@ class NaviLink(context: Context) : NaviPort {
     }
 
     private fun publish() {
-        val list = turns.mapNotNull { t -> kindOf(t.type)?.let { Upcoming(it, t.distance, dirOf(t.type)) } } +
+        val list = turns.mapNotNull { t -> kindOf(t.type)?.let { Upcoming(it, t.distance, dirOf(t.type), nameOf(t.description)) } } +
             cautions.mapNotNull { c -> kindOf(c.type)?.let { Upcoming(it, c.remainDistance.toDouble()) } }
         val ahead = list.filter { it.distanceM >= 0 }.sortedBy { it.distanceM }
         val d = dest
@@ -121,6 +121,7 @@ class NaviLink(context: Context) : NaviPort {
             routeId = (h?.routeId ?: "") + "#" + routeSerial,
             hereLat = h?.latitude, hereLng = h?.longitude,
             destLat = d?.latitude, destLng = d?.longitude,
+            destName = nameOf(d?.name),
         )
     }
 
@@ -139,6 +140,9 @@ class NaviLink(context: Context) : NaviPort {
             TurnType.TURN_RESTAREA, TurnType.TURN_ENTER_SERVICEAREA -> ManeuverKind.REST_AREA
             else -> null
         }
+
+        /** 내비 안내 문구·지명 (빈 것은 없는 것으로) */
+        fun nameOf(s: String?): String? = s?.trim()?.takeIf { it.isNotEmpty() }
 
         /** 회전 방향: -1 왼쪽, +1 오른쪽 (유턴은 왼쪽) */
         fun dirOf(t: TurnType): Int {

@@ -14,6 +14,9 @@ class ChildStore(context: Context) : ChildRepo {
 
     private val prefs = context.applicationContext.getSharedPreferences("children", Context.MODE_PRIVATE)
 
+    /** 저장해 둔 길은 커서(수백 KB) 설정 대신 파일로 */
+    private val dir = java.io.File(context.applicationContext.filesDir, "routes")
+
     override fun load(): List<Child> = decode(prefs.getString(KEY, null))
 
     override fun save(children: List<Child>) {
@@ -31,6 +34,22 @@ class ChildStore(context: Context) : ChildRepo {
     override fun saveSettings(text: String) {
         prefs.edit().putString(SETTINGS, text).apply()
     }
+
+    override fun loadText(name: String): String? = runCatching { java.io.File(dir, safe(name)).takeIf { it.exists() }?.readText() }.getOrNull()
+
+    override fun saveText(name: String, text: String?) {
+        runCatching {
+            val f = java.io.File(dir, safe(name))
+            if (text == null) { f.delete(); return }
+            dir.mkdirs()
+            // 쓰다 끊겨도 반쯤 쓴 파일이 남지 않게: 옆에 쓰고 바꿔 끼운다
+            val tmp = java.io.File(dir, safe(name) + ".tmp")
+            tmp.writeText(text)
+            if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
+        }
+    }
+
+    private fun safe(name: String) = name.replace(Regex("[^A-Za-z0-9_.-]"), "_")
 
     companion object {
         private const val KEY = "list"

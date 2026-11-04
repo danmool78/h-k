@@ -54,6 +54,7 @@ private fun jsChime(): Unit = js(
 
 private fun lsGet(key: String): String? = js("window.localStorage.getItem(key)")
 private fun lsSet(key: String, value: String): Unit = js("window.localStorage.setItem(key, value)")
+private fun lsRemove(key: String): Unit = js("window.localStorage.removeItem(key)")
 
 class BrowserVoice : VoicePort {
     /** 소리 끔 (점검할 때 조용히) */
@@ -96,6 +97,13 @@ class BrowserChildRepo : ChildRepo {
 
     override fun saveSettings(text: String) {
         runCatching { lsSet(SETTINGS, text) }
+    }
+
+    // 저장해 둔 길 (브라우저 저장 공간이 작아 넘치면 그냥 저장하지 않는다)
+    override fun loadText(name: String): String? = runCatching { lsGet("chalrang.text.$name") }.getOrNull()
+
+    override fun saveText(name: String, text: String?) {
+        runCatching { if (text == null) lsRemove("chalrang.text.$name") else lsSet("chalrang.text.$name", text) }
     }
 
     private companion object {
