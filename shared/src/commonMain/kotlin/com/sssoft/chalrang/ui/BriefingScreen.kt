@@ -339,8 +339,11 @@ private fun SegmentBriefing(
         if (!ready) return@LaunchedEffect
         var last = 0L
         var told = -1
+        val gate = FrameGate()
         while (true) {
             withFrameNanos { now ->
+                // 지형 셰이더가 가장 무거운 화면: 초당 FPS 번만 진행·다시 그린다
+                if (!gate.pass(now)) return@withFrameNanos
                 val dt = if (last == 0L) 0.0 else ((now - last) / 1e9).coerceAtMost(0.25)
                 last = now
                 t += dt

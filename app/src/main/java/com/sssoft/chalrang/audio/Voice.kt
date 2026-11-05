@@ -5,12 +5,14 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.sssoft.chalrang.engine.VoicePort
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
@@ -96,7 +98,22 @@ class Voice(context: Context) : VoicePort {
         pending.clear()
     }
 
+    /**
+     * 물소리는 따로 스레드에서: 오디오 트랙을 만들 때 오디오 서비스를 찾느라 몇 초씩 멈출 수 있다
+     * (에뮬레이터에서 화면이 5초 넘게 멈춰 앱이 꺼졌다). 앞 소리를 아직 만드는 중이면 이번 것은 건너뛴다.
+     */
+    private val sound = HandlerThread("chalrang-sound").apply { start() }
+    private val soundHandler = Handler(sound.looper)
+    private val chiming = AtomicBoolean(false)
+
     override fun chime() {
+        if (!chiming.compareAndSet(false, true)) return
+        soundHandler.post {
+            try { playChime() } finally { chiming.set(false) }
+        }
+    }
+
+    private fun playChime() {
         try {
             val pcm = chimePcm
             val track = AudioTrack.Builder()
@@ -122,12 +139,12 @@ class Voice(context: Context) : VoicePort {
             }
             track.setNotificationMarkerPosition(pcm.size)
             track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
-                override fun onMarkerReached(t: AudioTrack) { main.post(done) }
+                override fun onMarkerReached(t: AudioTrack) { soundHandler.post(done) }
                 override fun onPeriodicNotification(t: AudioTrack) = Unit
-            }, main)
+            }, soundHandler)
             track.play()
             // 끝 신호가 오지 않아도 반드시 반납
-            main.postDelayed(done, (pcm.size * 1000L / RATE) + 500)
+            soundHandler.postDelayed(done, (pcm.size * 1000L / RATE) + 500)
         } catch (e: Exception) {
             Log.w(TAG, "찰랑 소리 실패", e)
         }
@@ -135,6 +152,7 @@ class Voice(context: Context) : VoicePort {
 
     fun release() {
         main.post { shutdownTts() }
+        sound.quitSafely()
     }
 
     companion object {

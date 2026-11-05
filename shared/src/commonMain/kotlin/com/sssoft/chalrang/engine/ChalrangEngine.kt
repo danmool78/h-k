@@ -71,6 +71,8 @@ data class UiState(
     val habitWater: Double = WaterCup.DEFAULT_LEVEL,
     /** 지금 물을 채우거나 덜 수 있는지 (출발 전) */
     val canAdjust: Boolean = true,
+    /** 달리는 중: 화면을 한눈에 볼 것만 남긴다 (물컵·다음 구간 한 줄·"지금 멀미") */
+    val driving: Boolean = false,
     val dose: Double = 0.0,
     val spilling: Boolean = false,
     val setup: CupSetup = CupSetup(emptyList(), emptyList(), null, emptyList()),
@@ -100,6 +102,8 @@ data class UiState(
     /** 가는 길 미리보기 (길 안내·시연 중일 때) 와 지금까지 온 거리 (m) */
     val route: RoutePreview? = null,
     val routeAtM: Double = 0.0,
+    /** 길 안내 중인 실제 도로를 받아 두었는지 (그러면 시연이 그 길을 달린다) */
+    val naviRoute: Boolean = false,
     /** 3D 경로 브리핑 중이면 그 경로 */
     val briefing: RoutePath? = null,
     /** 지금 길 안내 경로를 저장해 두었는지 (즐겨찾기·최근), 즐겨찾기인지, 저장해 둔 것을 불러왔는지 */
@@ -208,6 +212,15 @@ class ChalrangEngine(
     private var liveMoving = 0.0
     private var liveStopped = 0.0
 
+    /** 화면을 주행 모드로 (달리기 시작하면 바로, 멈춘 뒤에는 [STILL_SEC] 지나서: 신호 대기에 화면이 깜빡이지 않게) */
+    private var driving = false
+    private var stillFor = 0.0
+
+    private fun drivingNow(kmh: Double, dt: Double): Boolean {
+        if (kmh >= 5) { driving = true; stillFor = 0.0 } else if (kmh < 1) { stillFor += dt; if (stillFor >= STILL_SEC) driving = false }
+        return driving
+    }
+
     init {
         remote?.enabled = settings.phoneDemo
         applySettings(policy)
@@ -256,7 +269,7 @@ class ChalrangEngine(
     private val rodeThisTrip = HashSet<String>()
     private var windowAnswer: Boolean? = null
 
-    private class Demo(val scenario: DriveScenario, val frames: Iterator<Frame>) {
+    private class Demo(val scenario: DriveScenario, val frames: Iterator<Frame>, val speed: Double) {
         var frame: Frame? = null
         /** 아직 재생하지 않은 시나리오 시간 (초) */
         var pending = 0.0
@@ -301,8 +314,8 @@ class ChalrangEngine(
         var assumed = false
         val input: CareInput
         if (d != null) {
-            // 시연: 시나리오 프레임을 DEMO_SPEED 배속으로 (브리핑을 보는 동안은 멈춤)
-            if (_ui.value.briefing == null) d.pending += DEMO_SPEED * dt
+            // 시연: 시나리오 프레임을 배속으로 (브리핑을 보는 동안은 멈춤)
+            if (_ui.value.briefing == null) d.pending += d.speed * dt
             var spillStarted = false
             while (d.pending >= SCENARIO_DT && d.frames.hasNext()) {
                 d.pending -= SCENARIO_DT
@@ -411,8 +424,10 @@ class ChalrangEngine(
             )
         }
         perform(policy.decide(input))
+        val moving = drivingNow(input.speedKmh ?: 0.0, dt)
         _ui.update {
             it.copy(
+                driving = moving,
                 tiltX = cup.tiltX, tiltY = cup.tiltY, tiltZ = cup.tiltZ, gradeX = cup.gradeX, gradeY = cup.gradeY, level = water, freeboard = WaterCup.freeboardOf(water), canAdjust = canAdjustWater(),
                 dose = cup.dose, spilling = waterSpilling, setup = input.setup, car = car.status.value,
                 demoProgress = demo?.let { dm -> ((dm.frame?.t ?: 0.0) / dm.scenario.durationSec).toFloat() } ?: 0f,
@@ -516,16 +531,23 @@ class ChalrangEngine(
 
     fun startDemo(style: DriverStyle) {
         resetTrip()
-        // 시연 시간은 배속으로 흐르므로 창문 질문은 실제 20초 동안 기다린다
-        policy = CarePolicy(askTimeoutSec = CarePolicy.ASK_TIMEOUT * DEMO_SPEED).also { applySettings(it) }
-        // 실제 지역 길(받아 두었으면) 또는 만든 주말 나들이 시나리오
-        val s = demoPaths[DemoRoute.of(settings.demoRoute)]?.let { DriveScenario.fromRoute(it, style) } ?: DriveScenario.weekendTrip(style)
+        // 내비 길 안내 중이면 그 길 (차가 서 있는 에뮬레이터에서도 목적지까지 달려 본다),
+        // 아니면 실제 지역 길(받아 두었으면) 또는 만든 주말 나들이 시나리오
+        val nav = naviDemoPath()
+        val briefed = nav != null && briefedThisRoute
+        naviDemoKey = if (nav != null) routeKey else null
+        val s = nav?.let { DriveScenario.fromRoute(it, style) }
+            ?: demoPaths[DemoRoute.of(settings.demoRoute)]?.let { DriveScenario.fromRoute(it, style) } ?: DriveScenario.weekendTrip(style)
         clearRoute()
         // 시연 경로 미리보기: 길 모양을 편하게 달릴 때의 흔들림으로 (실제 길과 같은 기준)
         demoRoute = s.route?.preview ?: RoutePath.of(s).preview
-        demo = Demo(s, s.frames(SCENARIO_DT).iterator())
-        // 설정에서 브리핑을 켰으면 출발 전에 3D 브리핑 (보는 동안 시연은 멈춤)
-        if (settings.briefing && settings.routePreview) {
+        // 배속: 기본 6배, 긴 길(내비 목적지가 수백 km)은 DEMO_MAX_SEC 안에 끝나게 더 빠르게
+        val speed = maxOf(DEMO_SPEED, s.durationSec / DEMO_MAX_SEC)
+        // 시연 시간은 배속으로 흐르므로 창문 질문은 실제 20초 동안 기다린다
+        policy = CarePolicy(askTimeoutSec = CarePolicy.ASK_TIMEOUT * speed).also { applySettings(it) }
+        demo = Demo(s, s.frames(SCENARIO_DT).iterator(), speed)
+        // 설정에서 브리핑을 켰으면 출발 전에 3D 브리핑 (보는 동안 시연은 멈춤). 내비 길을 이미 봤으면 다시 안 봄
+        if (settings.briefing && settings.routePreview && !briefed) {
             briefedThisRoute = true
             routeSpoken = true
             startBriefing()
@@ -587,6 +609,8 @@ class ChalrangEngine(
     private val known = HashMap<String, RoutePoint>()
     private var terrain: Terrain? = null
     private var terrainTried = false
+    /** 도로 선(OSRM)을 다시 받아 볼 시각 (엔진 시각, 못 받았을 때) */
+    private var geoRetryAt = 0.0
     private var routeSpoken = false
     private val announced = HashSet<Int>()
     private var demoRoute: RoutePreview? = null
@@ -613,6 +637,8 @@ class ChalrangEngine(
                 clearRoute()
                 routeKey = a.routeId
                 routeD0 = remain
+                // 내비 길로 시연하고 돌아온 같은 길 안내: 브리핑·요약을 다시 하지 않는다
+                if (a.routeId == naviDemoKey) { briefedThisRoute = true; routeSpoken = true }
             }
             val travelled = (routeD0 - remain).coerceAtLeast(0.0)
             var changed = false
@@ -629,7 +655,10 @@ class ChalrangEngine(
                 val at = travelled + remain
                 if (known[k]?.name != n) { known[k] = RoutePoint(ManeuverKind.OTHER, at, 0, n); changed = true }
             }
-            if (!terrainTried && settings.terrain && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
+            if (livePath == null && now() >= geoRetryAt && settings.terrain && a.hereLat != null && a.hereLng != null && a.destLat != null && a.destLng != null) {
+                // 도로 선을 못 받으면 30초 뒤 다시 (그 사이에는 안내 지점으로 그린 길)
+                geoRetryAt = now() + 30.0
+                val first = !terrainTried
                 terrainTried = true
                 // 실제 도로 선(OSRM)과 높이: 되면 굽이까지, 안 되면 직선 지형 추정.
                 // 긴 길(수백 km)은 점이 수만 개라 계산을 화면 스레드 밖에서
@@ -638,7 +667,10 @@ class ChalrangEngine(
                 val hit = RouteBook.find(book, a.hereLat, a.hereLng, a.destLat, a.destLng)
                 val saved = hit?.let { h -> withContext(Dispatchers.Default) { RouteBook.decode(store.loadText(h.key)) } }
                 val g = saved?.route ?: withContext(Dispatchers.Default) { GeoFetch.route(a.hereLat, a.hereLng, a.destLat, a.destLng) }
-                if (g != null) {
+                val p = g?.let { withContext(Dispatchers.Default) { RoutePath.fromPolyline(it.xs, it.ys, it.zs, etaSec = a.remainSec, grid = it.grid, lat0 = it.lat0, lng0 = it.lng0) } }
+                // 받는 동안 시연이 시작됐거나 길 안내가 바뀌었으면 버린다
+                if (demo != null || routeKey != a.routeId) continue
+                if (g != null && p != null) {
                     rememberRoute(
                         SavedRoute(
                             hit?.key ?: RouteBook.keyOf(a.hereLat, a.hereLng, a.destLat, a.destLng), a.destName ?: hit?.name,
@@ -646,20 +678,26 @@ class ChalrangEngine(
                         ),
                         g, saved,
                     )
-                    val p = withContext(Dispatchers.Default) {
-                        RoutePath.fromPolyline(g.xs, g.ys, g.zs, etaSec = a.remainSec, grid = g.grid, lat0 = g.lat0, lng0 = g.lng0)
-                    }
                     livePath = p
                     livePathStartM = travelled
                     terrain = Terrain(RoutePath.STEP, p.z)
                     for (b in p.marks) known["${b.kind}@g${(b.atM / 200).roundToInt()}"] = b.copy(atM = b.atM + travelled)
-                } else {
+                } else if (first) {
                     terrain = Elevation.along(a.hereLat, a.hereLng, a.destLat, a.destLng, remain)
+                    if (demo != null || routeKey != a.routeId) continue
                 }
                 changed = true
             }
             val current = _ui.value.route
-            val plan = if (changed || current == null) livePlan(a.remainSec) else current
+            val plan = if (changed || current == null) {
+                val key = routeKey
+                val (pv, demoPath) = livePlan(livePath, livePathStartM, routeD0, terrain, a.remainSec, known.values.toList())
+                if (demo != null || routeKey != key) continue
+                naviDemo = demoPath
+                // 시연할 경로가 준비된 뒤에 "시연 길 · 내비 경로" 로
+                if (_ui.value.naviRoute != (demoPath != null)) _ui.update { it.copy(naviRoute = demoPath != null) }
+                pv
+            } else current
             route(plan, travelled)
             // 길을 평가하자마자 브리핑 지형을 미리 받기 시작 (출발 전 브리핑이 기다리지 않게)
             if (changed && livePath != null) briefingPath()?.let { prefetchBriefing(it) }
@@ -670,12 +708,22 @@ class ChalrangEngine(
      * 길 안내 경로 평가 (시연 길과 같은 기준, [RoutePlanner.assess]): 실제 도로 선이 있으면 그 모양에
      * 내비 안내 지점(방지턱·이유 설명)을 얹어서, 없으면 안내 지점으로 다시 그린 모양으로.
      */
-    private fun livePlan(etaSec: Double?): RoutePreview {
-        val p = livePath ?: return RoutePlanner.plan(known.values.toList(), routeD0, etaSec, terrain)
-        val d = livePathStartM
-        val marks = known.values.filter { it.atM >= d && it.atM - d <= p.lengthM }.map { it.copy(atM = it.atM - d) }
-        return RoutePlanner.assess(p.withMarks(marks), etaSec).shifted(d, routeD0)
+    private suspend fun livePlan(
+        p: RoutePath?, startM: Double, d0: Double, terr: Terrain?, etaSec: Double?, marks: List<RoutePoint>,
+    ): Pair<RoutePreview, RoutePath?> = withContext(Dispatchers.Default) {
+        if (p == null) return@withContext RoutePlanner.plan(marks, d0, etaSec, terr) to null
+        val m = liveMarked(p, startM, marks)
+        val pv = RoutePlanner.assess(m, etaSec)
+        // 화면에는 지금까지 온 거리를 더해서, 시연에는 도로 선의 처음부터
+        pv.shifted(startM, d0) to m.withPreview(pv)
     }
+
+    /** 실제 도로 선에 내비 안내 지점을 얹는다 (도로 선을 받은 곳부터 잰 거리로) */
+    private fun liveMarked(p: RoutePath, d: Double, marks: List<RoutePoint>): RoutePath =
+        p.withMarks(marks.filter { it.atM >= d && it.atM - d <= p.lengthM }.map { it.copy(atM = it.atM - d) })
+
+    /** 내비 길로 시연할 경로: 길 안내 중이고 실제 도로 선을 받아 두었을 때 (그 길의 위험 구간까지 매겨서) */
+    private fun naviDemoPath(): RoutePath? = naviDemo?.takeIf { navi.ahead.value.remainM != null }
 
     private fun route(plan: RoutePreview, atM: Double) {
         if (_ui.value.route !== plan || _ui.value.routeAtM != atM) _ui.update { it.copy(route = plan, routeAtM = atM) }
@@ -721,6 +769,10 @@ class ChalrangEngine(
     /** 길 안내 중인 실제 도로 (OSRM) 와 그것을 받을 때 이미 온 거리 (m) */
     private var livePath: RoutePath? = null
     private var livePathStartM = 0.0
+    /** 내비 길로 시연할 경로: 위험 구간까지 매긴 것 (경로를 평가할 때 백그라운드에서 함께 만들어 둔다) */
+    private var naviDemo: RoutePath? = null
+    /** 내비 길로 시연한 길 안내 (끝나고 같은 길로 돌아와도 브리핑을 다시 열지 않게) */
+    private var naviDemoKey: String? = null
 
     private suspend fun loadRegion() {
         for (r in DemoRoute.entries) if (r !in demoPaths) DemoRoutes.load(r)?.let { demoPaths[r] = it }
@@ -738,6 +790,8 @@ class ChalrangEngine(
 
     /** 지금 경로(시연 또는 길 안내)로 3D 브리핑을 연다 */
     fun startBriefing() {
+        // 달리는 중에는 열지 않는다 (운전자 시선 분산)
+        if (driving) return
         val path = briefingPath() ?: return
         prefetchBriefing(path)
         _ui.update { it.copy(briefing = path) }
@@ -848,10 +902,12 @@ class ChalrangEngine(
     private fun clearRoute() {
         briefedThisRoute = false
         livePath = null
+        naviDemo = null
         routeKey = null
         known.clear()
         terrain = null
         terrainTried = false
+        geoRetryAt = 0.0
         routeSpoken = false
         announced.clear()
         prefetched.values.forEach { it.cancel() }
@@ -859,7 +915,7 @@ class ChalrangEngine(
         savedKey = null
         savedRoute = null
         savedDetails.clear()
-        _ui.update { it.copy(route = null, routeAtM = 0.0, routeSaved = false, routeFavorite = false, routeFromSaved = false) }
+        _ui.update { it.copy(route = null, routeAtM = 0.0, naviRoute = false, routeSaved = false, routeFavorite = false, routeFromSaved = false) }
     }
 
     /** 평가 창 닫기 */
@@ -921,6 +977,9 @@ class ChalrangEngine(
         const val SCENARIO_DT = 0.1
         /** 시연 배속 (13분 경로 → 약 2분 10초) */
         const val DEMO_SPEED = 6.0
+        /** 시연이 이보다 길어지지 않게 배속을 올린다 (초). 앱에 넣은 시연 길(가장 긴 고속도로 약 20분)은 6배속 그대로,
+         *  수백 km 내비 경로는 더 빠르게 (398km → 약 85배속) */
+        const val DEMO_MAX_SEC = 210.0
         /** 휴대폰 시연에서 쓰는 속도 (창문 판단용) */
         const val REMOTE_KMH = 40.0
         private const val LOCAL_SESSION = "이 기기"
@@ -949,5 +1008,7 @@ class ChalrangEngine(
         const val ANNOUNCE_M = 1_200.0
         /** 이만큼 서 있으면 주행이 끝난 것으로 (초): 신호 대기보다 길게 */
         const val PARKED_SEC = 180.0
+        /** 이만큼 서 있으면 화면을 정차 모드로 (초) */
+        const val STILL_SEC = 5.0
     }
 }

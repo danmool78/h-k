@@ -5,10 +5,14 @@ import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
 
+/** 안드로이드 기본 User-Agent(Dalvik/…)는 OSRM 공개 서버가 403 으로 막는다 */
+private const val USER_AGENT = "Chalrang/0.1 (+https://github.com/danmool78/h-k)"
+
 actual suspend fun httpRequest(url: String, method: String, body: String?): String? = withContext(Dispatchers.IO) {
     runCatching {
         val c = URL(url).openConnection() as HttpURLConnection
         c.requestMethod = method
+        c.setRequestProperty("User-Agent", USER_AGENT)
         c.connectTimeout = 5_000
         c.readTimeout = 5_000
         if (body != null) {
@@ -17,16 +21,19 @@ actual suspend fun httpRequest(url: String, method: String, body: String?): Stri
             c.outputStream.use { it.write(body.toByteArray()) }
         }
         try {
-            if (c.responseCode !in 200..299) null else c.inputStream.bufferedReader().use { it.readText() }
+            val code = c.responseCode
+            if (code !in 200..299) { android.util.Log.w("Http", "$code ${url.take(80)}"); null }
+            else c.inputStream.bufferedReader().use { it.readText() }
         } finally {
             c.disconnect()
         }
-    }.getOrNull()
+    }.onFailure { android.util.Log.w("Http", "실패 ${url.take(80)}", it) }.getOrNull()
 }
 
 actual suspend fun fetchTerrarium(z: Int, x: Int, y: Int): ShortArray? = withContext(Dispatchers.IO) {
     runCatching {
         val c = URL("${TerrainTiles.URL}/$z/$x/$y.png").openConnection() as HttpURLConnection
+        c.setRequestProperty("User-Agent", USER_AGENT)
         c.connectTimeout = 5_000
         c.readTimeout = 8_000
         val bytes = try {

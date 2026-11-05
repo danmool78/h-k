@@ -14,6 +14,8 @@ import ai.pleos.playground.vehicle.listener.SeatOccupancyListener
 import ai.pleos.playground.vehicle.listener.SteeringWheelAngleListener
 import ai.pleos.playground.vehicle.listener.WiperStateListener
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.sssoft.chalrang.core.MotionEstimator
 import com.sssoft.chalrang.core.Seat
@@ -67,6 +69,7 @@ class CarLink(context: Context) : CarPort {
     private val savedTemp = mutableMapOf<SeatArea, Float>()
     private val savedFan = mutableMapOf<SeatArea, Int>()
     private val savedWindow = mutableMapOf<Window, Int>()
+    private val main = Handler(Looper.getMainLooper())
 
     private val occupancyListeners = mutableMapOf<Seat, SeatOccupancyListener>()
     private val beltListeners = mutableMapOf<Seat, SeatBeltBuckledStateListener>()
@@ -292,10 +295,22 @@ class CarLink(context: Context) : CarPort {
         for (w in windows) {
             val (lo, hi) = windowBounds[w] ?: continue
             val target = lo + (hi - lo) * percent / 100
+            // 창문 잠금(뒷좌석 잠금 등)이 걸려 있으면 차가 명령을 받지 않는다: 원인을 알 수 있게 남긴다
+            win.getCurrentWindowLockState(windowArea(w), { locked -> Log.i(TAG, "${w.label} 창문 잠금: $locked") }, { e -> Log.i(TAG, "${w.label} 창문 잠금 조회 불가: ${e.message}") })
             win.getCurrentWindowPosition(windowArea(w), { cur ->
                 val now = cur ?: lo
                 savedWindow.putIfAbsent(w, now)
-                if (now < target) win.setWindowPosition(windowArea(w), target, { _, _ -> }, { e -> warn("창문 열기 실패", e) })
+                Log.i(TAG, "${w.label} 창문 $now → $target (범위 $lo~$hi)")
+                if (now < target) win.setWindowPosition(windowArea(w), target, { _, pos ->
+                    Log.i(TAG, "${w.label} 창문 열림: $pos")
+                }, { e ->
+                    warn("창문 열기 실패", e)
+                    _status.update { it.copy(lastAction = "${w.label} 창문: 차량이 응답하지 않음") }
+                })
+                // 응답과 상관없이 실제로 움직였는지 몇 초 뒤 다시 읽는다
+                main.postDelayed({
+                    win.getCurrentWindowPosition(windowArea(w), { p -> Log.i(TAG, "${w.label} 창문 지금 위치: $p (목표 $target)") }, { e -> Log.w(TAG, "창문 위치 재조회 실패", e) })
+                }, RECHECK_MS)
             }, { e -> warn("창문 위치 조회 실패", e) })
             opened[w] = percent
         }
@@ -335,6 +350,8 @@ class CarLink(context: Context) : CarPort {
 
     companion object {
         private const val TAG = "CarLink"
+        /** 창문 명령 뒤 실제 위치를 다시 읽을 때까지 (ms) */
+        private const val RECHECK_MS = 6_000L
         const val COOL_DOWN_C = 2f
 
         fun seatArea(s: Seat) = SeatArea(

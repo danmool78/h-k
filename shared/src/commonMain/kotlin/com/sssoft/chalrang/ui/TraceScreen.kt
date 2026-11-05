@@ -47,6 +47,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -90,7 +91,9 @@ import com.sssoft.chalrang.core.TraceKind
 import com.sssoft.chalrang.core.TraceSample
 import com.sssoft.chalrang.core.WaterCup
 import com.sssoft.chalrang.engine.ChalrangEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
@@ -111,10 +114,11 @@ private class WindowStats(val accMax: Double, val accMin: Double, val tiltMax: D
 fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
     val ui by engine.ui.collectAsState()
     val trace = engine.trace
-    // 그래프: 화면 프레임마다 다시 그려 실시간으로 흐른다 (그리기 단계에서만 읽어 화면 재구성은 없다)
+    // 그래프: 초당 FPS 번 다시 그려 실시간으로 흐른다 (그리기 단계에서만 읽어 화면 재구성은 없다)
     val frame = remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
-        while (true) withFrameNanos { frame.longValue = it }
+        val gate = FrameGate()
+        while (true) withFrameNanos { if (gate.pass(it)) frame.longValue = it }
     }
     // 수치·물컵·안내 목록: 0.1초마다
     var version by remember { mutableLongStateOf(trace.version) }
@@ -149,8 +153,14 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
         }
 
         val (t0, t1) = remember(version, windowSec, frozenEnd) { range() }
-        val lag = remember(trace.size / 10, trace.startTime, windowSec, frozenEnd) { trace.lag(t0, t1) }
-        val shake = remember(trace.size / 20, trace.startTime, windowSec, frozenEnd) { ShakeAnalysis.analyze(trace, t0, t1, ShakeAnalysis.SHOW_MIN_SEC) }
+        // 반응 지연·흔들림 주기는 무겁다 (긴 기록이면 수백만 번 계산): 화면 스레드 밖에서, 그동안은 직전 결과를 보여 준다.
+        // 기록은 고정 크기 배열이라 읽는 중에 새 샘플이 덧붙어도 안전하다
+        val lag by produceState<Lag?>(null, trace.size / 10, trace.startTime, windowSec, frozenEnd) {
+            value = withContext(Dispatchers.Default) { trace.lag(t0, t1) }
+        }
+        val shake by produceState<ShakeReport?>(null, trace.size / 20, trace.startTime, windowSec, frozenEnd) {
+            value = withContext(Dispatchers.Default) { ShakeAnalysis.analyze(trace, t0, t1, ShakeAnalysis.SHOW_MIN_SEC) }
+        }
         val events = remember(trace.events.size, trace.startTime, t0.toLong(), t1.toLong()) { trace.events.filter { it.t in t0..t1 } }
         val stats = remember(version, windowSec, frozenEnd) { windowStats(trace, t0, t1, events) }
         val at = cursor?.coerceIn(t0, t1) ?: t1

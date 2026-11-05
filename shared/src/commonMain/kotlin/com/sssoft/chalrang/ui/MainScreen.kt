@@ -24,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Air
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.EventSeat
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.Icon
@@ -81,6 +83,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sssoft.chalrang.core.Child
@@ -104,6 +107,7 @@ fun MainScreen(vm: ChalrangEngine) {
     val s by vm.ui.collectAsState()
     var tracing by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var demoOpen by remember { mutableStateOf(false) }
 
     NeonBackground {
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -119,6 +123,39 @@ fun MainScreen(vm: ChalrangEngine) {
         } else if (tracing) {
             // 기록 화면이 덮는 동안 아래 물컵 화면은 그리지 않는다 (차량 화면 성능)
             TraceScreen(vm, onClose = { tracing = false })
+        } else if (s.driving) {
+            // 달리는 중: 한눈에 볼 것만 (물컵 · 누가 탔는지 · 다음 구간 한 줄 · "지금 멀미"). 자세한 건 음성으로
+            if (wide) {
+                Row(
+                    Modifier.fillMaxSize().padding(24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                ) {
+                    Cup(s, Modifier.weight(1f).fillMaxHeight(), onTrace = {}, onAdjust = {})
+                    Column(
+                        Modifier.width(sideWidth).fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        DriveStatus(s)
+                        NextUp(s)
+                        s.askWindows?.let { AskWindowCard(it, vm) }
+                        Spacer(Modifier.weight(1f))
+                        SickButton(s, vm, height = 96.dp)
+                        DemoStatus(s, vm)
+                    }
+                }
+            } else {
+                Column(
+                    Modifier.fillMaxSize().padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Cup(s, Modifier.weight(1f).fillMaxWidth(), onTrace = {}, onAdjust = {})
+                    DriveStatus(s)
+                    NextUp(s)
+                    s.askWindows?.let { AskWindowCard(it, vm) }
+                    SickButton(s, vm, height = 88.dp)
+                    DemoStatus(s, vm)
+                }
+            }
         } else if (wide) {
             Row(
                 Modifier.fillMaxSize().padding(24.dp),
@@ -134,7 +171,7 @@ fun MainScreen(vm: ChalrangEngine) {
                     RouteCard(s, onBrief = vm::startBriefing)
                     Said(s)
                     Spacer(Modifier.weight(1f))
-                    Controls(s, vm, onEdit = { settingsOpen = true })
+                    Controls(s, vm, onEdit = { settingsOpen = true }, onDemo = { demoOpen = true })
                 }
             }
         } else {
@@ -149,11 +186,13 @@ fun MainScreen(vm: ChalrangEngine) {
                 }
                 RouteCard(s, onBrief = vm::startBriefing)
                 Said(s)
-                Controls(s, vm, onEdit = { settingsOpen = true })
+                Controls(s, vm, onEdit = { settingsOpen = true }, onDemo = { demoOpen = true })
             }
         }
         // 주행이 끝나면 평가를 덮어 보여 준다
         if (!settingsOpen && brief == null) s.report?.let { TripReportOverlay(it, s.previousScore, onClose = vm::dismissReport) }
+        // 시연 고르기: 따로 창(대화 상자)을 띄우지 않고 화면 위에 겹쳐 그린다 (차량 화면에서 창이 까맣게 나왔다)
+        if (demoOpen && s.demo == null && !s.driving) DemoSheet(s, vm, onClose = { demoOpen = false })
     }
     }
 }
@@ -167,40 +206,25 @@ private fun Cup(s: UiState, modifier: Modifier, onTrace: () -> Unit, onAdjust: (
     // 따로 층(graphicsLayer)에 그려 두어 물이 움직일 때 다시 그리지 않는다
     Canvas(Modifier.fillMaxSize().graphicsLayer()) { drawHud() }
     CupView(s.tiltX - s.gradeX, s.tiltY - s.gradeY, s.level, s.dose, s.spilling, Modifier.fillMaxSize().padding(top = 40.dp, bottom = 8.dp), stage = true, heave = s.tiltZ, freeboard = s.freeboard)
-    // 컵 옆에 자리가 있을 때만 (세로로 긴 카드는 컵이 커져 눈금자와 겹친다)
-    if (maxWidth >= 440.dp && maxWidth >= maxHeight * 0.95f) MlRuler(s.level, Modifier.align(Alignment.CenterStart).padding(start = 18.dp).fillMaxHeight(0.56f))
-    WaterButtons(s, onAdjust, Modifier.align(Alignment.CenterEnd).padding(end = 16.dp))
+    // 달리는 중에는 물컵만 (눈금자·물 양 조절·분석은 정차 중에)
+    if (!s.driving) {
+        // 컵 옆에 자리가 있을 때만 (세로로 긴 카드는 컵이 커져 눈금자와 겹친다)
+        if (maxWidth >= 440.dp && maxWidth >= maxHeight * 0.95f) MlRuler(s.level, Modifier.align(Alignment.CenterStart).padding(start = 18.dp).fillMaxHeight(0.56f))
+        WaterButtons(s, onAdjust, Modifier.align(Alignment.CenterEnd).padding(end = 16.dp))
+        NeonChip("흔들림 분석", false, onClick = onTrace, icon = Icons.Filled.ShowChart, chevron = true, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
+    }
     Row(Modifier.align(Alignment.TopStart).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Filled.WaterDrop, null, tint = Neon.Cyan, modifier = Modifier.size(30.dp))
         Spacer(Modifier.width(8.dp))
         Text("찰랑", color = Neon.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
     }
-    NeonChip("흔들림 분석", false, onClick = onTrace, icon = Icons.Filled.ShowChart, chevron = true, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
 }
 
-/** 물컵 카드 바탕: 가운데 푸른 빛, 옅은 격자와 교차점의 점, 컵을 감싸는 큰 호 */
+/** 물컵 카드 바탕: 가운데 푸른 빛과 컵을 감싸는 큰 호 (격자는 컵과 시선을 다퉈서 뺐다) */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHud() {
     val w = size.width
     val h = size.height
     drawRect(Brush.radialGradient(listOf(Color(0x3329C4F6), Color.Transparent), center = Offset(w * 0.5f, h * 0.62f), radius = size.minDimension * 0.7f))
-    val step = 44.dp.toPx()
-    val line = Color(0x0F4FA3E0)
-    var x = (w / 2) % step
-    while (x < w) { drawLine(line, Offset(x, 0f), Offset(x, h), 1f); x += step }
-    var y = (h * 0.62f) % step
-    while (y < h) { drawLine(line, Offset(0f, y), Offset(w, y), 1f); y += step }
-    // 교차점마다 작은 점 (네 칸에 하나는 조금 밝게)
-    x = (w / 2) % step
-    var i = 0
-    while (x < w) {
-        y = (h * 0.62f) % step
-        var j = 0
-        while (y < h) {
-            drawCircle(if ((i + j) % 4 == 0) Color(0x5529C4F6) else Color(0x224FA3E0), if ((i + j) % 4 == 0) 1.6f else 1.1f, Offset(x, y))
-            y += step; j++
-        }
-        x += step; i++
-    }
     // 컵을 감싸는 큰 호 (HUD 테두리)
     val r = size.minDimension * 0.47f
     val c = Offset(w / 2, h * 0.52f)
@@ -208,8 +232,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHud() {
     drawArc(Color(0x1429C4F6), 20f, 140f, false, Offset(c.x - r, c.y - r), Size(r * 2, r * 2), style = Stroke(1.2f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(4f, 8f))))
 }
 
-/** 눈금자 숫자 한 칸 높이 (13sp 글자가 잘리지 않게) */
-private val LABEL_H = 22.dp
+/** 눈금자 숫자 한 칸 높이 (15sp 글자가 잘리지 않게) */
+private val LABEL_H = 24.dp
 
 /** 왼쪽 ml 눈금자 (0~250ml, 50 마다 숫자). 화살표 = 지금 물 높이 */
 @Composable
@@ -242,7 +266,7 @@ private fun MlRuler(level: Double, modifier: Modifier) {
         Column(Modifier.fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
             for (label in listOf("250", "200", "150", "100", "50", "ml")) {
                 Box(Modifier.height(LABEL_H), contentAlignment = Alignment.CenterStart) {
-                    Text(label, color = Neon.Dim, fontSize = 13.sp, lineHeight = 16.sp, maxLines = 1, softWrap = false)
+                    Text(label, color = Neon.Dim, fontSize = 15.sp, lineHeight = 18.sp, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -269,37 +293,127 @@ private fun Chevron(tint: Color = Neon.Dim) = Icon(Icons.AutoMirrored.Filled.Key
 
 /** 창문 질문, "지금 멀미", 아이 설정·시연 */
 @Composable
-private fun Controls(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
+private fun Controls(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit, onDemo: () -> Unit) {
     s.askWindows?.let { AskWindowCard(it, vm) }
-    // "지금 멀미": 빛나는 빨간 버튼 (혼자 주행이면 꺼짐)
+    SickButton(s, vm)
+    DemoRow(s, vm, onEdit, onDemo)
+}
+
+/**
+ * "지금 멀미" (혼자 주행이면 꺼짐). 평소에는 차분하게 테두리만 빨갛고,
+ * 멀미 위험 구간을 지나는 동안에만 빨갛게 빛난다 — 빨강이 늘 켜져 있으면 경고로 읽히지 않는다.
+ */
+@Composable
+private fun SickButton(s: UiState, vm: ChalrangEngine, height: Dp = 72.dp) {
     val on = s.setup.active
+    val alert = on && s.route?.segments?.any { it.level >= 2 && s.routeAtM in it.startM..it.endM } == true
     val shape = RoundedCornerShape(20.dp)
     Box(
-        Modifier.fillMaxWidth().height(72.dp)
+        Modifier.fillMaxWidth().height(height)
             .drawBehind {
-                if (on) {
+                if (alert) {
                     for ((w, a) in listOf(22f to 0.06f, 12f to 0.12f, 5f to 0.22f)) {
                         drawRoundRect(Neon.Red.copy(alpha = a), Offset(-w / 2, -w / 2), Size(size.width + w, size.height + w), CornerRadius(20.dp.toPx() + w / 2), style = Stroke(w))
                     }
                 }
             }
             .clip(shape)
-            .background(if (on) SickFill else Brush.verticalGradient(listOf(Color(0xFF243246), Color(0xFF1A2536))), shape)
-            .border(1.5.dp, if (on) Color(0xFFFFA19A) else Neon.Edge.copy(alpha = 0.3f), shape)
+            .background(if (alert) SickFill else Brush.verticalGradient(listOf(Color(0xFF243246), Color(0xFF1A2536))), shape)
+            .border(if (on && !alert) 2.dp else 1.5.dp, when { alert -> Color(0xFFFFA19A); on -> Neon.Red.copy(alpha = 0.8f); else -> Neon.Edge.copy(alpha = 0.3f) }, shape)
             .clickable(enabled = on, onClick = vm::sickNow),
         contentAlignment = Alignment.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Warning, null, tint = if (on) Color.White else Neon.Faint, modifier = Modifier.size(34.dp))
+            Icon(Icons.Filled.Warning, null, tint = when { alert -> Color.White; on -> Neon.Red; else -> Neon.Faint }, modifier = Modifier.size(34.dp))
             Spacer(Modifier.width(14.dp))
             Text("지금 멀미", color = if (on) Color.White else Neon.Faint, fontSize = 30.sp, fontWeight = FontWeight.Bold)
         }
-        Box(Modifier.align(Alignment.CenterEnd).padding(end = 14.dp)) { Chevron(if (on) Color.White else Neon.Faint) }
     }
-    DemoRow(s, vm, onEdit)
 }
 
 private val SickFill = Brush.verticalGradient(listOf(Color(0xFFFF5A55), Color(0xFFE0283A), Color(0xFFB8142C)))
+
+/** 달리는 중 위쪽 한 줄: 누가 탔는지 (좌석 그림·이름)와 찰랑이 공조에 손대고 있으면 그것만 */
+@Composable
+private fun DriveStatus(s: UiState) {
+    Row(
+        Modifier.fillMaxWidth().neonCard().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val setup = s.setup
+        if (setup.active) {
+            SeatMap(setup.children.map { it.seat }, setup.guests, s.car.openWindows)
+            Spacer(Modifier.width(14.dp))
+            Text(
+                setup.children.joinToString { it.name }.ifEmpty { "동승자" },
+                color = Neon.White, fontSize = 24.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
+        } else {
+            Text("혼자 주행", color = Neon.White, fontSize = 24.sp, modifier = Modifier.weight(1f))
+        }
+        val car = s.car
+        val air = when {
+            !car.connected -> null
+            car.dustGuard -> Triple(Icons.Filled.Masks, "먼지 차단", Neon.Amber)
+            car.freshAir -> Triple(Icons.Filled.Air, "환기 중", Neon.Cyan)
+            else -> null
+        }
+        air?.let { (icon, label, color) ->
+            Icon(icon, null, tint = color, modifier = Modifier.size(28.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(label, color = color, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+    }
+}
+
+/** 달리는 중 다음 멀미 구간 한 줄 ("1.2km 앞 멀미 위험 구간"). 길을 모르면 안 그린다 */
+@Composable
+private fun NextUp(s: UiState) {
+    val r = s.route ?: return
+    val at = s.routeAtM
+    val seg = r.segments.firstOrNull { it.endM > at }
+    val danger = seg != null && seg.level >= 2
+    val color = when { seg == null -> Neon.Green; danger -> Neon.Red; else -> Neon.Amber }
+    val name = if (danger) "멀미 위험 구간" else "조심 구간"
+    val text = when {
+        seg == null -> "남은 길은 편안해요"
+        seg.startM <= at -> "$name · ${distance(seg.endM - at)} 남음"
+        else -> "${distance(seg.startM - at)} 앞 $name"
+    }
+    Row(
+        Modifier.fillMaxWidth().height(IntrinsicSize.Min).neonCard().padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.width(6.dp).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(color))
+        Spacer(Modifier.width(14.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(text, color = Neon.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            seg?.reasons?.takeIf { it.isNotEmpty() }?.let {
+                Text(it.joinToString(" · "), color = Neon.Dim, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+/** 남은 거리: 1km 아래는 100m 단위, 그 위는 0.1km 단위 */
+private fun distance(m: Double): String =
+    if (m < 950) "${((m / 100).roundToInt() * 100).coerceAtLeast(100)}m" else "${(m / 100).roundToInt() / 10.0}km"
+
+/** 달리는 중 맨 아래: 시연·휴대폰 시연일 때만 진행과 "시연 끝" */
+@Composable
+private fun DemoStatus(s: UiState, vm: ChalrangEngine) {
+    if (s.remote) {
+        Text(if (s.localMount != null) "이 기기 센서로 흔들림 받는 중" else "휴대폰 시연 중", color = Neon.Cyan, fontSize = 16.sp)
+    }
+    if (s.demo == null) return
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Box(Modifier.weight(1f).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0x332A8BE0))) {
+            Box(Modifier.fillMaxWidth(s.demoProgress.coerceIn(0f, 1f)).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Brush.horizontalGradient(listOf(Neon.Blue, Neon.Cyan))))
+        }
+        NeonChip("시연 끝", true, onClick = vm::stopDemo, icon = Icons.Filled.Stop, modifier = Modifier.height(44.dp))
+    }
+}
 
 /** 카드: 아이콘·제목(옅게) / 본문(크게), 오른쪽 끝 ">" 와 그림 자리 [side] */
 @Composable
@@ -319,7 +433,7 @@ private fun Card(
                         Icon(icon, null, tint = Neon.Cyan, modifier = Modifier.size(22.dp))
                         Spacer(Modifier.width(10.dp))
                     }
-                    Text(title, color = Neon.Dim, fontSize = 15.sp)
+                    Text(title, color = Neon.Dim, fontSize = 16.sp)
                 }
             }
             content()
@@ -347,7 +461,7 @@ private fun RidersCard(s: UiState, modifier: Modifier = Modifier) = Card(
             setup.guests.forEach { g -> Text("동승자 · ${g.label}", color = Color.White, fontSize = 20.sp) }
         }
     }
-    if (s.assumedSeat) Text("시연: 좌석이 비어 있어 첫 아이가 탄 것으로 봐요", color = Dim, fontSize = 13.sp)
+    if (s.assumedSeat) Text("시연: 좌석이 비어 있어 첫 아이가 탄 것으로 봐요", color = Dim, fontSize = 15.sp)
 }
 
 /**
@@ -414,13 +528,13 @@ private fun CarCard(s: UiState, modifier: Modifier = Modifier) = Card(modifier, 
         Text(car.openWindows.entries.joinToString { (w, p) -> "${w.label} 창문 $p%" }, color = Color.White, fontSize = 17.sp)
     }
     if (s.raining) Text("비 · 창문은 닫아 둬요", color = Dim, fontSize = 15.sp)
-    car.lastAction?.let { Text(it, color = Dim, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    car.lastAction?.let { Text(it, color = Dim, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
 }
 
 /** 공조 상태 하나: 동그란 아이콘 + 이름. 켜진 것만 빛나고 나머지는 흐리게 */
 @Composable
 private fun AirMode(icon: ImageVector, label: String, on: Boolean, color: Color) {
-    Column(Modifier.width(62.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.width(72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier.size(34.dp)
                 .drawBehind { if (on) drawCircle(color.copy(alpha = 0.22f), size.minDimension * 0.62f) }
@@ -432,7 +546,7 @@ private fun AirMode(icon: ImageVector, label: String, on: Boolean, color: Color)
             Icon(icon, null, tint = if (on) color else Neon.Faint, modifier = Modifier.size(20.dp))
         }
         Spacer(Modifier.height(3.dp))
-        Text(label, color = if (on) Neon.White else Neon.Faint, fontSize = 12.sp, fontWeight = if (on) FontWeight.Bold else null, maxLines = 1)
+        Text(label, color = if (on) Neon.White else Neon.Faint, fontSize = 14.sp, fontWeight = if (on) FontWeight.Bold else null, maxLines = 1)
     }
 }
 
@@ -470,7 +584,7 @@ private fun WaterButtons(s: UiState, onAdjust: (Double) -> Unit, modifier: Modif
                 else -> "기본"
             },
             color = when { diff > 0.005 -> Neon.Amber; !s.canAdjust && s.level < s.startWater - 0.005 -> Neon.Red; else -> Neon.Dim },
-            fontSize = 13.sp, maxLines = 1,
+            fontSize = 15.sp, maxLines = 1,
         )
         Spacer(Modifier.height(4.dp))
         RoundButton(Icons.Filled.Remove, s.canAdjust) { onAdjust(-ChalrangEngine.WATER_STEP) }
@@ -500,7 +614,7 @@ private val DangerBar = Brush.horizontalGradient(listOf(Color(0xFFFF4D5E), Color
 private fun RouteCard(s: UiState, onBrief: () -> Unit, modifier: Modifier = Modifier) {
     val r = s.route ?: return
     Card(modifier, Icons.Filled.Route, "가는 길", chevron = false) {
-        Text(r.summary, color = Color.White, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        Text(r.summary, color = Color.White, fontSize = 17.sp, lineHeight = 23.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         Canvas(Modifier.fillMaxWidth().height(26.dp)) {
             val y = size.height / 2
             val h = 7.dp.toPx()
@@ -521,7 +635,7 @@ private fun RouteCard(s: UiState, onBrief: () -> Unit, modifier: Modifier = Modi
             drawCircle(Neon.Blue, 8.dp.toPx(), Offset(cx, y))
             drawCircle(Neon.White, 5.dp.toPx(), Offset(cx, y))
         }
-        r.restAdvice?.let { Text(it, color = Neon.Green, fontSize = 13.sp) }
+        r.restAdvice?.let { Text(it, color = Neon.Green, fontSize = 15.sp) }
         NeonChip("3D 경로 브리핑", false, onClick = onBrief, icon = Icons.Filled.Route, chevron = true)
     }
 }
@@ -551,12 +665,12 @@ private fun BigChoice(label: String, primary: Boolean, modifier: Modifier, onCli
 }
 
 @Composable
-private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
+private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit, onDemo: () -> Unit) {
     if (s.sensorTap && !s.remote) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.PhoneAndroid, null, tint = Neon.Amber, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("화면을 한 번 누르면 이 기기 센서로 물컵이 흔들려요", color = Neon.Amber, fontSize = 14.sp, lineHeight = 19.sp)
+            Text("화면을 한 번 누르면 이 기기 센서로 물컵이 흔들려요", color = Neon.Amber, fontSize = 16.sp, lineHeight = 21.sp)
         }
     }
     if (s.remote) {
@@ -565,41 +679,54 @@ private fun DemoRow(s: UiState, vm: ChalrangEngine, onEdit: () -> Unit) {
             Spacer(Modifier.width(8.dp))
             val text = s.localMount?.let { m -> "이 기기 센서로 흔들림 받는 중" + (if (m.isNotEmpty()) " ($m)" else "") + " · 2~10초에 한 번씩 앞뒤·좌우로 움직여 보세요" }
                 ?: "휴대폰 시연 중 · 휴대폰을 2~10초에 한 번씩 앞뒤·좌우로 움직여 보세요"
-            Text(text, color = Neon.Cyan, fontSize = 14.sp, lineHeight = 19.sp)
+            Text(text, color = Neon.Cyan, fontSize = 16.sp, lineHeight = 21.sp)
         }
     }
     if (s.demo != null) {
-        Text("시연 · ${s.demo}", color = Neon.Dim, fontSize = 14.sp)
+        Text("시연 · ${s.demo}", color = Neon.Dim, fontSize = 16.sp)
         Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0x332A8BE0))) {
             Box(Modifier.fillMaxWidth(s.demoProgress.coerceIn(0f, 1f)).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Brush.horizontalGradient(listOf(Neon.Blue, Neon.Cyan))))
         }
     }
-    // 시연 길 고르기 (실제 지역: 대관령·한계령·서울 도심·고속도로, 또는 만든 길)
-    var choosing by remember { mutableStateOf(false) }
-    if (s.demo == null) {
-        NeonChip("시연 길 · ${DemoRoute.of(s.settings.demoRoute).short}", false, onClick = { choosing = true }, icon = Icons.Filled.Route, modifier = Modifier.fillMaxWidth())
-    }
-    if (choosing) {
-        AlertDialog(
-            onDismissRequest = { choosing = false },
-            title = { Text("시연 길") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DemoRoute.entries.forEach { r ->
-                        NeonChip(r.label, r.id == s.settings.demoRoute, onClick = { vm.chooseDemoRoute(r); choosing = false }, modifier = Modifier.fillMaxWidth())
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { choosing = false }) { Text("닫기") } },
-        )
-    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        NeonChip("설정", false, onClick = onEdit, icon = Icons.Filled.Settings, modifier = Modifier.weight(1f).height(44.dp))
+        NeonChip("설정", false, onClick = onEdit, icon = Icons.Filled.Settings, modifier = Modifier.weight(1f).height(48.dp))
         if (s.demo == null) {
-            NeonChip("시연 거칠게", false, onClick = { vm.startDemo(DriverStyle.ROUGH) }, modifier = Modifier.weight(1f).height(44.dp))
-            NeonChip("시연 부드럽게", false, onClick = { vm.startDemo(DriverStyle.SMOOTH) }, modifier = Modifier.weight(1f).height(44.dp))
+            NeonChip("시연", false, onClick = onDemo, icon = Icons.Filled.PlayArrow, modifier = Modifier.weight(1f).height(48.dp))
         } else {
-            NeonChip("시연 끝", true, onClick = vm::stopDemo, icon = Icons.Filled.Stop, modifier = Modifier.weight(1.6f).height(44.dp))
+            NeonChip("시연 끝", true, onClick = vm::stopDemo, icon = Icons.Filled.Stop, modifier = Modifier.weight(1f).height(48.dp))
+        }
+    }
+}
+
+/** 시연 고르기: 길(실제 지역·만든 길, 길 안내 중이면 내비 경로)과 운전 습관. 화면 위에 겹쳐 그린다 */
+@Composable
+private fun DemoSheet(s: UiState, vm: ChalrangEngine, onClose: () -> Unit) {
+    val none = remember { MutableInteractionSource() }
+    Box(
+        Modifier.fillMaxSize().background(Color(0xCC050D1A)).clickable(none, indication = null, onClick = onClose),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.width(560.dp).neonCard().clickable(none, indication = null) {}.padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("시연", color = Neon.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            if (s.naviRoute) {
+                // 내비 길 안내 중이면 시연이 그 길(목적지까지)을 달린다
+                Text("길 · 내비 경로", color = Neon.Dim, fontSize = 18.sp)
+            } else {
+                Text("길", color = Neon.Dim, fontSize = 18.sp)
+                DemoRoute.entries.forEach { r ->
+                    NeonChip(r.label, r.id == s.settings.demoRoute, onClick = { vm.chooseDemoRoute(r) }, modifier = Modifier.fillMaxWidth().height(48.dp))
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text("운전", color = Neon.Dim, fontSize = 18.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                BigChoice("거칠게", primary = true, modifier = Modifier.weight(1f)) { onClose(); vm.startDemo(DriverStyle.ROUGH) }
+                BigChoice("부드럽게", primary = false, modifier = Modifier.weight(1f)) { onClose(); vm.startDemo(DriverStyle.SMOOTH) }
+            }
+            NeonChip("닫기", false, onClick = onClose, modifier = Modifier.fillMaxWidth().height(48.dp))
         }
     }
 }

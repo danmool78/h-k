@@ -55,7 +55,9 @@ object GeoFetch {
         val padLng = MARGIN / kx
         val span = max((maxLat - minLat) * ky, (maxLng - minLng) * kx) + 2 * MARGIN
         val step = max(MIN_STEP, span / GRID_MAX)
-        val mosaic = TerrainTiles.mosaic(minLat - padLat, minLng - padLng, maxLat + padLat, maxLng + padLng, step) ?: return null
+        // 고도 타일을 못 받아도(느린 망·한 장 실패) 도로 선은 쓴다: 높이 없이 평평하게
+        val mosaic = TerrainTiles.mosaic(minLat - padLat, minLng - padLng, maxLat + padLat, maxLng + padLng, step)
+            ?: return GeoRoute(name, xs, ys, DoubleArray(coords.size), null, dur, lat0, lng0)
         val zs = DoubleArray(coords.size) { mosaic.height(coords[it].first, coords[it].second) }
         val g = if (!grid) null else {
             val minX = xs.min() - MARGIN

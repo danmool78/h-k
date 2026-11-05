@@ -577,6 +577,9 @@ half4 main(float2 fc) {
             float prev = tIn;
             float minGap = 9.0;
             float tMin = tIn;
+            float3 pS = float3(0.0);
+            // 루프에서는 맞은 곳만 찾고 셰이딩은 루프 밖에서 한 번 (Android AGSL 은 루프 안 호출을
+            // 반복 횟수만큼 크기로 세어 "program is too large" 로 거부한다)
             for (int k = 1; k <= 40; k++) {
                 float t = tIn + dt * float(k);
                 float3 p = ro + rd * t;
@@ -589,7 +592,7 @@ half4 main(float2 fc) {
                         float3 q = ro + rd * mid;
                         if (q.z > surf(q.xy)) lo = mid; else hi = mid;
                     }
-                    sCol = shadeSurface(ro + rd * hi, rd);
+                    pS = ro + rd * hi;
                     sA = 0.97;
                     surfHit = true;
                     break;
@@ -603,11 +606,12 @@ half4 main(float2 fc) {
                 float c = clamp(0.5 - minGap / pm, 0.0, 1.0);
                 if (c > 0.0) {
                     float3 pm3 = ro + rd * tMin;
-                    sCol = shadeSurface(float3(pm3.xy, surf(pm3.xy)), rd);
+                    pS = float3(pm3.xy, surf(pm3.xy));
                     sA = 0.97 * c;
                     surfHit = true;
                 }
             }
+            if (surfHit) sCol = shadeSurface(pS, rd);
         }
         if (surfHit) {
             col = mix(sCol, col, wallW);

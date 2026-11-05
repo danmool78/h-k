@@ -6,7 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -31,6 +31,17 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.random.Random
+
+/** 한 번 그릴 때 쓰는 값 ([CupView] 의 프레임에서 채운다) */
+private class CupFrame {
+    var tiltX = 0.0
+    var tiltY = 0.0
+    var dose = 0.0
+    var level = 0f
+    var freeboard = WaterCup.freeboardOf(0.5)
+    var puddle = 0f
+    var time = 0f
+}
 
 private val Water = Color(0xFF4FC3F7)
 private val WaterWarn = Color(0xFFFFB74D)
@@ -67,8 +78,11 @@ fun CupView(
     val state by rememberUpdatedState(Triple(tiltX, tiltY, spilling))
     val heaveNow by rememberUpdatedState(heave)
     val fbNow by rememberUpdatedState(freeboard)
+    val doseNow by rememberUpdatedState(dose)
     val drops = remember { Drops() }
-    var time by remember { mutableFloatStateOf(0f) }
+    // 그리는 값은 초당 FPS 번 프레임에서만 고정한다: 엔진 갱신(20Hz)이나 화면 주사(60Hz)마다 다시 그리지 않게
+    val f = remember { CupFrame() }
+    val drawn = remember { mutableIntStateOf(0) }
     // 3D 물: GPU 셰이더 + 물결 시뮬레이션 (안 되면 2D 그림)
     val water = remember { WaterShader() }
     val sim = remember { WaterSim(RTI.toDouble()) }
@@ -78,11 +92,13 @@ fun CupView(
     // 프레임마다 물방울을 움직이고, 넘치는 중이면 가장자리에서 새 물방울을 낸다
     LaunchedEffect(Unit) {
         var last = 0L
+        val gate = FrameGate()
         while (true) {
             withFrameNanos { now ->
-                val dt = if (last == 0L) 0f else ((now - last) / 1e9f).coerceAtMost(0.05f)
+                if (!gate.pass(now)) return@withFrameNanos
+                val dt = if (last == 0L) 0f else ((now - last) / 1e9f).coerceAtMost(0.1f)
                 last = now
-                time += dt
+                f.time += dt
                 val (tx, ty, sp) = state
                 drops.step(dt, if (sp) slope(tx, ty, BASE + shownLevel * (H - BASE), fbNow) else null, shownLevel)
                 if (water.supported && dt > 0) {
@@ -90,6 +106,8 @@ fun CupView(
                     val (px, py) = realSlope(tx, ty)
                     sim.step(dt.toDouble(), px, py, innerRadiusAt(h0) * 0.97, sp, heaveNow)
                 }
+                f.tiltX = tx; f.tiltY = ty; f.dose = doseNow; f.level = shownLevel; f.freeboard = fbNow; f.puddle = puddle
+                drawn.intValue++
             }
         }
     }
@@ -98,13 +116,17 @@ fun CupView(
     val pen = remember { Pen() }
 
     Canvas(modifier.clipToBounds()) {
+        drawn.intValue // 고정한 값이 바뀔 때만 다시 그린다
+        val time = f.time
+        val tiltX = f.tiltX
+        val tiltY = f.tiltY
         val cam = Camera(size.width, size.height)
-        val c = waterColor(dose)
-        val h0 = BASE + shownLevel * (H - BASE)
-        val (px, py) = limitedSlope(tiltX, tiltY, h0, freeboard)
+        val c = waterColor(f.dose)
+        val h0 = BASE + f.level * (H - BASE)
+        val (px, py) = limitedSlope(tiltX, tiltY, h0, f.freeboard)
         val ripple = 0.012f * sin(time * 2.4f)
 
-        drawFloor(cam, pen, c, puddle, stage)
+        drawFloor(cam, pen, c, f.puddle, stage)
         // GPU 3D 물: 유리·물·빛을 화소마다 광선으로 계산
         if (water.supported) {
             uniforms.width = size.width; uniforms.height = size.height

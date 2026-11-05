@@ -22,8 +22,13 @@
     <uses-permission android:name="pleos.car.permission.CONTROL_CAR_CLIMATE" />
     <uses-permission android:name="pleos.car.permission.CAR_WINDOWS" />
     <uses-permission android:name="pleos.car.permission.CONTROL_CAR_WINDOWS" />
+    <!-- NaviHelper: 회전 안내·주의 지점·현재 위치·목적지 (없으면 요청이 거절되고 목적지 좌표가 비어 온다) -->
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
     <!-- 휴대폰 시연: 관리자 휴대폰의 흔들림을 Firestore 에서 받는다 (실제 차가 없을 때) -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 가는 길 미리보기: 차가 서 있으면 내비가 현재 위치를 보내지 않으므로 출발점을 기기 위치로 -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
         android:allowBackup="false"
