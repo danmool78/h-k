@@ -53,7 +53,7 @@ def fade_to(b, frames=12):
         emit(Image.blend(a, b, (k + 1) / frames))
 
 
-def frame(i): return Image.open(f'{S}/f/{i:05d}.png')
+def frame(i, src='f'): return Image.open(f'{S}/{src}/{i:05d}.png')
 
 
 def stretch(idx, total):
@@ -68,14 +68,14 @@ def stretch(idx, total):
     return out
 
 
-def scene(idx, text, voice_name=None, pad=0.6):
-    """장면 하나: 내레이션이 있으면 그 길이 + pad 까지 늘린다"""
+def scene(idx, text, voice_name=None, pad=0.6, src='f'):
+    """장면 하나: 내레이션이 있으면 그 길이 + pad 까지 늘린다. text 는 문자열 또는 (장면 번호 → 자막) 함수"""
     total = len(idx)
     if voice_name:
         voice.append((n / FPS, voice_name))
         total = max(total, int((dur(voice_name) + pad) * FPS))
     for i in stretch(idx, total):
-        emit(caption(frame(i), text))
+        emit(caption(frame(i, src), text(i) if callable(text) else text))
 
 
 def still(im, seconds, text=None, zoom=0.0, voice_name=None, pad=0.8):
@@ -109,6 +109,15 @@ scene(R(marks['brief'], d0), '위험 구간을 3D 지형 위에서 미리 달려
 scene([i for i in R(d0, s1) if i not in skip], '위험 구간 1km 앞부터 미리 알립니다', 'drive1')
 scene([i for i in R(s1, s2) if i not in skip], '굽이마다 물이 출렁이고 넘칩니다 — 넘친 만큼 아이 멀미가 쌓입니다', 'drive2')
 scene([i for i in R(s2, marks['report']) if i not in skip], '멀미가 쌓이면 차가 먼저 환기하고, 아이 쪽 창문을 열지 묻습니다', 'drive3')
+# 아이별 멀미 학습: 주행 중 "지금 멀미" (따로 찍은 장면) → 무엇을 배워 어떻게 미리 막는지
+sick = sorted(int(x[:5]) for x in os.listdir(f'{S}/g'))
+press = split.get('press', 75)
+fade_to(caption(frame(sick[0], 'g'), '아이가 멀미하면 — "지금 멀미" 한 번'), 12)
+scene(sick, lambda i: '아이가 멀미하면 — "지금 멀미" 한 번' if i < press + 10 else '그 순간이 민지의 멀미 기준으로 — 이제 이만큼 흔들리면 "위험"(주황)', 'sick', src='g')
+learn = sorted(int(x[:5]) for x in os.listdir(f'{S}/learn'))
+fade_to(frame(learn[0], 'learn').convert('RGB'), 15)
+scene(learn, None, 'learn', pad=0.8, src='learn')
+fade_to(caption(frame(marks['report']), '도착하면 운전을 평가하고 "다음엔 이렇게" 를 알려 줍니다'), 12)
 scene(R(marks['report'], marks['end']), '도착하면 운전을 평가하고 "다음엔 이렇게" 를 알려 줍니다', 'report')
 trace = Image.open('/home/user/h-k/tools/contest_form/img/trace.png').convert('RGB').resize((1280, 732)).crop((0, 6, 1280, 726))
 cap = '언제·왜 출렁였는지 상세 분석으로 다시 봅니다 (정차 중에만)'
