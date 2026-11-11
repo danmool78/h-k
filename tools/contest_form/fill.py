@@ -51,6 +51,29 @@ for p in d.paragraphs:
 TABLE_CM = 16.8  # 칸 안쪽 너비(약 17.1cm)에 맞춘 표 너비
 
 
+def spacer(cell):
+    """표 뒤 작은 간격 (기본 줄 높이는 너무 넓다)"""
+    q = cell.add_paragraph()
+    q.paragraph_format.space_before = Pt(0); q.paragraph_format.space_after = Pt(0)
+    q.paragraph_format.line_spacing = Pt(8)
+    return q
+
+
+def pad_cells(t, top=70, side=90):
+    """표 칸 안쪽 여백(위아래·좌우, dxa)과 세로 가운데 맞춤: 글자가 칸 위에 붙지 않게"""
+    tblPr = t._tbl.tblPr
+    mar = OxmlElement('w:tblCellMar')
+    for k, v in (('top', top), ('left', side), ('bottom', top), ('right', side)):
+        e = OxmlElement(f'w:{k}'); e.set(qn('w:w'), str(v)); e.set(qn('w:type'), 'dxa'); mar.append(e)
+    tblPr.append(mar)
+    for row in t.rows:
+        for c in row.cells:
+            v = OxmlElement('w:vAlign'); v.set(qn('w:val'), 'center'); c._tc.get_or_add_tcPr().append(v)
+            for q in c.paragraphs:
+                q.paragraph_format.space_before = Pt(0); q.paragraph_format.space_after = Pt(0)
+                q.paragraph_format.line_spacing = 1.15
+
+
 def set_widths(t, widths):
     t.autofit = False
     tblPr = t._tbl.tblPr
@@ -98,8 +121,9 @@ def add_table(cell, rows):
             for r in c.paragraphs[0].runs: r.bold = True; r.font.color.rgb = NAVY
     else:
         set_widths(t, auto_widths(rows))
+    pad_cells(t)
     # 표 뒤 간격
-    cell.add_paragraph().paragraph_format.space_after = Pt(0)
+    spacer(cell)
 
 
 def prepare(cell):
@@ -150,7 +174,10 @@ def storyboard(cell, rows):
         q = b.add_paragraph(); q.paragraph_format.space_before = Pt(3)
         r = q.add_run(desc); r.font.size = Pt(9.5)
         shade(b._tc, 'F4F8FE')
-    cell.add_paragraph().paragraph_format.space_after = Pt(0)
+    pad_cells(t)
+    for i in range(len(rows)):
+        t.cell(i, 1).paragraphs[1].paragraph_format.space_before = Pt(3)
+    spacer(cell)
 
 
 def fill(cell, text):
