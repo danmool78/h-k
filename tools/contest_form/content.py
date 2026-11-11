@@ -166,7 +166,9 @@ Pleos Connect(Android Automotive) 앱과, 같은 코드를 웹으로 빌드한 �
 """# 지금 바로 해 볼 수 있습니다 (차량 앱과 같은 코드)
 - 앱 체험: https://h-y-server.web.app/app/ — "시연" 에서 대관령·한계령·서울 도심·고속도로를 골라 부드럽게/거칠게 달려 보세요. 휴대폰으로 열면 휴대폰을 흔드는 대로 물컵이 출렁입니다.
 - 계산 방식·근거·검증: https://h-y-server.web.app/admin/
-- 소스 코드: https://github.com/danmool78/h-k
+# 함께 보내는 파일
+- 시연 영상 (약 1분 30초, 메일 첨부): 첫 화면 → 아이 탑승 → 위험 구간 카드 → 3D 지형 미리보기 → 주행 중 출렁임·환기·창문 질문·넘침 → 도착 평가 → 상세 분석. 실제 앱 화면 그대로입니다.
+- release APK (메일 첨부): Pleos Connect 에뮬레이터 v2.1.0 (Android API 34) 에 설치해 바로 실행할 수 있습니다. 차가 움직이지 않는 에뮬레이터에서는 "시연" 으로 실제 지역 길을 재생해 보세요.
 # 데이터·오픈소스 출처
 - 도로: OpenStreetMap contributors (ODbL), OSRM / 고도: AWS Terrain Tiles (Mapzen, SRTM 등) / Wf 대조: janiex/SimulinkMatlab / 글꼴: 나눔고딕 (OFL)
 # 심사 예상 질문과 답
