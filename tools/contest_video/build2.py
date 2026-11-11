@@ -129,38 +129,44 @@ fade_to(Image.new('RGB', (1280, 720)), 20)
 total = n / FPS
 print('video', total, 's')
 
-# ---- 배경음악: 잔잔한 패드 + 물방울 같은 아르페지오 (직접 합성) ----
-SR = 44100
-t = np.arange(int(total * SR)) / SR
-mus = np.zeros_like(t)
-hz = lambda m: 440 * 2 ** ((m - 69) / 12)
-chords = [[48, 55, 59, 62, 64], [45, 52, 55, 59, 60], [41, 48, 52, 55, 57], [43, 50, 55, 59, 62]]  # Cmaj9 Am9 Fmaj7 G
-BAR = 4.0
-for b in range(int(total / BAR) + 1):
-    ch = chords[b % 4]
-    a, z = int(b * BAR * SR), min(len(t), int((b + 1) * BAR * SR + SR))
-    if a >= len(t): break
-    tt = t[a:z] - b * BAR
-    env = np.minimum(1, tt / 1.2) * np.exp(-np.maximum(0, tt - BAR + 0.2) / 0.6)
-    pad = sum(np.sin(2 * np.pi * hz(m) * tt) + 0.5 * np.sin(2 * np.pi * hz(m) * 1.003 * tt) for m in ch)
-    mus[a:z] += 0.05 * env * pad
-    # 아르페지오 (반 박자마다, 한 옥타브 위)
-    for k in range(8):
-        m = ch[[0, 2, 4, 3, 1, 3, 4, 2][k]] + 24
-        s0 = a + int(k * 0.5 * SR)
-        s1_ = min(len(t), s0 + int(1.6 * SR))
-        if s0 >= len(t): break
-        u = (np.arange(s1_ - s0)) / SR
-        mus[s0:s1_] += 0.035 * np.exp(-u / 0.45) * (np.sin(2 * np.pi * hz(m) * u) + 0.3 * np.sin(2 * np.pi * hz(m) * 2 * u))
-# 부드럽게 (한 극 저역 통과), 처음·끝 페이드
-y = np.zeros_like(mus); k = 0.25
-for i in range(1, len(mus)): y[i] = y[i - 1] + k * (mus[i] - y[i - 1])
-fade = np.minimum(1, np.minimum(t / 2.0, (total - t) / 3.0))
-y *= fade
-y = y / (np.abs(y).max() + 1e-9) * 0.5
-with wave.open(f'{S}/music.wav', 'wb') as w:
-    w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
-    w.writeframes((y * 32767).astype(np.int16).tobytes())
+# ---- 배경음악: 환경 변수 MUSIC 의 음원(앞부분부터, 처음·끝 페이드), 없으면 직접 합성 ----
+MUSIC = os.environ.get('MUSIC')
+if MUSIC:
+    subprocess.run(['ffmpeg', '-y', '-v', 'error', '-i', MUSIC, '-t', f'{total:.2f}', '-ac', '1', '-ar', '44100',
+                    '-af', f'afade=t=in:d=2,afade=t=out:st={total - 3.5:.2f}:d=3.5', f'{S}/music.wav'], check=True)
+else:
+    SR = 44100
+    t = np.arange(int(total * SR)) / SR
+    mus = np.zeros_like(t)
+    hz = lambda m: 440 * 2 ** ((m - 69) / 12)
+    chords = [[48, 55, 59, 62, 64], [45, 52, 55, 59, 60], [41, 48, 52, 55, 57], [43, 50, 55, 59, 62]]  # Cmaj9 Am9 Fmaj7 G
+    BAR = 4.0
+    for b in range(int(total / BAR) + 1):
+        ch = chords[b % 4]
+        a, z = int(b * BAR * SR), min(len(t), int((b + 1) * BAR * SR + SR))
+        if a >= len(t): break
+        tt = t[a:z] - b * BAR
+        env = np.minimum(1, tt / 1.2) * np.exp(-np.maximum(0, tt - BAR + 0.2) / 0.6)
+        pad = sum(np.sin(2 * np.pi * hz(m) * tt) + 0.5 * np.sin(2 * np.pi * hz(m) * 1.003 * tt) for m in ch)
+        mus[a:z] += 0.05 * env * pad
+        # 아르페지오 (반 박자마다, 한 옥타브 위)
+        for k in range(8):
+            m = ch[[0, 2, 4, 3, 1, 3, 4, 2][k]] + 24
+            s0 = a + int(k * 0.5 * SR)
+            s1_ = min(len(t), s0 + int(1.6 * SR))
+            if s0 >= len(t): break
+            u = (np.arange(s1_ - s0)) / SR
+            mus[s0:s1_] += 0.035 * np.exp(-u / 0.45) * (np.sin(2 * np.pi * hz(m) * u) + 0.3 * np.sin(2 * np.pi * hz(m) * 2 * u))
+    # 부드럽게 (한 극 저역 통과), 처음·끝 페이드
+    y = np.zeros_like(mus); k = 0.25
+    for i in range(1, len(mus)): y[i] = y[i - 1] + k * (mus[i] - y[i - 1])
+    fade = np.minimum(1, np.minimum(t / 2.0, (total - t) / 3.0))
+    y *= fade
+    y = y / (np.abs(y).max() + 1e-9) * 0.5
+    with wave.open(f'{S}/music.wav', 'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+        w.writeframes((y * 32767).astype(np.int16).tobytes())
+
 
 # ---- 섞기: 내레이션은 시작 시각만큼 늦춰 깔고, 음악은 내레이션이 나올 때 낮춤 ----
 inputs = ['-i', f'{S}/music.wav']
@@ -172,7 +178,7 @@ for k, (st, name) in enumerate(voice):
 vs = ''.join(f'[v{k}]' for k in range(len(voice)))
 filt.append(f'{vs}amix=inputs={len(voice)}:normalize=0[vo]')
 filt.append('[vo]asplit=2[vo1][vo2]')
-filt.append('[0:a]volume=0.35[m]')
+filt.append(f"[0:a]volume={os.environ.get('MUSIC_VOL', '0.35')}[m]")
 filt.append('[m][vo1]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[md]')
 filt.append('[md][vo2]amix=inputs=2:normalize=0,volume=1.25[a]')
 subprocess.run(['ffmpeg', '-y', '-v', 'error'] + inputs + ['-filter_complex', ';'.join(filt), '-map', '[a]', '-ac', '2', f'{S}/audio.wav'], check=True)

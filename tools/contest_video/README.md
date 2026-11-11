@@ -11,5 +11,6 @@
 2. 내레이션: `narration.json` 의 장면별 대사를 `python3 tools/contest_video/tts.py "대사" 작업폴더/voice/장면.mp3` 로 (Microsoft Edge 신경망 음성 ko-KR-SunHiNeural, 인터넷 필요)
 3. 조립: 작업폴더에 `title.png`·`end.png`·`narration.json` 을 두고 `python3 tools/contest_video/build2.py 작업폴더 결과.mp4 tools/contest_video/split.json`
    - 장면마다 내레이션이 끝날 때까지 장면을 늘린다 (멈춘 장면은 앞뒤로 오가며)
-   - 자막·제목·상세 분석(tools/contest_form/img/trace.png)·마무리 화면, 직접 합성한 배경음악(저작권 없음, 대사가 나오면 자동으로 낮춤)
+   - 자막·제목·상세 분석(tools/contest_form/img/trace.png)·마무리 화면, 배경음악(대사가 나오면 자동으로 낮춤)
+   - 배경음악: `MUSIC=음원.mp3 MUSIC_VOL=0.3` — 제출본은 Kevin MacLeod "Inspired" (incompetech.com, CC BY 4.0, 출처는 마무리 화면에 표기). MUSIC 이 없으면 직접 합성한 곡
    - `split.json`: 주행 장면 자막 경계(주행 시작부터 장면 수: 위험 구간 진입, 창문 질문)와 덜어 낼 구간(`skip`)
