@@ -6,6 +6,8 @@
    첫 화면 → 뒷좌석 왼쪽 탑승 → 시연(대관령·거칠게) → 위험 구간 카드 → 3D 미리보기 → 출발 → 시연 끝(도착 평가).
    `작업폴더/f/` 에 장면, `marks.json` 에 장면 경계.
    - 시계는 페이지가 뜨기 전에 넘겨받아야 앱 계산(물리·주행)도 같은 시계를 쓴다. 로딩 동안은 그냥 흐르게 두고 촬영 때 멈춘다.
-2. 조립: 작업폴더에 `title.png`·`end.png` 를 두고 `python3 tools/contest_video/build.py 작업폴더 결과.mp4 tools/contest_video/split.json`
+2. 내레이션: `narration.json` 의 장면별 대사를 `python3 tools/contest_video/tts.py "대사" 작업폴더/voice/장면.mp3` 로 (Microsoft Edge 신경망 음성 ko-KR-SunHiNeural, 인터넷 필요)
+3. 조립: 작업폴더에 `title.png`·`end.png`·`narration.json` 을 두고 `python3 tools/contest_video/build2.py 작업폴더 결과.mp4 tools/contest_video/split.json`
+   - 장면마다 내레이션이 끝날 때까지 장면을 늘린다 (멈춘 장면은 앞뒤로 오가며)
+   - 자막·제목·상세 분석(tools/contest_form/img/trace.png)·마무리 화면, 직접 합성한 배경음악(저작권 없음, 대사가 나오면 자동으로 낮춤)
    - `split.json`: 주행 장면 자막 경계(주행 시작부터 장면 수: 위험 구간 진입, 창문 질문)와 덜어 낼 구간(`skip`)
-   - 자막·제목·상세 분석(tools/contest_form/img/trace.png)·마무리 화면을 붙인다
