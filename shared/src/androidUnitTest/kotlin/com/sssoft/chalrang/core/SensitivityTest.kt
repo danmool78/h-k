@@ -149,6 +149,45 @@ class SensitivityTest {
     }
 
     @Test
+    fun `멀미 직전 위아래 흔들림(오르내리는 둔덕)도 멀미 주기로 찾는다`() {
+        val trace = DriveTrace()
+        val cup = WaterCup()
+        var t = 0.0
+        // 8분: 20초 주기 가다 서다만, 그다음 3분: 가다 서다 + 6초 주기 위아래 흔들림 (둔덕이 이어지는 길)
+        while (t < 660) {
+            val ax = if ((t % 20) < 10) 1.5 else -1.5
+            val az = if (t > 480) 1.5 * sin(2 * PI * t / 6.0) else 0.0
+            cup.step(ax, 0.0, 0.05, az)
+            trace.record(t, ax, 0.0, cup.tiltX, cup.tiltY, 40.0, cup.dose, cup.level, cup.spilling, az, cup.tiltZ)
+            t += 0.05
+        }
+        val p = SickPeriod.find(trace, trace.endTime)
+        assertNotNull(p)
+        println("찾은 위아래 멀미 주기 %.2f초".format(p))
+        assertEquals(6.0, p!!, 0.8)
+    }
+
+    @Test
+    fun `민감 주기를 배운 물컵은 위아래 흔들림도 그 주기에서 더 출렁인다 (최대 1_5배)`() {
+        fun zPeak(f: Double, sens: Sensitivity): Double {
+            val cup = WaterCup()
+            cup.sensitivity = sens
+            return peak(f) { x -> cup.step(0.0, 0.0, 0.05, 1.5 * x); abs(cup.tiltZ) }
+        }
+        val sens = Sensitivity(listOf(6.0, 6.1, 5.9, 6.0, 6.0))
+        val near = zPeak(1 / 6.0, sens) / zPeak(1 / 6.0, Sensitivity())
+        val far = zPeak(0.03, sens) / zPeak(0.03, Sensitivity())
+        println("위아래 6초 주기 %.2f배, 33초 %.2f배 (강조 %.2f)".format(near, far, sens.gain))
+        assertEquals(minOf(sens.gain, Sensitivity.MAX_GAIN), near, 0.08)
+        assertEquals(1.0, far, 0.1)
+        // 긴 주기를 배운 아이: 수평은 연구 가중까지 올라가도 위아래는 1.5 배에서 멈춘다
+        val long = Sensitivity(List(6) { 20.0 })
+        assertTrue(long.gain > Sensitivity.MAX_GAIN)
+        val zLong = zPeak(0.05, long) / zPeak(0.05, Sensitivity())
+        assertTrue("위아래 %.2f배".format(zLong), zLong <= Sensitivity.MAX_GAIN + 0.08)
+    }
+
+    @Test
     fun `멀미 직전 긴 굽은 길(20초 주기)도 멀미 주기로 찾는다`() {
         val trace = DriveTrace()
         val cup = WaterCup()

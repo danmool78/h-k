@@ -142,12 +142,18 @@ object SickPeriod {
 
     /**
      * [trace] 의 [at] 직전 [WINDOW] 초 흔들림에서, 그 주행의 평소보다 유독 많았던 주기 중
-     * 멀미 가중(Wf²)이 가장 큰 주기 (초). 기록이 모자라면 null.
+     * 멀미 가중이 가장 큰 주기 (초). 기록이 모자라면 null.
+     * 앞뒤·좌우에 위아래(방지턱·오르내리는 둔덕)도 넣는다. 수평은 연구 범위 위쪽 끝([Wh.upper]),
+     * 위아래는 표준 Wf 로 가중한다 (Wf 는 원래 위아래 기준): 위아래 성분에 (Wf ÷ Wh.upper)² 를 곱해 두면
+     * 아래에서 Wh.upper² 를 곱할 때 위아래는 Wf² 가 된다.
      * 평소 스펙트럼은 같은 길이 구간들(반씩 겹침)의 평균으로 낸다 — 길이가 다르면 해상도가 달라 비교가 틀어진다 (Welch 방식).
      */
     fun find(trace: DriveTrace, at: Double): Double? {
         val sick = ShakeAnalysis.analyze(trace, at - WINDOW, at) ?: return null
-        fun power(r: ShakeReport) = DoubleArray(r.freqs.size) { r.longAmp[it] * r.longAmp[it] + r.latAmp[it] * r.latAmp[it] }
+        fun power(r: ShakeReport) = DoubleArray(r.freqs.size) {
+            val zw = Wf.gain(r.freqs[it]) / Wh.upper(r.freqs[it])
+            r.longAmp[it] * r.longAmp[it] + r.latAmp[it] * r.latAmp[it] + r.vertAmp[it] * r.vertAmp[it] * zw * zw
+        }
         val ps = smooth(power(sick))
         val baseEnd = at - WINDOW
         val pb: DoubleArray? = if (baseEnd - trace.startTime >= MIN_BASELINE) {

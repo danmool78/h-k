@@ -57,10 +57,16 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
             field = value
             peakX = makePeak(value)
             peakY = makePeak(value)
+            peakZ = makePeak(value, Sensitivity.MAX_GAIN)
         }
     private var peakX: PeakFilter? = null
     private var peakY: PeakFilter? = null
-    private fun makePeak(s: Sensitivity) = if (s.gain > 1.0) PeakFilter(STEP, s.peakHz, s.gain, s.q) else null
+    /** 위아래도 같은 민감 주기를 강조하되, 표준 Wf 가 위아래 기준이므로 연구 가중까지 올리지 않고 [Sensitivity.MAX_GAIN] 배까지 */
+    private var peakZ: PeakFilter? = null
+    private fun makePeak(s: Sensitivity, cap: Double = Double.MAX_VALUE): PeakFilter? {
+        val g = minOf(s.gain, cap)
+        return if (g > 1.0) PeakFilter(STEP, s.peakHz, g, s.q) else null
+    }
     /** 아직 필터에 넣지 않은 시간 (Wf 는 [STEP] 간격으로 돈다) */
     private var pending = 0.0
 
@@ -101,7 +107,8 @@ class WaterCup(level: Double = DEFAULT_LEVEL) {
             val wy = wfY.step(gy)
             tiltX = peakX?.step(wx) ?: wx
             tiltY = peakY?.step(wy) ?: wy
-            tiltZ = wfZ.step(gz)
+            val wz = wfZ.step(gz)
+            tiltZ = peakZ?.step(wz) ?: wz
             spilled += spillRate(tilt, level) * STEP
         }
         val nowSpilling = tilt > freeboard
