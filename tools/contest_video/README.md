@@ -8,6 +8,8 @@
    - 시계는 페이지가 뜨기 전에 넘겨받아야 앱 계산(물리·주행)도 같은 시계를 쓴다. 로딩 동안은 그냥 흐르게 두고 촬영 때 멈춘다.
    - 아이별 멀미 학습 장면: `D=작업폴더 node tools/contest_video/rec_sick.js` (주행 중 "지금 멀미" 를 누르는 장면, `작업폴더/g/`),
      설명 화면은 `python3 tools/contest_video/learn.py 작업폴더 초` (`작업폴더/learn/`, 초 = learn 대사 길이 + 1)
+   - 목적지 → 자료 내려받기 → 3D 구성 → 분석 장면: 대관령 일대 고도 타일(줌 13, x 7024~7028, y 3167~3169)을
+     `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/13/x/y.png` 에서 `t_x_y.png` 로 받아 두고 `python3 tools/contest_video/pipeline.py 작업폴더 타일폴더 초` (`작업폴더/pipe/`)
 2. 내레이션: `narration.json` 의 장면별 대사를 `python3 tools/contest_video/tts.py "대사" 작업폴더/voice/장면.mp3` 로 (Microsoft Edge 신경망 음성 ko-KR-SunHiNeural, 인터넷 필요)
 3. 조립: 작업폴더에 `title.png`·`end.png`·`narration.json` 을 두고 `python3 tools/contest_video/build2.py 작업폴더 결과.mp4 tools/contest_video/split.json`
    - 장면마다 내레이션이 끝날 때까지 장면을 늘린다 (멈춘 장면은 앞뒤로 오가며)
