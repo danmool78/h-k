@@ -143,7 +143,8 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
 
     NeonBackground(Modifier.pointerInput(Unit) { detectTapGestures { } }) {
         val last = if (trace.size > 0) trace[trace.size - 1] else null
-        if (ui.demo == null && !ui.remote && (last?.speedKmh ?: 0.0) > 5) {
+        // 끝난 주행을 볼 때는 막지 않는다 (그 기록의 마지막 속도는 지금 차의 속도가 아니다)
+        if (!pastTrip && ui.demo == null && !ui.remote && (last?.speedKmh ?: 0.0) > 5) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("주행 중에는 분석을 볼 수 없어요", color = Neon.Text, fontSize = 24.sp)
                 Text("차를 세운 뒤 다시 열어 주세요", color = Neon.Dim, fontSize = 17.sp)
