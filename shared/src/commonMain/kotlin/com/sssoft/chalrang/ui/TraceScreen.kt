@@ -113,7 +113,8 @@ private class WindowStats(val accMax: Double, val accMin: Double, val tiltMax: D
 @Composable
 fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
     val ui by engine.ui.collectAsState()
-    val trace = engine.trace
+    // 다음 주행이 시작되기 전이면 방금 끝난 주행을 본다 (주행이 끝나면 새 기록이 비어 있으므로)
+    val (trace, pastTrip) = remember { engine.traceForView() }
     // 그래프: 초당 FPS 번 다시 그려 실시간으로 흐른다 (그리기 단계에서만 읽어 화면 재구성은 없다)
     val frame = remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
@@ -172,7 +173,7 @@ fun TraceScreen(engine: ChalrangEngine, onClose: () -> Unit) {
                 Header(
                     wide, windowSec, following,
                     onWindow = { windowSec = it; cursor = null; frozenEnd = null },
-                    onLive = { cursor = null; frozenEnd = null }, onClose = onClose,
+                    onLive = { cursor = null; frozenEnd = null }, onClose = onClose, pastTrip = pastTrip,
                 )
                 if (trace.size < 2) {
                     Text("아직 기록이 없어요. 주행하거나 시연을 돌려 보세요.", color = Neon.Dim, fontSize = 18.sp)
@@ -226,11 +227,17 @@ private fun windowStats(trace: DriveTrace, t0: Double, t1: Double, events: List<
 private fun Header(
     wide: Boolean, windowSec: Double?, following: Boolean,
     onWindow: (Double?) -> Unit, onLive: () -> Unit, onClose: () -> Unit,
+    pastTrip: Boolean = false,
 ) {
     Row(Modifier.fillMaxWidth().height(if (wide) 58.dp else 52.dp), verticalAlignment = Alignment.CenterVertically) {
         GlowIcon(Icons.Filled.ShowChart, Neon.Cyan, 32.dp)
         Spacer(Modifier.width(10.dp))
         Text("흔들림 분석", color = Neon.White, fontSize = if (wide) 30.sp else 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        if (pastTrip) {
+            Spacer(Modifier.width(10.dp))
+            Text("방금 끝난 주행", color = Neon.Cyan, fontSize = if (wide) 16.sp else 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                modifier = Modifier.border(1.dp, Neon.Cyan.copy(alpha = 0.6f), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 3.dp))
+        }
         if (wide) {
             Box(Modifier.padding(horizontal = 16.dp).width(1.dp).height(34.dp).background(Neon.Faint))
             Text("차의 움직임이 물의 출렁임과\n멀미에 미치는 영향을 분석합니다", color = Neon.Dim, fontSize = 13.sp, lineHeight = 18.sp)

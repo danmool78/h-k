@@ -139,7 +139,19 @@ class ChalrangEngine(
     private val log = TiltLog()
 
     /** 상세 흔들림 기록 (차 흔들림 → 물 출렁임, 안내·조치). 화면의 "흔들림 기록" 에서 본다 */
-    val trace = DriveTrace()
+    var trace = DriveTrace(); private set
+    /**
+     * 끝난 주행 기록: 주행이 끝나면 기록을 지우지 않고 이것으로 넘겨, 다음 주행이 시작되기 전까지 분석 화면에서 본다.
+     * 두 버퍼를 번갈아 쓴다 (복사 없음, 메모리 일정).
+     */
+    var lastTrip: DriveTrace? = null; private set
+    private var spare = DriveTrace()
+    /** 이번 주행이 실제로 시작됐는지 (시연·휴대폰·센서 시료가 들어왔거나 차가 달림) */
+    private var tripStarted = false
+
+    /** 분석 화면이 볼 기록과, 그것이 끝난 주행인지: 다음 주행이 시작되기 전이면 끝난 주행 */
+    fun traceForView(): Pair<DriveTrace, Boolean> =
+        lastTrip?.takeIf { !tripStarted && it.size > 0 }?.let { it to true } ?: (trace to false)
     /** 지금 시각 (시연은 시나리오 시각) — 기록에 쓴다 */
     private var clock = 0.0
 
@@ -327,6 +339,7 @@ class ChalrangEngine(
                 log.add(cup.tilt, SCENARIO_DT)
                 if (cup.spillCount > before) spillStarted = true
                 record(f.t, f.ax, f.ay, f.speedKmh, f.az)
+                tripStarted = true
                 d.frame = f
             }
             if (seats.values.none { it.riding } && children.isNotEmpty()) {
@@ -372,6 +385,7 @@ class ChalrangEngine(
                 log.add(cup.tilt, step)
                 if (cup.spillCount > before) spillStarted = true
                 record(remoteT, r.ax, r.ay, REMOTE_KMH, r.az)
+                tripStarted = true
             }
             clock = remoteT
             if (seats.values.none { it.riding } && children.isNotEmpty()) {
@@ -392,7 +406,7 @@ class ChalrangEngine(
             }
             // 실제 주행: 2분 넘게 달린 뒤 3분 넘게 서 있으면 (도착·주차) 이번 주행을 평가하고 새로 시작
             val kmh = motion.speedKmh ?: 0.0
-            if (kmh >= 5) { liveMoving += dt; liveStopped = 0.0 } else if (kmh < 1) liveStopped += dt
+            if (kmh >= 5) { liveMoving += dt; liveStopped = 0.0; tripStarted = true } else if (kmh < 1) liveStopped += dt
             if (liveMoving >= TRIP_MIN_SEC && liveStopped >= PARKED_SEC) {
                 finishTrip(learn = true)
                 resetTrip()
@@ -953,7 +967,15 @@ class ChalrangEngine(
         _ui.update { it.copy(askWindows = null) }
         cup.reset()
         log.clear()
+        if (tripStarted && trace.size >= ARCHIVE_MIN) {
+            // 끝난 주행은 남겨 두고 빈 버퍼로 새로 기록
+            val done = trace
+            trace = spare
+            spare = done
+            lastTrip = done
+        }
         trace.clear()
+        tripStarted = false
     }
 
     private fun periodText(sec: Double): String = "${(sec * 10).toInt() / 10.0}초"
@@ -982,6 +1004,8 @@ class ChalrangEngine(
         const val DEMO_MAX_SEC = 210.0
         /** 휴대폰 시연에서 쓰는 속도 (창문 판단용) */
         const val REMOTE_KMH = 40.0
+        /** 이보다 짧은 기록(0.1초 단위, 30초)은 끝난 주행으로 남기지 않는다 */
+        const val ARCHIVE_MIN = 300
         private const val LOCAL_SESSION = "이 기기"
         private val STILL = RemoteSample(0.0, 0.0)
         /** 혼자 주행일 때 그리는 물 높이 */
